@@ -2,14 +2,21 @@
 
 use std::rc::Rc;
 
+use gpui_kit::assets::IconName as AssetIcon;
 use gpui_kit::component::WindowExt as _;
 use gpui_kit::component::button::ButtonVariants as _;
 use gpui_kit::component::dialog::{DialogClose, DialogFooter};
+use gpui_kit::component::Disableable as _;
 use gpui_kit::*;
 
-use super::widgets::btn;
+use super::busy::BusyKind;
+use super::view::AppView;
+use super::widgets::{btn, confirm_btn, with_busy};
 
 /// Open a confirm alert whose OK/Cancel buttons use `cursor: pointer`.
+///
+/// `on_ok` returning `true` closes the dialog. Prefer [`open_busy_confirm`] when
+/// the OK action should show a loading spinner before the dialog closes.
 pub fn open_confirm(
     window: &mut Window,
     cx: &mut App,
@@ -55,4 +62,175 @@ pub fn open_confirm(
                     .child(ok),
             )
     });
+}
+
+/// Confirm alert that keeps the dialog open, shows a spinner on OK while
+/// `kind` is busy, then closes after `work` finishes.
+pub fn open_busy_confirm(
+    window: &mut Window,
+    cx: &mut App,
+    app: Entity<AppView>,
+    kind: BusyKind,
+    title: impl Into<SharedString>,
+    description: impl Into<SharedString>,
+    ok_text: impl Into<SharedString>,
+    cancel_text: impl Into<SharedString>,
+    ok_icon: AssetIcon,
+    work: impl Fn(&mut AppView, &mut Window, &mut Context<AppView>) + 'static,
+) {
+    let title = title.into();
+    let description = description.into();
+    let cancel_text = cancel_text.into();
+    let ok = BusyConfirmOk::mount(
+        cx,
+        app.clone(),
+        kind,
+        ok_text.into(),
+        ok_icon,
+        Rc::new(work),
+    );
+    let cancel = BusyConfirmCancel::mount(cx, app, kind, cancel_text);
+
+    window.open_alert_dialog(cx, move |alert, _, _| {
+        alert
+            .title(title.clone())
+            .description(description.clone())
+            .footer(
+                DialogFooter::new()
+                    .child(cancel.clone())
+                    .child(ok.clone()),
+            )
+    });
+}
+
+pub(super) struct BusyConfirmOk {
+    app: Entity<AppView>,
+    kind: BusyKind,
+    label: SharedString,
+    icon: AssetIcon,
+    work: Rc<dyn Fn(&mut AppView, &mut Window, &mut Context<AppView>)>,
+}
+
+impl BusyConfirmOk {
+    pub(super) fn mount(
+        cx: &mut App,
+        app: Entity<AppView>,
+        kind: BusyKind,
+        label: SharedString,
+        icon: AssetIcon,
+        work: Rc<dyn Fn(&mut AppView, &mut Window, &mut Context<AppView>)>,
+    ) -> Entity<Self> {
+        cx.new(|cx| {
+            cx.observe(&app, |_, _, cx| cx.notify()).detach();
+            Self {
+                app,
+                kind,
+                label,
+                icon,
+                work,
+            }
+        })
+    }
+}
+
+impl Render for BusyConfirmOk {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let busy = self.app.read(cx).busy;
+        let loading = busy == Some(self.kind);
+        let blocked = busy.is_some();
+        let app = self.app.clone();
+        let kind = self.kind;
+        let work = self.work.clone();
+
+        with_busy(
+            confirm_btn("alert-ok-busy", self.icon, cx)
+                .label(self.label.clone())
+                .disabled(blocked && !loading)
+                .on_click(move |_, window, cx| {
+                    app.update(cx, |this, cx| {
+                        let work = work.clone();
+                        this.run_busy(kind, window, cx, move |this, window, cx| {
+                            work(this, window, cx);
+                            window.close_dialog(cx);
+                        });
+                    });
+                }),
+            busy,
+            kind,
+        )
+    }
+}
+
+pub(super) struct BusyConfirmCancel {
+    app: Entity<AppView>,
+    kind: BusyKind,
+    label: SharedString,
+}
+
+impl BusyConfirmCancel {
+    pub(super) fn mount(
+        cx: &mut App,
+        app: Entity<AppView>,
+        kind: BusyKind,
+        label: SharedString,
+    ) -> Entity<Self> {
+        cx.new(|cx| {
+            cx.observe(&app, |_, _, cx| cx.notify()).detach();
+            Self { app, kind, label }
+        })
+    }
+}
+
+impl Render for BusyConfirmCancel {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let loading = self.app.read(cx).busy == Some(self.kind);
+        btn("alert-cancel-busy")
+            .outline()
+            .label(self.label.clone())
+            .disabled(loading)
+            .on_click(move |_, window, cx| {
+                if !loading {
+                    window.close_dialog(cx);
+                }
+            })
+    }
+}
+
+/// Skip / dismiss for the fetch-on-open dialog (applies "don't ask" prefs, no fetch).
+pub(super) struct FetchPromptSkip {
+    app: Entity<AppView>,
+    label: SharedString,
+}
+
+impl FetchPromptSkip {
+    pub(super) fn mount(
+        cx: &mut App,
+        app: Entity<AppView>,
+        label: SharedString,
+    ) -> Entity<Self> {
+        cx.new(|cx| {
+            cx.observe(&app, |_, _, cx| cx.notify()).detach();
+            Self { app, label }
+        })
+    }
+}
+
+impl Render for FetchPromptSkip {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let loading = self.app.read(cx).busy == Some(BusyKind::Fetch);
+        let app = self.app.clone();
+        btn("fetch-prompt-skip")
+            .outline()
+            .label(self.label.clone())
+            .disabled(loading)
+            .on_click(move |_, window, cx| {
+                if loading {
+                    return;
+                }
+                app.update(cx, |this, cx| {
+                    this.apply_fetch_prompt_prefs(cx);
+                });
+                window.close_dialog(cx);
+            })
+    }
 }

@@ -4,7 +4,7 @@
 //! Action buttons = centered label text + leading icon; rows right-aligned via `action_row`.
 //! See `.cursor/rules/sgg-button-alignment.mdc`.
 
-use gpui_kit::component::button::{Button, ButtonCustomVariant, ButtonVariants as _};
+use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::{ActiveTheme as _, Icon, Sizable as _};
 use gpui_kit::{App, Div, ElementId, Styled as _, div, px};
 
@@ -55,32 +55,22 @@ pub fn action_btn(id: impl Into<ElementId>, icon: impl Into<Icon>) -> Button {
     btn(id).justify_center().icon(icon)
 }
 
-/// Raised stage-family action: solid secondary surface + shadow so it lifts off the strip.
+/// Raised stage-family action: solid secondary fill (not Custom — Custom idle is dimmed).
 pub fn raised_action_btn(
     id: impl Into<ElementId>,
     icon: impl Into<Icon>,
-    cx: &App,
+    _cx: &App,
 ) -> Button {
-    action_btn(id, icon).custom(
-        ButtonCustomVariant::new(cx)
-            .color(cx.theme().secondary)
-            .foreground(cx.theme().secondary_foreground)
-            .hover(cx.theme().secondary_hover)
-            .active(cx.theme().secondary_active)
-            .shadow(true),
-    )
+    action_btn(id, icon).secondary()
 }
 
-/// Confirm / OK action: filled primary + shadow with explicit foreground for icon contrast.
-pub fn confirm_btn(id: impl Into<ElementId>, icon: impl Into<Icon>, cx: &App) -> Button {
-    action_btn(id, icon).custom(
-        ButtonCustomVariant::new(cx)
-            .color(cx.theme().primary)
-            .foreground(cx.theme().primary_foreground)
-            .hover(cx.theme().primary_hover)
-            .active(cx.theme().primary_active)
-            .shadow(true),
-    )
+/// Confirm / OK action: solid primary fill.
+///
+/// Do not use `ButtonCustomVariant` for filled primaries: gpui-kit mixes the
+/// custom idle background with transparent (`mix_oklab(..., 0.2)`), so the
+/// button looks dimmed until hover (which uses the full `hover` color).
+pub fn confirm_btn(id: impl Into<ElementId>, icon: impl Into<Icon>, _cx: &App) -> Button {
+    action_btn(id, icon).primary()
 }
 
 /// Apply loading spinner when `kind` matches the current busy state.

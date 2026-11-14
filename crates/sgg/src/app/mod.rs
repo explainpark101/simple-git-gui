@@ -24,8 +24,10 @@ gpui_kit::actions!(sgg, [HistoryBack, HistoryForward, SavePreview]);
 
 pub fn run(start: PathBuf) {
     let start = absolute_path(start);
+    // Full Lucide catalog (Pencil, Trash, FolderInput, …). Default `Assets`
+    // only embeds the ~100 component icons, so many AssetIcon variants render blank.
     application()
-        .with_assets(assets::Assets)
+        .with_assets(assets::AllAssets)
         .run(move |cx| {
             init(cx);
             Theme::set_scrollbar_mode(ScrollbarMode::Always, cx);

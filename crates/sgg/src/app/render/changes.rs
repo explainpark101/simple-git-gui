@@ -66,7 +66,8 @@ pub fn render(
                         .rounded(cx.theme().radius)
                         .border_1()
                         .border_color(cx.theme().border)
-                        .bg(cx.theme().muted)
+                        // Input surface — distinct from secondary/toolbar action chips.
+                        .bg(cx.theme().input_background())
                         .child(Textarea::new(&view.commit_input).appearance(false)),
                 )
                 .child(
@@ -140,6 +141,7 @@ pub fn render(
                                     };
                                     let indent = px(8.0 + 14.0 * depth as f32);
                                     let key_toggle = key.clone();
+                                    // Avoid Button (hardcoded justify_center) for full-width rows.
                                     rows.push(
                                         div()
                                             .id(SharedString::from(format!("chdir:{key}")))
@@ -147,21 +149,29 @@ pub fn render(
                                             .flex()
                                             .items_center()
                                             .justify_start()
+                                            .gap_1()
                                             .pl(indent)
                                             .pr_1()
+                                            .py_1()
+                                            .cursor_pointer()
                                             .child(
-                                                display_btn(SharedString::from(format!(
-                                                    "chdir-btn:{key}"
-                                                )))
-                                                .ghost()
-                                                .small()
-                                                .icon(folder_icon)
-                                                .label(format!("{name}/"))
-                                                .tooltip(t.tip_expand_dir)
-                                                .on_click(cx.listener(move |this, _, _, cx| {
-                                                    this.toggle_change_dir(key_toggle.clone(), cx);
-                                                })),
+                                                div()
+                                                    .flex_shrink_0()
+                                                    .child(folder_icon),
                                             )
+                                            .child(
+                                                div()
+                                                    .text_sm()
+                                                    .text_left()
+                                                    .min_w_0()
+                                                    .whitespace_nowrap()
+                                                    .overflow_hidden()
+                                                    .text_ellipsis()
+                                                    .child(format!("{name}/")),
+                                            )
+                                            .on_click(cx.listener(move |this, _, _, cx| {
+                                                this.toggle_change_dir(key_toggle.clone(), cx);
+                                            }))
                                             .into_any_element(),
                                     );
                                 }
@@ -215,7 +225,8 @@ fn stage_filter_row(
                 {
                     let entity = entity.clone();
                     move |bounds, _, cx| {
-                        let compact = bounds.size.width < px(520.);
+                        // Switch to overflow dropdown before sort + action chips collide.
+                        let compact = bounds.size.width < px(560.);
                         // Avoid notify storms during live resize: only write when the mode flips.
                         let _ = entity.update(cx, |this, cx| {
                             this.set_stage_bar_compact(compact, cx);
@@ -234,7 +245,7 @@ fn stage_filter_row(
                 .items_center()
                 .justify_start()
                 .gap_3()
-                .min_w_0()
+                .flex_shrink_0()
                 .child(
                     Switch::new("group-by-status")
                         .small()
@@ -268,7 +279,7 @@ fn stage_filter_row(
                 .items_center()
                 .justify_end()
                 .gap_2()
-                .min_w_0()
+                .flex_shrink_0()
                 .when(!compact, |this| {
                     this.child(
                         with_busy(

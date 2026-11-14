@@ -9,12 +9,13 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{InteractiveElement as _, Styled as _, *};
 
 use super::preview_pane;
+use super::status_style::TreeStatusIndex;
 use crate::app::busy::BusyKind;
 use crate::app::files::list_tree;
 use crate::app::view::{AppView, FileOpForm};
 use crate::app::widgets::{
-    action_btn, action_row, confirm_btn, display_btn, icon_btn, icon_danger_btn, pane_body,
-    pane_header, pane_toolbar, with_busy,
+    action_btn, action_row, confirm_btn, icon_btn, icon_danger_btn, pane_body, pane_header,
+    pane_toolbar, with_busy,
 };
 
 pub fn render(view: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
@@ -24,6 +25,12 @@ pub fn render(view: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
     let nodes = list_tree(&root, &view.expanded_dirs);
     let form = view.file_op_form.clone();
     let entity = cx.entity();
+    let status_index = TreeStatusIndex::from_changes(
+        view.snapshot
+            .as_ref()
+            .map(|s| s.changes.as_slice())
+            .unwrap_or(&[]),
+    );
 
     h_resizable("files-panes")
         .child(
@@ -83,7 +90,7 @@ pub fn render(view: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
                                     let is_dir = node.is_dir;
                                     let ignored = node.ignored;
                                     let dim = if ignored { 0.8 } else { 1.0 };
-                                    let fg = cx.theme().foreground.opacity(dim);
+                                    let fg = status_index.color_for(&rel, is_dir, dim, cx);
 
                                     if is_dir {
                                         let folder_icon = if expanded {
@@ -92,6 +99,8 @@ pub fn render(view: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
                                             AssetIcon::FolderClosed
                                         };
                                         let rel_toggle = rel.clone();
+                                        // Button::render hardcodes justify_center — use a div
+                                        // row so icon+label stay left-aligned in a full-width item.
                                         div()
                                             .id(SharedString::from(format!("dir-row:{rel}")))
                                             .w_full()
@@ -104,20 +113,34 @@ pub fn render(view: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
                                             .py_1()
                                             .text_color(fg)
                                             .child(
-                                                display_btn(SharedString::from(format!(
-                                                    "dir:{rel}"
-                                                )))
-                                                .ghost()
-                                                .small()
-                                                .flex_1()
-                                                .min_w_0()
-                                                .justify_start()
-                                                .icon(folder_icon)
-                                                .label(node.name.clone())
-                                                .tooltip(t.tip_expand_dir)
-                                                .on_click(cx.listener(move |this, _, _, cx| {
-                                                    this.toggle_dir(rel_toggle.clone(), cx);
-                                                })),
+                                                div()
+                                                    .id(SharedString::from(format!("dir:{rel}")))
+                                                    .flex()
+                                                    .items_center()
+                                                    .justify_start()
+                                                    .gap_1()
+                                                    .min_w_0()
+                                                    .flex_1()
+                                                    .cursor_pointer()
+                                                    .child(
+                                                        div()
+                                                            .flex_shrink_0()
+                                                            .text_color(fg)
+                                                            .child(folder_icon),
+                                                    )
+                                                    .child(
+                                                        div()
+                                                            .text_sm()
+                                                            .text_left()
+                                                            .text_color(fg)
+                                                            .whitespace_nowrap()
+                                                            .overflow_hidden()
+                                                            .text_ellipsis()
+                                                            .child(node.name.clone()),
+                                                    )
+                                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                                        this.toggle_dir(rel_toggle.clone(), cx);
+                                                    })),
                                             )
                                             .child(file_op_icons(
                                                 &rel,

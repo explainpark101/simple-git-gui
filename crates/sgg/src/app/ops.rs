@@ -1,4 +1,5 @@
 use std::fs;
+use std::rc::Rc;
 use std::time::Duration;
 
 use gpui_kit::component::WindowExt as _;
@@ -7,11 +8,10 @@ use gpui_kit::component::dialog::{DialogFooter, DialogHeader, DialogTitle};
 use gpui_kit::*;
 
 use super::busy::BusyKind;
-use super::dialogs::open_confirm;
+use super::dialogs::{open_busy_confirm, open_confirm, BusyConfirmOk, FetchPromptSkip};
 use super::i18n::UiText;
 use super::prefs::absolute_path;
 use super::view::AppView;
-use super::widgets::btn;
 
 #[derive(Clone, Copy)]
 pub(super) enum RemoteAction {
@@ -37,6 +37,14 @@ impl RemoteAction {
         }
     }
 
+    fn ok_icon(self) -> gpui_kit::assets::IconName {
+        match self {
+            Self::Fetch => gpui_kit::assets::IconName::CloudDownload,
+            Self::Pull => gpui_kit::assets::IconName::ArrowDownToLine,
+            Self::Push => gpui_kit::assets::IconName::CloudUpload,
+        }
+    }
+
     fn description(self, remote: &str, t: UiText) -> String {
         let template = match self {
             Self::Fetch => t.desc_fetch,
@@ -44,6 +52,14 @@ impl RemoteAction {
             Self::Push => t.desc_push,
         };
         template.replace("{remote}", remote)
+    }
+
+    fn busy_kind(self) -> BusyKind {
+        match self {
+            Self::Fetch => BusyKind::Fetch,
+            Self::Pull => BusyKind::Pull,
+            Self::Push => BusyKind::Push,
+        }
     }
 }
 
@@ -98,9 +114,20 @@ impl AppView {
         let dont_ask_label = t.dont_ask_again;
         let view = cx.entity();
 
+        let fetch_ok = BusyConfirmOk::mount(
+            cx,
+            view.clone(),
+            BusyKind::Fetch,
+            fetch_label.into(),
+            gpui_kit::assets::IconName::CloudDownload,
+            Rc::new(|this, _window, cx| {
+                this.apply_fetch_prompt_prefs(cx);
+                this.fetch_now(cx);
+            }),
+        );
+        let fetch_skip = FetchPromptSkip::mount(cx, view.clone(), skip_label.into());
+
         window.open_dialog(cx, move |dialog, _, cx| {
-            let view_cb = view.clone();
-            let view_skip = view.clone();
             let view_check = view.clone();
             let checked = view.read(cx).fetch_dont_ask;
             dialog
@@ -132,48 +159,17 @@ impl AppView {
                 )
                 .footer(
                     DialogFooter::new()
-                        .child(
-                            btn("fetch-skip")
-                                .outline()
-                                .label(skip_label)
-                                .on_click(move |_, window, cx| {
-                                    view_skip.update(cx, |this, cx| {
-                                        this.finish_fetch_prompt(false, window, cx);
-                                    });
-                                    window.close_dialog(cx);
-                                }),
-                        )
-                        .child(
-                            crate::app::widgets::confirm_btn(
-                                "fetch-do",
-                                gpui_kit::assets::IconName::CloudDownload,
-                                cx,
-                            )
-                                .label(fetch_label)
-                                .on_click(move |_, window, cx| {
-                                    view_cb.update(cx, |this, cx| {
-                                        this.finish_fetch_prompt(true, window, cx);
-                                    });
-                                    window.close_dialog(cx);
-                                }),
-                        ),
+                        .child(fetch_skip.clone())
+                        .child(fetch_ok.clone()),
                 )
         });
     }
 
-    pub(super) fn finish_fetch_prompt(
-        &mut self,
-        do_fetch: bool,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    pub(super) fn apply_fetch_prompt_prefs(&mut self, cx: &mut Context<Self>) {
         if self.fetch_dont_ask {
             self.mute_current_fetch_prompt(cx);
         }
         self.fetch_dont_ask = false;
-        if do_fetch {
-            self.run_busy(BusyKind::Fetch, window, cx, |this, _, cx| this.fetch_now(cx));
-        }
         cx.notify();
     }
 
@@ -290,33 +286,21 @@ impl AppView {
         let cancel = t.branch_cancel;
         let description = action.description(&remote, t);
         let view = cx.entity();
-        open_confirm(
+        let kind = action.busy_kind();
+        open_busy_confirm(
             window,
             cx,
+            view,
+            kind,
             title,
             description,
             ok,
             cancel,
-            false,
-            move |_, window, cx| {
-                view.update(cx, |this, cx| match action {
-                    RemoteAction::Fetch => {
-                        this.run_busy(BusyKind::Fetch, window, cx, |this, _, cx| {
-                            this.fetch_now(cx)
-                        })
-                    }
-                    RemoteAction::Pull => {
-                        this.run_busy(BusyKind::Pull, window, cx, |this, _, cx| {
-                            this.pull_now(cx)
-                        })
-                    }
-                    RemoteAction::Push => {
-                        this.run_busy(BusyKind::Push, window, cx, |this, _, cx| {
-                            this.push_now(cx)
-                        })
-                    }
-                });
-                true
+            action.ok_icon(),
+            move |this, _, cx| match action {
+                RemoteAction::Fetch => this.fetch_now(cx),
+                RemoteAction::Pull => this.pull_now(cx),
+                RemoteAction::Push => this.push_now(cx),
             },
         );
     }

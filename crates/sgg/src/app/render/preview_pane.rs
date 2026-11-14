@@ -6,7 +6,7 @@ use gpui_kit::*;
 
 use crate::app::busy::BusyKind;
 use crate::app::view::AppView;
-use crate::app::widgets::{icon_btn, pane_body, pane_header, with_busy};
+use crate::app::widgets::{action_row, confirm_btn, icon_btn, pane_body, pane_header, with_busy};
 
 pub fn render(
     view: &AppView,
@@ -14,6 +14,7 @@ pub fn render(
     cx: &mut Context<AppView>,
 ) -> impl IntoElement {
     let t = view.t();
+    let has_path = view.preview_path.is_some();
 
     div()
         .flex()
@@ -25,30 +26,23 @@ pub fn render(
             pane_header(cx)
                 .flex()
                 .items_center()
-                .justify_between()
+                .justify_end()
                 .gap_2()
                 .px_3()
                 .py_2()
                 .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .justify_start()
-                        .gap_2()
+                    // All preview actions: right-aligned, order Save → External → Close.
+                    action_row()
                         .child(
                             with_busy(
-                                crate::app::widgets::confirm_btn(
-                                    "preview-save",
-                                    AssetIcon::Save,
-                                    cx,
-                                )
-                                .small()
-                                .label(t.save)
-                                .tooltip(t.tip_save_preview)
-                                .disabled(view.preview_path.is_none())
-                                .on_click(cx.listener(|this, _, window, cx| {
-                                    this.save_preview(window, cx)
-                                })),
+                                confirm_btn("preview-save", AssetIcon::Save, cx)
+                                    .small()
+                                    .label(t.save)
+                                    .tooltip(t.tip_save_preview)
+                                    .disabled(!has_path)
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.save_preview(window, cx)
+                                    })),
                                 view.busy,
                                 BusyKind::SavePreview,
                             ),
@@ -63,17 +57,17 @@ pub fn render(
                                         this.open_path_in_editor(&path, cx);
                                     })),
                             )
+                        })
+                        .when(show_close, |this| {
+                            this.child(
+                                icon_btn("preview-close", AssetIcon::Close)
+                                    .accessibility_label(t.close_preview)
+                                    .tooltip(t.tip_close_preview)
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.close_preview(cx)
+                                    })),
+                            )
                         }),
-                )
-                .child(
-                    div().flex().items_center().justify_end().when(show_close, |this| {
-                        this.child(
-                            icon_btn("preview-close", AssetIcon::Close)
-                                .accessibility_label(t.close_preview)
-                                .tooltip(t.tip_close_preview)
-                                .on_click(cx.listener(|this, _, _, cx| this.close_preview(cx))),
-                        )
-                    }),
                 ),
         )
         .child(

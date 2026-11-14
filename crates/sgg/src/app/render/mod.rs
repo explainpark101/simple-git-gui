@@ -79,12 +79,15 @@ impl Render for AppView {
             .child(
                 div().flex_1().min_h_0().w_full().child(match self.page {
                     AppPage::Git => {
+                        // Changes min: wide enough that sort + stage-actions dropdown
+                        // do not overlap when the preview pane is open.
+                        // Sidebar min: remote header (fetch/pull/push + collapse) stays usable.
                         let work = if preview_open {
                             h_resizable("git-work")
                                 .child(
                                     resizable_panel()
-                                        .size(px(320.))
-                                        .size_range(px(220.)..px(560.))
+                                        .size(px(360.))
+                                        .size_range(px(340.)..px(560.))
                                         .child(
                                             changes::render(self, changes, cx)
                                                 .into_any_element(),
@@ -112,7 +115,7 @@ impl Render for AppView {
                                     .size_range(if sidebar_collapsed {
                                         px(40.)..px(56.)
                                     } else {
-                                        px(200.)..px(480.)
+                                        px(280.)..px(480.)
                                     })
                                     .child(
                                         sidebar::render(self, branches, remotes, cx),
