@@ -1,16 +1,17 @@
 use gpui_kit::base::StyledExt as _;
 use gpui_kit::component::button::ButtonVariants as _;
 use gpui_kit::component::input::Input;
+use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
 use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::{ActiveTheme as _, Selectable as _, Sizable as _};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
-use crate::app::editor::EditorPreset;
+use crate::app::editor::{EditorPreset, ZED_DOWNLOAD_URL};
 use crate::app::i18n::Locale;
 use crate::app::prefs::{ThemePreference, settings_path};
 use crate::app::view::AppView;
-use crate::app::widgets::btn;
+use crate::app::widgets::{action_btn, display_btn};
 
 pub fn render(view: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
     let t = view.t();
@@ -51,9 +52,10 @@ pub fn render(view: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
                 .child(
                     div()
                         .flex()
+                        .justify_start()
                         .gap_2()
                         .child(
-                            btn("theme-light")
+                            display_btn("theme-light")
                                 .outline()
                                 .label(t.theme_light)
                                 .tooltip(t.tip_theme_light)
@@ -63,7 +65,7 @@ pub fn render(view: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
                                 })),
                         )
                         .child(
-                            btn("theme-dark")
+                            display_btn("theme-dark")
                                 .outline()
                                 .label(t.theme_dark)
                                 .tooltip(t.tip_theme_dark)
@@ -73,7 +75,7 @@ pub fn render(view: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
                                 })),
                         )
                         .child(
-                            btn("theme-system")
+                            display_btn("theme-system")
                                 .outline()
                                 .label(t.theme_system)
                                 .tooltip(t.tip_theme_system)
@@ -104,13 +106,14 @@ pub fn render(view: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
                 .child(
                     div()
                         .flex()
+                        .justify_start()
                         .gap_2()
                         .children(Locale::ALL.into_iter().map(|item| {
                             let tip = match item {
                                 Locale::English => t.tip_locale_en,
                                 Locale::Korean => t.tip_locale_ko,
                             };
-                            btn(SharedString::from(format!("locale-{}", item.label())))
+                            display_btn(SharedString::from(format!("locale-{}", item.label())))
                                 .outline()
                                 .label(item.label())
                                 .tooltip(tip)
@@ -131,6 +134,94 @@ pub fn render(view: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
                 .rounded_lg()
                 .border_1()
                 .border_color(cx.theme().border)
+                .child(div().font_semibold().text_left().child(t.changes_view))
+                .child(
+                    div()
+                        .text_xs()
+                        .text_left()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(t.changes_view_help),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .justify_start()
+                        .gap_2()
+                        .child(
+                            display_btn("changes-flat")
+                                .outline()
+                                .label(t.changes_flat)
+                                .tooltip(t.tip_changes_flat)
+                                .selected(!view.changes_as_tree)
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.set_changes_as_tree(false, cx)
+                                })),
+                        )
+                        .child(
+                            display_btn("changes-tree")
+                                .outline()
+                                .label(t.changes_tree)
+                                .tooltip(t.tip_changes_tree)
+                                .selected(view.changes_as_tree)
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.set_changes_as_tree(true, cx)
+                                })),
+                        ),
+                ),
+        )
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .gap_3()
+                .p_4()
+                .rounded_lg()
+                .border_1()
+                .border_color(cx.theme().border)
+                .child(div().font_semibold().text_left().child(t.auto_refresh))
+                .child(
+                    div()
+                        .text_xs()
+                        .text_left()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(t.auto_refresh_help),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .justify_start()
+                        .gap_2()
+                        .child(
+                            display_btn("auto-refresh-on")
+                                .outline()
+                                .label(t.auto_refresh_on)
+                                .tooltip(t.tip_auto_refresh_on)
+                                .selected(view.auto_refresh)
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.set_auto_refresh(true, cx)
+                                })),
+                        )
+                        .child(
+                            display_btn("auto-refresh-off")
+                                .outline()
+                                .label(t.auto_refresh_off)
+                                .tooltip(t.tip_auto_refresh_off)
+                                .selected(!view.auto_refresh)
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.set_auto_refresh(false, cx)
+                                })),
+                        ),
+                ),
+        )
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .gap_3()
+                .p_4()
+                .rounded_lg()
+                .border_1()
+                .border_color(cx.theme().border)
                 .child(div().font_semibold().text_left().child(t.external_editor))
                 .child(
                     div()
@@ -138,6 +229,18 @@ pub fn render(view: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
                         .text_left()
                         .text_color(cx.theme().muted_foreground)
                         .child(t.external_editor_help),
+                )
+                .child(
+                    div().flex().justify_start().child(
+                        display_btn("zed-install")
+                            .outline()
+                            .small()
+                            .label(t.zed_install)
+                            .tooltip(t.tip_zed_install)
+                            .on_click(|_, _, cx| {
+                                cx.open_url(ZED_DOWNLOAD_URL);
+                            }),
+                    ),
                 )
                 .child(editor_select(view, t.tip_editor_select, cx))
                 .when(editor.preset == EditorPreset::Custom, |this| {
@@ -155,25 +258,29 @@ pub fn render(view: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
                             )
                             .child(Input::new(&view.custom_editor_input))
                             .child(
-                                btn("save-custom-editor")
-                                    .outline()
-                                    .small()
-                                    .label(t.save_command)
-                                    .tooltip(t.tip_save_command)
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.save_custom_editor_command(cx)
-                                    })),
+                                div().flex().justify_center().child(
+                                    action_btn("save-custom-editor")
+                                        .outline()
+                                        .small()
+                                        .label(t.save_command)
+                                        .tooltip(t.tip_save_command)
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.save_custom_editor_command(cx)
+                                        })),
+                                ),
                             ),
                     )
                 })
                 .child(
-                    btn("open-project-editor")
-                        .primary()
-                        .label(format!("{} {}", t.open_project_in, editor.label()))
-                        .tooltip(t.tip_open_project)
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.open_project_in_editor(cx)
-                        })),
+                    div().flex().justify_center().child(
+                        action_btn("open-project-editor")
+                            .primary()
+                            .label(format!("{} {}", t.open_project_in, editor.label()))
+                            .tooltip(t.tip_open_project)
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.open_project_in_editor(cx)
+                            })),
+                    ),
                 ),
         )
         .child(
@@ -194,13 +301,15 @@ pub fn render(view: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
                         .child(format!("{}: {path}", t.current_path)),
                 )
                 .child(
-                    btn("settings-open-folder")
-                        .primary()
-                        .label(t.open_folder)
-                        .tooltip(t.tip_open_folder)
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            this.open_folder(window, cx)
-                        })),
+                    div().flex().justify_center().child(
+                        action_btn("settings-open-folder")
+                            .primary()
+                            .label(t.open_folder)
+                            .tooltip(t.tip_open_folder)
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.open_folder(window, cx)
+                            })),
+                    ),
                 ),
         )
         .child(
@@ -217,44 +326,29 @@ fn editor_select(
     tip: &'static str,
     cx: &mut Context<AppView>,
 ) -> impl IntoElement {
-    let current = view.preferred_editor.preset.label();
-    let open = view.editor_select_open;
+    let current = view.preferred_editor.preset;
+    let entity = cx.entity();
 
-    div()
-        .flex()
-        .flex_col()
-        .w(px(280.))
-        .gap_1()
-        .child(
-            btn("editor-select-trigger")
-                .outline()
-                .w_full()
-                .label(format!("{current}  ▾"))
-                .tooltip(tip)
-                .on_click(cx.listener(|this, _, _, cx| this.toggle_editor_select(cx))),
-        )
-        .when(open, |this| {
-            this.child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .border_1()
-                    .border_color(cx.theme().border)
-                    .rounded_md()
-                    .bg(cx.theme().background)
-                    .overflow_hidden()
-                    .children(EditorPreset::ALL.into_iter().map(|preset| {
-                        let selected = view.preferred_editor.preset == preset;
-                        btn(SharedString::from(format!("editor-opt-{}", preset.label())))
-                            .ghost()
-                            .w_full()
-                            .label(preset.label())
-                            .selected(selected)
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.set_editor_preset(preset, cx)
-                            }))
-                            .into_any_element()
-                    })),
-            )
-        })
+    div().w(px(280.)).child(
+        display_btn("editor-select-trigger")
+            .outline()
+            .w_full()
+            .label(format!("{}  ▾", current.label()))
+            .tooltip(tip)
+            .dropdown_menu_with_anchor(Anchor::TopLeft, move |menu, _, _| {
+                EditorPreset::ALL.into_iter().fold(menu, |menu, preset| {
+                    let entity = entity.clone();
+                    let checked = current == preset;
+                    menu.item(
+                        PopupMenuItem::new(preset.label())
+                            .checked(checked)
+                            .on_click(move |_, _, cx| {
+                                entity.update(cx, |this, cx| {
+                                    this.set_editor_preset(preset, cx);
+                                });
+                            }),
+                    )
+                })
+            }),
+    )
 }

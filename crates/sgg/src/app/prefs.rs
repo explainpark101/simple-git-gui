@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
-use super::editor::{EditorPreset, ExternalEditor};
+use super::editor::ExternalEditor;
 use super::i18n::Locale;
 use super::sort::ChangeSort;
 
@@ -24,6 +24,19 @@ pub struct AppPrefs {
     pub locale: Locale,
     pub editor: ExternalEditor,
     pub change_sort: ChangeSort,
+    /// Group Changes into status sections (Staged / Unstaged / …).
+    #[serde(default = "default_true")]
+    pub group_by_status: bool,
+    /// Show Changes list as a folder tree (editor-style).
+    #[serde(default)]
+    pub changes_as_tree: bool,
+    /// Periodically reload repository status / changes.
+    #[serde(default)]
+    pub auto_refresh: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 impl Default for AppPrefs {
@@ -31,11 +44,11 @@ impl Default for AppPrefs {
         Self {
             theme: ThemePreference::System,
             locale: Locale::English,
-            editor: ExternalEditor {
-                preset: EditorPreset::Cursor,
-                custom_command: String::new(),
-            },
+            editor: ExternalEditor::default(),
             change_sort: ChangeSort::NameAsc,
+            group_by_status: true,
+            changes_as_tree: false,
+            auto_refresh: false,
         }
     }
 }
@@ -58,8 +71,9 @@ impl AppPrefs {
         }
         let raw = fs::read_to_string(&path)
             .with_context(|| format!("read {}", path.display()))?;
-        let prefs = serde_json::from_str(&raw)
+        let mut prefs: Self = serde_json::from_str(&raw)
             .with_context(|| format!("parse {}", path.display()))?;
+        prefs.change_sort = prefs.change_sort.normalized();
         Ok(prefs)
     }
 

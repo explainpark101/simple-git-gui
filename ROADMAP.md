@@ -68,3 +68,7 @@ This document tracks planned work beyond the current MVP.
 - Multi-repo recent list
 - Theme (light/dark) following OS when possible
 - Localization (en / ko) for UI strings
+
+### Future
+
+- Embed / reuse the editor stack used by [Zed](https://zed.dev) (Zed’s editor component) for in-app file editing and preview, replacing or extending the current basic text preview

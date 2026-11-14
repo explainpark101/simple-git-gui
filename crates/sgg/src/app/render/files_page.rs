@@ -2,23 +2,19 @@ use gpui_kit::base::StyledExt as _;
 use gpui_kit::component::button::ButtonVariants as _;
 use gpui_kit::component::input::Textarea;
 use gpui_kit::component::scroll::ScrollableElement as _;
-use gpui_kit::component::{ActiveTheme as _, Disableable as _, Sizable as _};
+use gpui_kit::component::{ActiveTheme as _, Disableable as _, IconName, Sizable as _};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{InteractiveElement as _, Styled as _, *};
 
 use crate::app::files::list_tree;
 use crate::app::view::AppView;
-use crate::app::widgets::btn;
+use crate::app::widgets::{action_btn, display_btn, icon_btn};
 
 pub fn render(view: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
     let t = view.t();
     let root = view.repo_root();
     let root_label = view.repo_root_display();
     let nodes = list_tree(&root, &view.expanded_dirs);
-    let preview_title = match &view.preview_path {
-        Some(path) => path.clone(),
-        None => t.no_file_selected.into(),
-    };
 
     div()
         .flex()
@@ -61,6 +57,7 @@ pub fn render(view: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
                         .py_1()
                         .flex()
                         .flex_col()
+                        .items_start()
                         .overflow_y_scrollbar()
                         .children(nodes.into_iter().map(|node| {
                             let rel = node.rel_path.clone();
@@ -74,16 +71,25 @@ pub fn render(view: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
                                 .is_some_and(|p| p == &node.rel_path);
 
                             if node.is_dir {
-                                let mark = if expanded { "▾" } else { "▸" };
+                                let folder_icon = if expanded {
+                                    IconName::FolderOpen
+                                } else {
+                                    IconName::FolderClosed
+                                };
                                 div()
                                     .id(SharedString::from(format!("dir-row:{rel}")))
+                                    .w_full()
+                                    .flex()
+                                    .items_center()
+                                    .justify_start()
                                     .pl(indent)
                                     .pr_1()
                                     .child(
-                                        btn(SharedString::from(format!("dir:{rel}")))
+                                        display_btn(SharedString::from(format!("dir:{rel}")))
                                             .ghost()
                                             .small()
-                                            .label(format!("{mark} {}", node.name))
+                                            .icon(folder_icon)
+                                            .label(node.name.clone())
                                             .tooltip(t.tip_expand_dir)
                                             .on_click(cx.listener(move |this, _, _, cx| {
                                                 this.toggle_dir(rel.clone(), cx);
@@ -91,8 +97,10 @@ pub fn render(view: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
                                     )
                                     .into_any_element()
                             } else {
+                                let rel_preview = rel.clone();
                                 div()
                                     .id(SharedString::from(format!("file:{rel}")))
+                                    .w_full()
                                     .flex()
                                     .items_center()
                                     .justify_start()
@@ -106,28 +114,43 @@ pub fn render(view: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
                                     })
                                     .hover(|this| this.bg(cx.theme().muted.opacity(0.4)))
                                     .on_click(cx.listener(move |this, _, window, cx| {
-                                        this.preview_file(rel.clone(), window, cx);
+                                        this.preview_file(rel_preview.clone(), window, cx);
                                     }))
                                     .child(
                                         div()
-                                            .flex_1()
+                                            .flex()
+                                            .items_center()
+                                            .justify_start()
+                                            .gap_1()
                                             .min_w_0()
-                                            .text_sm()
-                                            .text_left()
-                                            .whitespace_nowrap()
-                                            .overflow_hidden()
-                                            .text_ellipsis()
-                                            .child(node.name.clone()),
+                                            .flex_1()
+                                            .child(
+                                                icon_btn(
+                                                    SharedString::from(format!("file-ico:{rel}")),
+                                                    IconName::File,
+                                                )
+                                                .tab_index(-1),
+                                            )
+                                            .child(
+                                                div()
+                                                    .text_sm()
+                                                    .text_left()
+                                                    .whitespace_nowrap()
+                                                    .overflow_hidden()
+                                                    .text_ellipsis()
+                                                    .child(node.name.clone()),
+                                            ),
                                     )
                                     .child(
-                                        btn(SharedString::from(format!("tree-open:{rel_open}")))
-                                            .ghost()
-                                            .small()
-                                            .label(t.open)
-                                            .tooltip(t.tip_open)
-                                            .on_click(cx.listener(move |this, _, _, cx| {
-                                                this.open_path_in_editor(&rel_open, cx);
-                                            })),
+                                        icon_btn(
+                                            SharedString::from(format!("file-open:{rel_open}")),
+                                            IconName::ExternalLink,
+                                        )
+                                        .accessibility_label(t.open)
+                                        .tooltip(t.tip_open)
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            this.open_path_in_editor(&rel_open, cx);
+                                        })),
                                     )
                                     .into_any_element()
                             }
@@ -145,25 +168,14 @@ pub fn render(view: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
                     div()
                         .flex()
                         .items_center()
+                        .justify_center()
                         .gap_2()
                         .px_3()
                         .py_2()
                         .border_b_1()
                         .border_color(cx.theme().border)
                         .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .text_sm()
-                                .font_semibold()
-                                .text_left()
-                                .whitespace_nowrap()
-                                .overflow_hidden()
-                                .text_ellipsis()
-                                .child(preview_title),
-                        )
-                        .child(
-                            btn("preview-save")
+                            action_btn("preview-save")
                                 .primary()
                                 .small()
                                 .label(t.save)
@@ -173,10 +185,9 @@ pub fn render(view: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
                         )
                         .when_some(view.preview_path.clone(), |this, path| {
                             this.child(
-                                btn("preview-open-ext")
+                                icon_btn("preview-open-ext", IconName::ExternalLink)
                                     .outline()
-                                    .small()
-                                    .label(t.open_external)
+                                    .accessibility_label(t.open_external)
                                     .tooltip(t.tip_open_external)
                                     .on_click(cx.listener(move |this, _, _, cx| {
                                         this.open_path_in_editor(&path, cx);

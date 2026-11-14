@@ -75,6 +75,26 @@ impl AppView {
         }
     }
 
+    pub(super) fn stage_one(&mut self, path: String, cx: &mut Context<Self>) {
+        match self.with_repo(|repo| repo.stage_paths(&[path.as_str()])) {
+            Ok(()) => {
+                self.error = None;
+                self.reload(cx);
+            }
+            Err(err) => self.set_error(err, cx),
+        }
+    }
+
+    pub(super) fn unstage_one(&mut self, path: String, cx: &mut Context<Self>) {
+        match self.with_repo(|repo| repo.unstage_paths(&[path.as_str()])) {
+            Ok(()) => {
+                self.error = None;
+                self.reload(cx);
+            }
+            Err(err) => self.set_error(err, cx),
+        }
+    }
+
     pub(super) fn stage_all(&mut self, cx: &mut Context<Self>) {
         match self.with_repo(|repo| repo.stage_all()) {
             Ok(()) => {
@@ -336,7 +356,7 @@ impl AppView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.page = AppPage::Files;
+        self.set_page(AppPage::Files, cx);
         self.ensure_parents_expanded(&rel_path);
         self.load_preview_into(&rel_path, window, cx);
         self.set_ok_status(format!("Preview {rel_path}"));

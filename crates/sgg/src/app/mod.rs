@@ -18,6 +18,8 @@ pub use view::AppView;
 
 use prefs::absolute_path;
 
+gpui_kit::actions!(sgg, [HistoryBack, HistoryForward, SavePreview]);
+
 pub fn run(start: PathBuf) {
     let start = absolute_path(start);
     application()
@@ -25,6 +27,15 @@ pub fn run(start: PathBuf) {
         .run(move |cx| {
             init(cx);
             Theme::set_scrollbar_mode(ScrollbarMode::Always, cx);
+
+            cx.bind_keys([
+                KeyBinding::new("alt-left", HistoryBack, Some("AppView")),
+                KeyBinding::new("alt-right", HistoryForward, Some("AppView")),
+                // Browser-like shortcuts on some layouts
+                KeyBinding::new("ctrl-[", HistoryBack, Some("AppView")),
+                KeyBinding::new("ctrl-]", HistoryForward, Some("AppView")),
+                KeyBinding::new("ctrl-s", SavePreview, Some("AppView")),
+            ]);
 
             let bounds = Bounds::centered(None, size(px(1100.), px(720.)), cx);
             let options = WindowOptions {

@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::time::Duration;
 
 use gpui_kit::component::input::{InputState, TextareaState};
 use gpui_kit::*;
@@ -10,6 +11,9 @@ use super::i18n::{Locale, UiText};
 use super::page::AppPage;
 use super::prefs::{AppPrefs, ThemePreference, absolute_path, display_path};
 use super::sort::ChangeSort;
+
+/// Default polling interval when auto-refresh is enabled.
+pub(super) const AUTO_REFRESH_SECS: u64 = 3;
 
 pub struct AppView {
     pub(super) start_path: PathBuf,
@@ -25,11 +29,24 @@ pub struct AppView {
     pub(super) error: Option<SharedString>,
     pub(super) page: AppPage,
     pub(super) change_sort: ChangeSort,
+    pub(super) group_by_status: bool,
     pub(super) preferred_editor: ExternalEditor,
     pub(super) theme_pref: ThemePreference,
     pub(super) locale: Locale,
-    pub(super) editor_select_open: bool,
+    pub(super) changes_as_tree: bool,
+    pub(super) auto_refresh: bool,
     pub(super) expanded_dirs: Vec<String>,
+    pub(super) expanded_change_dirs: Vec<String>,
+    pub(super) page_history: Vec<AppPage>,
+    pub(super) history_index: usize,
+    pub(super) focus_handle: FocusHandle,
+    refresh_task: Option<Task<()>>,
+}
+
+impl Focusable for AppView {
+    fn focus_handle(&self, _: &App) -> FocusHandle {
+        self.focus_handle.clone()
+    }
 }
 
 impl AppView {
@@ -37,6 +54,7 @@ impl AppView {
         let prefs = AppPrefs::load();
         let start_path = absolute_path(start_path);
         let t = prefs.locale.text();
+        let focus_handle = cx.focus_handle();
 
         let commit_input = cx.new(|cx| {
             TextareaState::new(window, cx)
@@ -71,20 +89,37 @@ impl AppView {
             preview_path: None,
             error: None,
             page: AppPage::Git,
-            change_sort: prefs.change_sort,
+            change_sort: prefs.change_sort.normalized(),
+            group_by_status: prefs.group_by_status,
             preferred_editor: prefs.editor,
             theme_pref: prefs.theme,
             locale: prefs.locale,
-            editor_select_open: false,
+            changes_as_tree: prefs.changes_as_tree,
+            auto_refresh: prefs.auto_refresh,
             expanded_dirs: Vec::new(),
+            expanded_change_dirs: Vec::new(),
+            page_history: vec![AppPage::Git],
+            history_index: 0,
+            focus_handle: focus_handle.clone(),
+            refresh_task: None,
         };
         view.apply_theme(cx);
         view.reload(cx);
+        view.sync_auto_refresh(cx);
+        window.focus(&focus_handle, cx);
         view
     }
 
     pub(super) fn t(&self) -> UiText {
         self.locale.text()
+    }
+
+    pub(super) fn can_go_back(&self) -> bool {
+        self.history_index > 0
+    }
+
+    pub(super) fn can_go_forward(&self) -> bool {
+        self.history_index + 1 < self.page_history.len()
     }
 
     pub(super) fn repo_root(&self) -> PathBuf {
@@ -108,6 +143,14 @@ impl AppView {
     }
 
     pub(super) fn reload(&mut self, cx: &mut Context<Self>) {
+        self.reload_inner(true, cx);
+    }
+
+    pub(super) fn reload_auto(&mut self, cx: &mut Context<Self>) {
+        self.reload_inner(false, cx);
+    }
+
+    fn reload_inner(&mut self, clear_selection: bool, cx: &mut Context<Self>) {
         match RepoState::open_nearest(&self.start_path) {
             Ok(repo) => match repo.snapshot() {
                 Ok(snap) => {
@@ -126,9 +169,15 @@ impl AppView {
                     let mut snap = snap;
                     snap.root = root;
                     self.sync_selected_remote(&snap);
+                    if clear_selection {
+                        self.selected.clear();
+                    } else {
+                        let paths: std::collections::HashSet<_> =
+                            snap.changes.iter().map(|c| c.path.as_str()).collect();
+                        self.selected.retain(|p| paths.contains(p.as_str()));
+                    }
                     self.snapshot = Some(snap);
                     self.error = None;
-                    self.selected.clear();
                 }
                 Err(err) => {
                     self.error = Some(err.to_string().into());
@@ -186,26 +235,50 @@ impl AppView {
     }
 
     pub(super) fn set_page(&mut self, page: AppPage, cx: &mut Context<Self>) {
+        if page == self.page {
+            return;
+        }
+        self.page_history.truncate(self.history_index + 1);
+        self.page_history.push(page);
+        self.history_index = self.page_history.len() - 1;
         self.page = page;
         cx.notify();
     }
 
+    pub(super) fn history_back(&mut self, cx: &mut Context<Self>) {
+        if !self.can_go_back() {
+            return;
+        }
+        self.history_index -= 1;
+        self.page = self.page_history[self.history_index];
+        cx.notify();
+    }
+
+    pub(super) fn history_forward(&mut self, cx: &mut Context<Self>) {
+        if !self.can_go_forward() {
+            return;
+        }
+        self.history_index += 1;
+        self.page = self.page_history[self.history_index];
+        cx.notify();
+    }
+
     pub(super) fn set_change_sort(&mut self, sort: ChangeSort, cx: &mut Context<Self>) {
-        self.change_sort = sort;
+        self.change_sort = sort.normalized();
+        self.persist_prefs(cx);
+        cx.notify();
+    }
+
+    pub(super) fn set_group_by_status(&mut self, enabled: bool, cx: &mut Context<Self>) {
+        self.group_by_status = enabled;
         self.persist_prefs(cx);
         cx.notify();
     }
 
     pub(super) fn set_editor_preset(&mut self, preset: EditorPreset, cx: &mut Context<Self>) {
         self.preferred_editor.preset = preset;
-        self.editor_select_open = false;
         self.sync_custom_command_from_input(cx);
         self.persist_prefs(cx);
-        cx.notify();
-    }
-
-    pub(super) fn toggle_editor_select(&mut self, cx: &mut Context<Self>) {
-        self.editor_select_open = !self.editor_select_open;
         cx.notify();
     }
 
@@ -256,13 +329,52 @@ impl AppView {
             self.custom_editor_input.read(cx).value().to_string();
     }
 
+    pub(super) fn set_changes_as_tree(&mut self, enabled: bool, cx: &mut Context<Self>) {
+        self.changes_as_tree = enabled;
+        self.persist_prefs(cx);
+        cx.notify();
+    }
+
+    pub(super) fn set_auto_refresh(&mut self, enabled: bool, cx: &mut Context<Self>) {
+        self.auto_refresh = enabled;
+        self.persist_prefs(cx);
+        self.sync_auto_refresh(cx);
+        cx.notify();
+    }
+
+    pub(super) fn sync_auto_refresh(&mut self, cx: &mut Context<Self>) {
+        // Dropping the previous task cancels the loop.
+        self.refresh_task = None;
+        if !self.auto_refresh {
+            return;
+        }
+
+        let interval = Duration::from_secs(AUTO_REFRESH_SECS);
+        self.refresh_task = Some(cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor().timer(interval).await;
+                if this
+                    .update(cx, |this, cx| {
+                        this.reload_auto(cx);
+                    })
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        }));
+    }
+
     pub(super) fn persist_prefs(&mut self, cx: &mut Context<Self>) {
         self.sync_custom_command_from_input(cx);
         let prefs = AppPrefs {
             theme: self.theme_pref,
             locale: self.locale,
             editor: self.preferred_editor.clone(),
-            change_sort: self.change_sort,
+            change_sort: self.change_sort.normalized(),
+            group_by_status: self.group_by_status,
+            changes_as_tree: self.changes_as_tree,
+            auto_refresh: self.auto_refresh,
         };
         if let Err(err) = prefs.save() {
             self.error = Some(format!("Failed to save settings: {err:#}").into());
@@ -274,6 +386,15 @@ impl AppView {
             self.expanded_dirs.remove(idx);
         } else {
             self.expanded_dirs.push(rel_path);
+        }
+        cx.notify();
+    }
+
+    pub(super) fn toggle_change_dir(&mut self, key: String, cx: &mut Context<Self>) {
+        if let Some(idx) = self.expanded_change_dirs.iter().position(|p| p == &key) {
+            self.expanded_change_dirs.remove(idx);
+        } else {
+            self.expanded_change_dirs.push(key);
         }
         cx.notify();
     }

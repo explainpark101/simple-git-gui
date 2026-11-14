@@ -1,0 +1,20 @@
+---
+description: sgg UI button alignment — display left, action center
+globs: crates/sgg/src/**/*.rs
+alwaysApply: false
+---
+
+# Button alignment
+
+- **Display buttons** (lists, navigation, selection, remotes, branches, file/folder rows, theme/locale toggles): left-aligned. Prefer `display_btn` / `icon_btn` (add `.ghost()` or `.outline()` as needed). Parent flex uses `items_start` / `justify_start`. Do not center labels in list rows.
+- **Action buttons** (commit, create branch, save, push/pull/fetch, stage/unstage, open folder, settings apply): horizontally centered. Prefer `action_btn` inside a `div().flex().justify_center()` (or row with `justify_center`) wrapper.
+
+```rust
+// Display (list / selection)
+div().flex().flex_col().items_start()
+    .child(display_btn("branch:main").ghost().label("* main"));
+
+// Action (command / submit)
+div().flex().justify_center()
+    .child(action_btn("commit").primary().label("Commit"));
+```

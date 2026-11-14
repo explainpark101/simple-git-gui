@@ -11,6 +11,7 @@ use gpui_kit::*;
 
 use super::page::AppPage;
 use super::view::AppView;
+use crate::app::{HistoryBack, HistoryForward, SavePreview};
 
 impl Render for AppView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -29,13 +30,35 @@ impl Render for AppView {
             .as_ref()
             .map(|s| s.remotes.clone())
             .unwrap_or_default();
+        let focus = self.focus_handle(cx);
 
         div()
+            .id("sgg-root")
             .flex()
             .flex_col()
             .size_full()
+            .track_focus(&focus)
+            .key_context("AppView")
+            .tab_index(0)
             .bg(cx.theme().background)
             .text_color(cx.theme().foreground)
+            .on_action(cx.listener(|this, _: &HistoryBack, _, cx| {
+                this.history_back(cx);
+            }))
+            .on_action(cx.listener(|this, _: &HistoryForward, _, cx| {
+                this.history_forward(cx);
+            }))
+            .on_action(cx.listener(|this, _: &SavePreview, _, cx| {
+                this.save_preview(cx);
+            }))
+            .on_mouse_down(
+                MouseButton::Navigate(NavigationDirection::Back),
+                cx.listener(|this, _, _, cx| this.history_back(cx)),
+            )
+            .on_mouse_down(
+                MouseButton::Navigate(NavigationDirection::Forward),
+                cx.listener(|this, _, _, cx| this.history_forward(cx)),
+            )
             .child(toolbar::render(self, cx))
             .when_some(self.error.clone(), |this, err| {
                 this.child(

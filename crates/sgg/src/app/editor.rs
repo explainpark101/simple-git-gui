@@ -4,31 +4,33 @@ use std::process::Command;
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 
+pub const ZED_DOWNLOAD_URL: &str = "https://zed.dev/download";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum EditorPreset {
     #[default]
+    Zed,
     Cursor,
     VsCode,
-    Zed,
     Notepad,
     Custom,
 }
 
 impl EditorPreset {
     pub const ALL: [Self; 5] = [
+        Self::Zed,
         Self::Cursor,
         Self::VsCode,
-        Self::Zed,
         Self::Notepad,
         Self::Custom,
     ];
 
     pub fn label(self) -> &'static str {
         match self {
+            Self::Zed => "Zed",
             Self::Cursor => "Cursor",
             Self::VsCode => "VS Code",
-            Self::Zed => "Zed",
             Self::Notepad => "Notepad",
             Self::Custom => "Custom",
         }
@@ -36,9 +38,9 @@ impl EditorPreset {
 
     fn candidates(self) -> &'static [&'static str] {
         match self {
+            Self::Zed => &["zed", "zed.exe"],
             Self::Cursor => &["cursor", "cursor.cmd", "Cursor.exe"],
             Self::VsCode => &["code", "code.cmd", "Code.exe"],
-            Self::Zed => &["zed", "zed.exe"],
             Self::Notepad => &["notepad", "notepad.exe"],
             Self::Custom => &[],
         }
@@ -55,10 +57,18 @@ pub struct ExternalEditor {
 impl Default for ExternalEditor {
     fn default() -> Self {
         Self {
-            preset: EditorPreset::Cursor,
+            preset: EditorPreset::Zed,
             custom_command: String::new(),
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OpenKind {
+    /// Repository / folder open (project).
+    Project,
+    /// Single file open from Changes / Files.
+    File,
 }
 
 impl ExternalEditor {
@@ -75,7 +85,15 @@ impl ExternalEditor {
         }
     }
 
-    pub fn open_path(&self, path: &Path) -> Result<()> {
+    pub fn open_project(&self, root: &Path) -> Result<()> {
+        self.launch(root, OpenKind::Project)
+    }
+
+    pub fn open_file(&self, root: &Path, rel: &str) -> Result<()> {
+        self.launch(&root.join(rel), OpenKind::File)
+    }
+
+    fn launch(&self, path: &Path, kind: OpenKind) -> Result<()> {
         let path = path
             .canonicalize()
             .with_context(|| format!("canonicalize {}", path.display()))
@@ -91,7 +109,13 @@ impl ExternalEditor {
 
         let mut last_err = None;
         for bin in self.preset.candidates() {
-            match Command::new(bin).arg(&path).spawn() {
+            let mut command = Command::new(bin);
+            // Open files in an existing Zed window (`--existing`), not classic/new-window behavior.
+            if self.preset == EditorPreset::Zed && kind == OpenKind::File {
+                command.arg("--existing");
+            }
+            command.arg(&path);
+            match command.spawn() {
                 Ok(_) => return Ok(()),
                 Err(err) => last_err = Some(err),
             }
@@ -119,14 +143,6 @@ impl ExternalEditor {
             .spawn()
             .with_context(|| format!("spawn custom editor `{cmd}`"))?;
         Ok(())
-    }
-
-    pub fn open_project(&self, root: &Path) -> Result<()> {
-        self.open_path(root)
-    }
-
-    pub fn open_file(&self, root: &Path, rel: &str) -> Result<()> {
-        self.open_path(&root.join(rel))
     }
 }
 
