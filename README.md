@@ -57,9 +57,23 @@ After installing on macOS, you may need to enable the service once under **Syste
 
 ```
 crates/
-  sgg-core/   find .git, status/stage/commit/branch via git2; push/pull/fetch/switch via git CLI
-  sgg/        GPUI app + clap CLI + shell integration
+  sgg-core/          git domain (no UI)
+    find.rs          nearest .git walk
+    state.rs         RepoState open / snapshot
+    status.rs        changes list
+    index_ops.rs     stage / unstage / commit
+    branch.rs        list / create / switch
+    remote.rs        remotes / push / pull / fetch
+  sgg/               desktop app
+    assets/icon/     app icon source PNG (embedded into Windows exe via build.rs)
+    build.rs         generate multi-size .ico + winresource embed
+    cli.rs           clap entry commands
+    app/view.rs      window state
+    app/ops.rs       UI → git actions
+    app/render/      toolbar / changes / sidebar panels
+    shell/           OS file-manager integration
 ```
+
 
 Network git operations use the `git` CLI so credential helpers and SSH agents work like VS Code / Cursor.
 

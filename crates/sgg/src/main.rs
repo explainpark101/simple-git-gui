@@ -1,28 +1,12 @@
 mod app;
+mod cli;
 mod shell;
 
 use std::path::PathBuf;
 
-use clap::{Parser, Subcommand};
+use clap::Parser;
 
-#[derive(Parser, Debug)]
-#[command(name = "sgg", version, about = "simple-git-gui — lightweight Git GUI")]
-struct Cli {
-    /// Folder or file used to locate the nearest git repository
-    #[arg(value_name = "PATH")]
-    path: Option<PathBuf>,
-
-    #[command(subcommand)]
-    command: Option<Commands>,
-}
-
-#[derive(Subcommand, Debug)]
-enum Commands {
-    /// Register "Open sgg here" in the OS file manager
-    InstallShell,
-    /// Remove file-manager integration
-    UninstallShell,
-}
+use cli::{Cli, Commands};
 
 fn main() {
     let cli = Cli::parse();
@@ -42,9 +26,9 @@ fn main() {
             println!("Shell integration removed.");
         }
         None => {
-            let start = cli
-                .path
-                .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+            let start = cli.path.unwrap_or_else(|| {
+                std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+            });
             app::run(start);
         }
     }

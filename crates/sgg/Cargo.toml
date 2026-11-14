@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 description = "simple-git-gui — lightweight Git GUI"
 default-run = "sgg"
+build = "build.rs"
 
 [[bin]]
 name = "sgg"
@@ -12,9 +13,17 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow.workspace = true
+dirs.workspace = true
+serde.workspace = true
+serde_json.workspace = true
 sgg-core.workspace = true
 gpui-kit = "0.9"
 clap = { version = "4", features = ["derive"] }
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.55"
+
+[build-dependencies]
+image = "0.25"
+ico = "0.4"
+winresource = "0.1"
