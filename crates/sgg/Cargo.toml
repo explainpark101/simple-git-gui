@@ -45,7 +45,7 @@ path = "sgg"
 main = true
 
 [package.metadata.packager.nsis]
-install-mode = "currentUser"
+installer-mode = "currentUser"
 template = "../../packaging/windows/installer.nsi"
 languages = ["English"]
 
