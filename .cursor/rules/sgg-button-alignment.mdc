@@ -6,7 +6,7 @@ alwaysApply: false
 
 # Button alignment
 
-- **Display buttons** (lists, navigation, selection, remotes, branches, file/folder rows, theme/locale toggles): left-aligned. Prefer `display_btn` / `icon_btn` (add `.ghost()` or `.outline()` as needed). Parent flex uses `items_start` / `justify_start`. Do not center labels in list rows.
+- **Display buttons** (lists, navigation, selection, remotes, branches, file/folder rows, theme/locale toggles): left-aligned. Prefer `list_row_btn` for remotes/branches/file rows (gpui-kit `Button` centers `.label()` internally). Use `display_btn` / `icon_btn` for compact chips. Parent flex uses `items_start` / `justify_start`. Do not center labels in list rows.
 - **Action buttons** (commit, stage/unstage, save, push/pull/fetch, open folder, settings apply, branch confirm):
   - **Container**: right-aligned (`justify_end`). Prefer `action_row()`.
   - **Label inside the button**: centered (`action_btn` / `justify_center`).

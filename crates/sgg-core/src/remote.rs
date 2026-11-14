@@ -36,4 +36,46 @@ impl RepoState {
         let out = run_git(&self.root, &["fetch", remote])?;
         Ok(out)
     }
+
+    pub fn add_remote(&self, name: &str, url: &str) -> Result<(), RepoError> {
+        let name = name.trim();
+        let url = url.trim();
+        if name.is_empty() || url.is_empty() {
+            return Err(RepoError::Message("Remote name and URL are required".into()));
+        }
+        run_git(&self.root, &["remote", "add", name, url])?;
+        Ok(())
+    }
+
+    pub fn remove_remote(&self, name: &str) -> Result<(), RepoError> {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err(RepoError::Message("Remote name is required".into()));
+        }
+        run_git(&self.root, &["remote", "remove", name])?;
+        Ok(())
+    }
+
+    pub fn rename_remote(&self, old: &str, new: &str) -> Result<(), RepoError> {
+        let old = old.trim();
+        let new = new.trim();
+        if old.is_empty() || new.is_empty() {
+            return Err(RepoError::Message("Remote names are required".into()));
+        }
+        if old == new {
+            return Ok(());
+        }
+        run_git(&self.root, &["remote", "rename", old, new])?;
+        Ok(())
+    }
+
+    pub fn set_remote_url(&self, name: &str, url: &str) -> Result<(), RepoError> {
+        let name = name.trim();
+        let url = url.trim();
+        if name.is_empty() || url.is_empty() {
+            return Err(RepoError::Message("Remote name and URL are required".into()));
+        }
+        run_git(&self.root, &["remote", "set-url", name, url])?;
+        Ok(())
+    }
 }

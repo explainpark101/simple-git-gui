@@ -11,7 +11,41 @@ use super::busy::BusyKind;
 use super::dialogs::{open_busy_confirm, open_confirm, BusyConfirmOk, FetchPromptSkip};
 use super::i18n::UiText;
 use super::prefs::absolute_path;
-use super::view::AppView;
+use super::remote_url::remote_browse_url;
+use super::view::{AppView, RemoteForm};
+
+/// Soft cap so the editor rope / display_map stay responsive. Larger files
+/// should be opened externally (the Editor already paints only the visible
+/// line range; soft_wrap is off on the preview state).
+const PREVIEW_MAX_BYTES: usize = 1_048_576;
+const PREVIEW_MAX_LINES: usize = 40_000;
+
+fn read_preview_text(rel_path: &str, full: &std::path::Path) -> Result<String, String> {
+    let meta = fs::metadata(full).map_err(|err| format!("Failed to read {rel_path}: {err}"))?;
+    if meta.len() as usize > PREVIEW_MAX_BYTES {
+        return Err(format!(
+            "{rel_path} is too large to preview ({} KiB). Open externally.",
+            meta.len() / 1024
+        ));
+    }
+    let bytes = fs::read(full).map_err(|err| format!("Failed to read {rel_path}: {err}"))?;
+    if bytes.len() > PREVIEW_MAX_BYTES {
+        return Err(format!(
+            "{rel_path} is too large to preview ({} KiB). Open externally.",
+            bytes.len() / 1024
+        ));
+    }
+    let text = String::from_utf8(bytes).map_err(|_| {
+        format!("{rel_path} is binary and cannot be previewed")
+    })?;
+    let line_count = text.bytes().filter(|&b| b == b'\n').count().saturating_add(1);
+    if line_count > PREVIEW_MAX_LINES {
+        return Err(format!(
+            "{rel_path} has too many lines ({line_count}). Open externally."
+        ));
+    }
+    Ok(text)
+}
 
 #[derive(Clone, Copy)]
 pub(super) enum RemoteAction {
@@ -76,6 +110,7 @@ impl AppView {
             return;
         }
         self.busy = Some(kind);
+        self.begin_progress(kind);
         cx.notify();
         cx.spawn_in(window, async move |this, cx| {
             cx.background_executor()
@@ -85,6 +120,15 @@ impl AppView {
                 this.update(cx, |this, cx| {
                     work(this, window, cx);
                     this.busy = None;
+                    // If work never called set_ok_status / set_error, close the Running line.
+                    if this
+                        .progress_log
+                        .last()
+                        .is_some_and(|e| e.state == super::progress::ProgressState::Running)
+                    {
+                        let done = this.status_line.clone();
+                        this.finish_progress(this.error.is_none(), done);
+                    }
                     cx.notify();
                 })
             });
@@ -174,7 +218,7 @@ impl AppView {
     }
 
     pub(super) fn stage_selected(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let paths = self.selected.clone();
+        let paths: Vec<String> = self.selected.iter().cloned().collect();
         if paths.is_empty() {
             self.set_error(self.t().select_files_first.into(), cx);
             return;
@@ -192,7 +236,7 @@ impl AppView {
     }
 
     pub(super) fn unstage_selected(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let paths = self.selected.clone();
+        let paths: Vec<String> = self.selected.iter().cloned().collect();
         if paths.is_empty() {
             self.set_error(self.t().select_files_first.into(), cx);
             return;
@@ -243,6 +287,38 @@ impl AppView {
                 Err(err) => this.set_error(err, cx),
             }
         });
+    }
+
+    /// Stage every untracked path currently listed in the snapshot.
+    pub(super) fn stage_all_untracked(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let paths = self.paths_with_kind(sgg_core::ChangeKind::Untracked);
+        if paths.is_empty() {
+            self.set_error(self.t().select_files_first.into(), cx);
+            return;
+        }
+        self.run_busy(BusyKind::StageAll, window, cx, move |this, _, cx| {
+            let refs: Vec<&str> = paths.iter().map(|s| s.as_str()).collect();
+            match this.with_repo(|repo| repo.stage_paths(&refs)) {
+                Ok(()) => {
+                    this.error = None;
+                    this.reload(cx);
+                }
+                Err(err) => this.set_error(err, cx),
+            }
+        });
+    }
+
+    fn paths_with_kind(&self, kind: sgg_core::ChangeKind) -> Vec<String> {
+        self.snapshot
+            .as_ref()
+            .map(|s| {
+                s.changes
+                    .iter()
+                    .filter(|c| c.kind == kind)
+                    .map(|c| c.path.clone())
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     pub(super) fn unstage_all(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -456,6 +532,164 @@ impl AppView {
         }
     }
 
+    pub(super) fn confirm_remote_form(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let name = self.remote_name_input.read(cx).value().trim().to_string();
+        let url = self.remote_url_input.read(cx).value().trim().to_string();
+        if name.is_empty() || url.is_empty() {
+            self.set_error(self.t().remote_name_url_required.into(), cx);
+            return;
+        }
+        match self.remote_form.clone() {
+            RemoteForm::Add => {
+                let t = self.t();
+                let title = t.confirm_add_remote;
+                let ok = t.branch_confirm;
+                let cancel = t.branch_cancel;
+                let description = t
+                    .desc_add_remote
+                    .replace("{name}", &name)
+                    .replace("{url}", &url);
+                let view = cx.entity();
+                open_confirm(
+                    window,
+                    cx,
+                    title,
+                    description,
+                    ok,
+                    cancel,
+                    false,
+                    move |_, window, cx| {
+                        let name = name.clone();
+                        let url = url.clone();
+                        view.update(cx, |this, cx| {
+                            this.run_busy(BusyKind::AddRemote, window, cx, move |this, window, cx| {
+                                match this.with_repo(|repo| repo.add_remote(&name, &url)) {
+                                    Ok(()) => {
+                                        this.selected_remote = name.clone();
+                                        this.close_remote_form(window, cx);
+                                        this.set_ok_status(format!("Added remote {name}"));
+                                        this.reload(cx);
+                                    }
+                                    Err(err) => this.set_error(err, cx),
+                                }
+                            });
+                        });
+                        true
+                    },
+                );
+            }
+            RemoteForm::Edit { name: old } => {
+                let t = self.t();
+                let title = t.confirm_edit_remote;
+                let ok = t.branch_confirm;
+                let cancel = t.branch_cancel;
+                let description = t
+                    .desc_edit_remote
+                    .replace("{old}", &old)
+                    .replace("{name}", &name)
+                    .replace("{url}", &url);
+                let view = cx.entity();
+                open_confirm(
+                    window,
+                    cx,
+                    title,
+                    description,
+                    ok,
+                    cancel,
+                    false,
+                    move |_, window, cx| {
+                        let old = old.clone();
+                        let name = name.clone();
+                        let url = url.clone();
+                        view.update(cx, |this, cx| {
+                            this.run_busy(BusyKind::EditRemote, window, cx, move |this, window, cx| {
+                                let result = this.with_repo(|repo| {
+                                    repo.rename_remote(&old, &name)?;
+                                    repo.set_remote_url(&name, &url)?;
+                                    Ok(())
+                                });
+                                match result {
+                                    Ok(()) => {
+                                        if this.selected_remote == old {
+                                            this.selected_remote = name.clone();
+                                        }
+                                        this.close_remote_form(window, cx);
+                                        this.set_ok_status(format!("Updated remote {name}"));
+                                        this.reload(cx);
+                                    }
+                                    Err(err) => this.set_error(err, cx),
+                                }
+                            });
+                        });
+                        true
+                    },
+                );
+            }
+            RemoteForm::Hidden => {}
+        }
+    }
+
+    pub(super) fn confirm_delete_remote(
+        &mut self,
+        name: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let t = self.t();
+        let title = t.confirm_delete_remote;
+        let ok = t.branch_confirm;
+        let cancel = t.branch_cancel;
+        let description = t.desc_delete_remote.replace("{name}", &name);
+        let view = cx.entity();
+        open_confirm(
+            window,
+            cx,
+            title,
+            description,
+            ok,
+            cancel,
+            true,
+            move |_, window, cx| {
+                let name = name.clone();
+                view.update(cx, |this, cx| {
+                    this.run_busy(BusyKind::DeleteRemote, window, cx, move |this, _, cx| {
+                        match this.with_repo(|repo| repo.remove_remote(&name)) {
+                            Ok(()) => {
+                                if this.selected_remote == name {
+                                    this.selected_remote = "origin".into();
+                                }
+                                this.set_ok_status(format!("Removed remote {name}"));
+                                this.reload(cx);
+                            }
+                            Err(err) => this.set_error(err, cx),
+                        }
+                    });
+                });
+                true
+            },
+        );
+    }
+
+    pub(super) fn open_remote_in_browser(&mut self, url: &str, cx: &mut Context<Self>) {
+        match remote_browse_url(url) {
+            Some(browse) => {
+                cx.open_url(&browse);
+                self.set_ok_status(format!("Opened {browse}"));
+                cx.notify();
+            }
+            None => {
+                self.set_error(
+                    format!("Could not convert remote URL to a browser link: {url}").into(),
+                    cx,
+                );
+            }
+        }
+    }
+
     pub(super) fn confirm_delete_branch(
         &mut self,
         name: String,
@@ -599,7 +833,21 @@ impl AppView {
     }
 
     pub(super) fn confirm_revert(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let paths = self.selected.clone();
+        let paths: Vec<String> = self.selected.iter().cloned().collect();
+        if paths.is_empty() {
+            self.set_error(self.t().select_files_first.into(), cx);
+            return;
+        }
+        self.confirm_revert_paths(paths, window, cx);
+    }
+
+    /// Confirm discarding / deleting every untracked path in the snapshot.
+    pub(super) fn confirm_revert_all_untracked(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let paths = self.paths_with_kind(sgg_core::ChangeKind::Untracked);
         if paths.is_empty() {
             self.set_error(self.t().select_files_first.into(), cx);
             return;
@@ -694,11 +942,52 @@ impl AppView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        // Keep the current page (Git shows Changes + preview; Files stays on Files).
+        use super::page::AppPage;
+        use super::view::PreviewTab;
+
+        self.ensure_parents_expanded(&rel_path);
+
+        if self.page == AppPage::Files {
+            self.stash_active_preview_tab(cx);
+            if let Some(idx) = self
+                .preview_tabs
+                .iter()
+                .position(|t| t.path == rel_path)
+            {
+                self.select_preview_tab(idx, window, cx);
+                self.set_ok_status(format!("Preview {rel_path}"));
+                return;
+            }
+            // Load from disk into a new tab.
+            let full = self.repo_root().join(&rel_path);
+            let content = match read_preview_text(&rel_path, &full) {
+                Ok(text) => text,
+                Err(err) => {
+                    self.set_error(err.into(), cx);
+                    return;
+                }
+            };
+            self.preview_tabs.push(PreviewTab {
+                path: rel_path.clone(),
+                content: content.clone(),
+            });
+            let idx = self.preview_tabs.len() - 1;
+            self.preview_tab_index = idx;
+            self.preview_input.update(cx, |input, cx| {
+                input.set_value(&content, window, cx);
+            });
+            self.preview_path = Some(rel_path.clone());
+            self.error = None;
+            self.push_nav_entry(self.current_nav_entry());
+            self.set_ok_status(format!("Preview {rel_path}"));
+            cx.notify();
+            return;
+        }
+
+        // Git page: single preview pane (no tab strip).
         if self.preview_path.as_deref() == Some(rel_path.as_str()) {
             return;
         }
-        self.ensure_parents_expanded(&rel_path);
         self.load_preview_into(&rel_path, window, cx);
         self.push_nav_entry(self.current_nav_entry());
         self.set_ok_status(format!("Preview {rel_path}"));
@@ -814,7 +1103,126 @@ impl AppView {
                     },
                 );
             }
+            super::view::FileOpForm::NewFile { parent } => {
+                if let Err(err) = validate_new_entry_name(&value) {
+                    self.set_error(err.into(), cx);
+                    return;
+                }
+                let path = join_parent_name(&parent, &value);
+                let t = self.t();
+                let title = t.confirm_new_file;
+                let ok = t.new_file;
+                let cancel = t.branch_cancel;
+                let description = t.desc_new_file.replace("{path}", &path);
+                let view = cx.entity();
+                open_confirm(
+                    window,
+                    cx,
+                    title,
+                    description,
+                    ok,
+                    cancel,
+                    false,
+                    move |_, window, cx| {
+                        let path = path.clone();
+                        view.update(cx, |this, cx| {
+                            this.run_busy(BusyKind::FileCreate, window, cx, move |this, window, cx| {
+                                this.create_file_now(&path, window, cx);
+                            });
+                        });
+                        true
+                    },
+                );
+            }
+            super::view::FileOpForm::NewFolder { parent } => {
+                if let Err(err) = validate_new_entry_name(&value) {
+                    self.set_error(err.into(), cx);
+                    return;
+                }
+                let path = join_parent_name(&parent, &value);
+                let t = self.t();
+                let title = t.confirm_new_folder;
+                let ok = t.new_folder;
+                let cancel = t.branch_cancel;
+                let description = t.desc_new_folder.replace("{path}", &path);
+                let view = cx.entity();
+                open_confirm(
+                    window,
+                    cx,
+                    title,
+                    description,
+                    ok,
+                    cancel,
+                    false,
+                    move |_, window, cx| {
+                        let path = path.clone();
+                        view.update(cx, |this, cx| {
+                            this.run_busy(
+                                BusyKind::FolderCreate,
+                                window,
+                                cx,
+                                move |this, window, cx| {
+                                    this.create_folder_now(&path, window, cx);
+                                },
+                            );
+                        });
+                        true
+                    },
+                );
+            }
             super::view::FileOpForm::Hidden => {}
+        }
+    }
+
+    pub(super) fn create_file_now(
+        &mut self,
+        path: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let full = self.repo_root().join(path);
+        if full.exists() {
+            self.set_error(format!("Already exists: {path}").into(), cx);
+            return;
+        }
+        if let Some(parent) = full.parent() {
+            if let Err(err) = fs::create_dir_all(parent) {
+                self.set_error(format!("Failed to create parent: {err}").into(), cx);
+                return;
+            }
+        }
+        match fs::write(&full, b"") {
+            Ok(()) => {
+                self.ensure_parents_expanded(path);
+                self.close_file_op_form(window, cx);
+                self.set_ok_status(format!("Created file {path}"));
+                self.reload(cx);
+                self.preview_file(path.to_string(), window, cx);
+            }
+            Err(err) => self.set_error(format!("Failed to create {path}: {err}").into(), cx),
+        }
+    }
+
+    pub(super) fn create_folder_now(
+        &mut self,
+        path: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let full = self.repo_root().join(path);
+        if full.exists() {
+            self.set_error(format!("Already exists: {path}").into(), cx);
+            return;
+        }
+        match fs::create_dir_all(&full) {
+            Ok(()) => {
+                self.ensure_parents_expanded(&format!("{path}/_"));
+                self.expanded_dirs.insert(path.to_string());
+                self.close_file_op_form(window, cx);
+                self.set_ok_status(format!("Created folder {path}"));
+                self.reload(cx);
+            }
+            Err(err) => self.set_error(format!("Failed to create {path}: {err}").into(), cx),
         }
     }
 
@@ -839,6 +1247,11 @@ impl AppView {
                 if self.preview_path.as_deref() == Some(from) {
                     self.preview_path = Some(to.to_string());
                 }
+                for tab in &mut self.preview_tabs {
+                    if tab.path == from {
+                        tab.path = to.to_string();
+                    }
+                }
                 self.close_file_op_form(window, cx);
                 self.set_ok_status(format!("Moved {from} → {to}"));
                 self.reload(cx);
@@ -856,8 +1269,19 @@ impl AppView {
         };
         match result {
             Ok(()) => {
+                self.preview_tabs.retain(|t| t.path != path);
+                if self.preview_tab_index >= self.preview_tabs.len()
+                    && !self.preview_tabs.is_empty()
+                {
+                    self.preview_tab_index = self.preview_tabs.len() - 1;
+                }
                 if self.preview_path.as_deref() == Some(path) {
-                    self.preview_path = None;
+                    if let Some(tab) = self.preview_tabs.get(self.preview_tab_index) {
+                        self.preview_path = Some(tab.path.clone());
+                    } else {
+                        self.preview_path = None;
+                        self.preview_tab_index = 0;
+                    }
                 }
                 self.set_ok_status(format!("Deleted {path}"));
                 self.reload(cx);
@@ -871,6 +1295,7 @@ impl AppView {
         if parts.len() <= 1 {
             return;
         }
+        let mut changed = false;
         let mut prefix = String::new();
         for part in &parts[..parts.len() - 1] {
             if prefix.is_empty() {
@@ -878,9 +1303,10 @@ impl AppView {
             } else {
                 prefix = format!("{prefix}/{part}");
             }
-            if !self.expanded_dirs.iter().any(|p| p == &prefix) {
-                self.expanded_dirs.push(prefix.clone());
-            }
+            changed |= self.expanded_dirs.insert(prefix.clone());
+        }
+        if changed {
+            self.rebuild_files_tree();
         }
     }
 
@@ -911,18 +1337,8 @@ impl AppView {
         cx: &mut Context<Self>,
     ) {
         let full = self.repo_root().join(rel_path);
-        match fs::read(&full) {
-            Ok(bytes) => {
-                let content = match String::from_utf8(bytes) {
-                    Ok(text) => text,
-                    Err(_) => {
-                        self.set_error(
-                            format!("{rel_path} is binary and cannot be previewed").into(),
-                            cx,
-                        );
-                        return;
-                    }
-                };
+        match read_preview_text(rel_path, &full) {
+            Ok(content) => {
                 self.preview_input.update(cx, |input, cx| {
                     input.set_value(&content, window, cx);
                 });
@@ -930,7 +1346,7 @@ impl AppView {
                 self.error = None;
             }
             Err(err) => {
-                self.set_error(format!("Failed to read {rel_path}: {err}").into(), cx);
+                self.set_error(err.into(), cx);
             }
         }
     }
@@ -941,6 +1357,9 @@ impl AppView {
             return;
         };
         let content = self.preview_input.read(cx).value().to_string();
+        if let Some(tab) = self.preview_tabs.iter_mut().find(|t| t.path == rel) {
+            tab.content = content.clone();
+        }
         self.run_busy(BusyKind::SavePreview, window, cx, move |this, _, cx| {
             let full = this.repo_root().join(&rel);
             match fs::write(&full, &content) {
@@ -984,4 +1403,25 @@ impl AppView {
             cx.notify();
         }
     }
+}
+
+fn join_parent_name(parent: &str, name: &str) -> String {
+    if parent.is_empty() {
+        name.to_string()
+    } else {
+        format!("{parent}/{name}")
+    }
+}
+
+fn validate_new_entry_name(name: &str) -> Result<(), &'static str> {
+    if name.is_empty() {
+        return Err("name is empty");
+    }
+    if name.contains('/') || name.contains('\\') {
+        return Err("name must not contain path separators");
+    }
+    if name == "." || name == ".." {
+        return Err("invalid name");
+    }
+    Ok(())
 }

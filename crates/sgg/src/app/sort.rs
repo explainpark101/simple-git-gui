@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use serde::{Deserialize, Serialize};
 use sgg_core::{ChangeKind, FileChange};
 
@@ -29,24 +31,7 @@ impl ChangeSort {
     }
 }
 
-fn area_rank(kind: ChangeKind) -> u8 {
-    match kind {
-        ChangeKind::Conflicted => 0,
-        ChangeKind::Staged => 1,
-        ChangeKind::Unstaged => 2,
-        ChangeKind::Untracked => 3,
-    }
-}
-
-pub fn compare_changes(a: &FileChange, b: &FileChange, sort: ChangeSort) -> std::cmp::Ordering {
-    match sort.normalized() {
-        ChangeSort::NameAsc | ChangeSort::Legacy => {
-            a.path.to_lowercase().cmp(&b.path.to_lowercase())
-        }
-        ChangeSort::NameDesc => b.path.to_lowercase().cmp(&a.path.to_lowercase()),
-    }
-}
-
+#[derive(Clone)]
 pub struct ChangeSection {
     pub title: &'static str,
     pub items: Vec<FileChange>,
@@ -60,23 +45,19 @@ pub struct ChangeSection {
 ///
 /// When `group_by_status` is false, all files are shown in a single flat list.
 pub fn group_and_sort(
-    mut changes: Vec<FileChange>,
+    changes: &[FileChange],
     sort: ChangeSort,
     group_by_status: bool,
 ) -> Vec<ChangeSection> {
+    let sort = sort.normalized();
     if !group_by_status {
-        changes.sort_by(|a, b| compare_changes(a, b, sort));
+        let mut items = changes.to_vec();
+        sort_changes(&mut items, sort);
         return vec![ChangeSection {
             title: "All",
-            items: changes,
+            items,
         }];
     }
-
-    changes.sort_by(|a, b| {
-        area_rank(a.kind)
-            .cmp(&area_rank(b.kind))
-            .then_with(|| compare_changes(a, b, sort))
-    });
 
     let mut sections = Vec::new();
     for kind in [
@@ -85,11 +66,12 @@ pub fn group_and_sort(
         ChangeKind::Unstaged,
         ChangeKind::Untracked,
     ] {
-        let items: Vec<_> = changes
+        let mut items: Vec<_> = changes
             .iter()
             .filter(|c| c.kind == kind)
             .cloned()
             .collect();
+        sort_changes(&mut items, sort);
         let always_show = matches!(kind, ChangeKind::Staged | ChangeKind::Unstaged);
         if items.is_empty() && !always_show {
             continue;
@@ -105,10 +87,23 @@ pub fn group_and_sort(
     sections
 }
 
+fn sort_changes(items: &mut [FileChange], sort: ChangeSort) {
+    match sort {
+        ChangeSort::NameAsc | ChangeSort::Legacy => {
+            items.sort_by_cached_key(|c| c.path.to_lowercase());
+        }
+        ChangeSort::NameDesc => {
+            items.sort_by_cached_key(|c| std::cmp::Reverse(c.path.to_lowercase()));
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum ChangeTreeRow {
     Dir {
         name: String,
+        /// Repo-relative directory path (no trailing slash).
+        path: String,
         /// Unique expand key: `{section}::{dir_path}`
         key: String,
         depth: usize,
@@ -121,6 +116,16 @@ pub enum ChangeTreeRow {
     },
 }
 
+/// Paths in `items` that live at or under `dir_path`.
+pub fn paths_under_dir(items: &[FileChange], dir_path: &str) -> Vec<String> {
+    let prefix = format!("{dir_path}/");
+    items
+        .iter()
+        .filter(|c| c.path == dir_path || c.path.starts_with(&prefix))
+        .map(|c| c.path.clone())
+        .collect()
+}
+
 #[derive(Default)]
 struct DirNode {
     dirs: std::collections::BTreeMap<String, DirNode>,
@@ -128,10 +133,11 @@ struct DirNode {
 }
 
 /// Flatten section items into folder-tree rows for the Changes list.
+/// Directories are expanded unless their key appears in `collapsed`.
 pub fn section_as_tree(
     section: &'static str,
     items: &[FileChange],
-    expanded: &[String],
+    collapsed: &HashSet<String>,
 ) -> Vec<ChangeTreeRow> {
     let mut root = DirNode::default();
     for change in items {
@@ -139,7 +145,7 @@ pub fn section_as_tree(
     }
 
     let mut out = Vec::new();
-    flatten_tree(section, "", &root, 0, expanded, &mut out);
+    flatten_tree(section, "", &root, 0, collapsed, &mut out);
     out
 }
 
@@ -164,7 +170,7 @@ fn flatten_tree(
     prefix: &str,
     node: &DirNode,
     depth: usize,
-    expanded: &[String],
+    collapsed: &HashSet<String>,
     out: &mut Vec<ChangeTreeRow>,
 ) {
     for (name, child) in &node.dirs {
@@ -176,11 +182,12 @@ fn flatten_tree(
         let key = format!("{section}::{dir_path}");
         out.push(ChangeTreeRow::Dir {
             name: name.clone(),
+            path: dir_path.clone(),
             key: key.clone(),
             depth,
         });
-        if expanded.iter().any(|k| k == &key) {
-            flatten_tree(section, &dir_path, child, depth + 1, expanded, out);
+        if !collapsed.contains(&key) {
+            flatten_tree(section, &dir_path, child, depth + 1, collapsed, out);
         }
     }
 

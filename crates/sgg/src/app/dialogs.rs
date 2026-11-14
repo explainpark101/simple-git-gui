@@ -147,11 +147,12 @@ impl Render for BusyConfirmOk {
                 .label(self.label.clone())
                 .disabled(blocked && !loading)
                 .on_click(move |_, window, cx| {
+                    // Close confirm immediately; progress continues in the sidebar Progress dock.
+                    window.close_dialog(cx);
                     app.update(cx, |this, cx| {
                         let work = work.clone();
                         this.run_busy(kind, window, cx, move |this, window, cx| {
                             work(this, window, cx);
-                            window.close_dialog(cx);
                         });
                     });
                 }),

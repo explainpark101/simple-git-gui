@@ -5,8 +5,12 @@
 //! See `.cursor/rules/sgg-button-alignment.mdc`.
 
 use gpui_kit::component::button::{Button, ButtonVariants as _};
-use gpui_kit::component::{ActiveTheme as _, Icon, Sizable as _};
-use gpui_kit::{App, Div, ElementId, Styled as _, div, px};
+use gpui_kit::component::menu::PopupMenuItem;
+use gpui_kit::component::{ActiveTheme as _, Icon, Sizable as _, h_flex};
+use gpui_kit::{
+    App, ClickEvent, Div, ElementId, ParentElement as _, SharedString, Styled as _, Window, div,
+    px,
+};
 
 use super::busy::BusyKind;
 
@@ -45,9 +49,35 @@ pub fn btn(id: impl Into<ElementId>) -> Button {
     Button::new(id).cursor_pointer()
 }
 
-/// Display / list / selection button (left-aligned content).
+/// Display / list / selection button (left-aligned outer flex).
+///
+/// Note: gpui-kit `Button` still centers its inner label row. For full-width
+/// list rows prefer [`list_row_btn`], which left-aligns via a full-width child.
 pub fn display_btn(id: impl Into<ElementId>) -> Button {
     btn(id).justify_start()
+}
+
+/// Full-width (or flex) list/selection row with left-aligned text.
+///
+/// `Button` paints an inner `h_flex().size_full().justify_center()` around
+/// `.label(...)`, so labels stay centered even after `.justify_start()`. A
+/// full-width child with `text_left` is the reliable left-align path.
+pub fn list_row_btn(id: impl Into<ElementId>, label: impl Into<SharedString>) -> Button {
+    let label = label.into();
+    btn(id)
+        .ghost()
+        .justify_start()
+        .accessibility_label(label.clone())
+        .child(
+            div()
+                .w_full()
+                .min_w_0()
+                .text_left()
+                .overflow_hidden()
+                .text_ellipsis()
+                .whitespace_nowrap()
+                .child(label),
+        )
 }
 
 /// Action / command / submit button (centered label, leading icon).
@@ -91,4 +121,46 @@ pub fn icon_btn(id: impl Into<ElementId>, icon: impl Into<Icon>) -> Button {
 /// Compact icon-only danger button.
 pub fn icon_danger_btn(id: impl Into<ElementId>, icon: impl Into<Icon>) -> Button {
     btn(id).danger().small().compact().icon(icon)
+}
+
+/// Popup / context-menu item with an explicit pointing-hand cursor.
+///
+/// Upstream `MenuItemElement` does not set `cursor_pointer` on clickable rows,
+/// so plain `PopupMenuItem::new` keeps the default arrow. Wrap the label in an
+/// element that opts into the pointer cursor.
+pub fn menu_item(
+    label: impl Into<SharedString>,
+    on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+) -> PopupMenuItem {
+    let label = label.into();
+    let label_el = label.clone();
+    PopupMenuItem::element(move |_, _| {
+        div()
+            .w_full()
+            .cursor_pointer()
+            .child(label_el.clone())
+    })
+    .on_click(on_click)
+}
+
+/// Like [`menu_item`], with a leading icon inside the pointer hit target.
+pub fn menu_item_with_icon(
+    label: impl Into<SharedString>,
+    icon: impl Into<Icon>,
+    on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+) -> PopupMenuItem {
+    let label = label.into();
+    let icon = icon.into();
+    let label_el = label.clone();
+    let icon_el = icon.clone();
+    PopupMenuItem::element(move |_, _| {
+        h_flex()
+            .w_full()
+            .items_center()
+            .gap_1()
+            .cursor_pointer()
+            .child(icon_el.clone())
+            .child(label_el.clone())
+    })
+    .on_click(on_click)
 }

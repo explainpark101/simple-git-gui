@@ -1,8 +1,10 @@
 use std::collections::HashMap;
 
 use gpui_kit::component::ActiveTheme as _;
-use gpui_kit::{App, Hsla};
+use gpui_kit::{App, Hsla, Rgba};
 use sgg_core::FileChange;
+
+use crate::app::prefs::StatusColors;
 
 /// Human-readable status label shown in the Changes list.
 pub fn display_label(status: &str) -> &'static str {
@@ -17,7 +19,21 @@ pub fn display_label(status: &str) -> &'static str {
     }
 }
 
-pub fn status_color(status: &str, cx: &App) -> Hsla {
+/// Single-letter status when the Changes list is narrow.
+/// Untracked → green `U`; Updated/modified → `M` (avoid colliding with Untracked).
+pub fn status_letter(status: &str) -> &'static str {
+    match status {
+        "modified" => "M",
+        "added" => "A",
+        "deleted" => "D",
+        "renamed" => "R",
+        "untracked" => "U",
+        "conflict" => "C",
+        _ => "·",
+    }
+}
+
+pub fn theme_status_color(status: &str, cx: &App) -> Hsla {
     let theme = cx.theme();
     match status {
         "added" | "untracked" => theme.success,
@@ -26,6 +42,27 @@ pub fn status_color(status: &str, cx: &App) -> Hsla {
         "renamed" => theme.info,
         _ => theme.muted_foreground,
     }
+}
+
+pub fn parse_status_hex(hex: &str) -> Option<Hsla> {
+    Rgba::try_from(hex).ok().map(Hsla::from)
+}
+
+pub fn hsla_to_hex(color: Hsla) -> String {
+    let rgba = Rgba::from(color);
+    let r = (rgba.r * 255.0).round() as u8;
+    let g = (rgba.g * 255.0).round() as u8;
+    let b = (rgba.b * 255.0).round() as u8;
+    format!("#{r:02x}{g:02x}{b:02x}")
+}
+
+pub fn status_color(status: &str, colors: &StatusColors, cx: &App) -> Hsla {
+    if let Some(hex) = colors.get(status) {
+        if let Some(color) = parse_status_hex(hex) {
+            return color;
+        }
+    }
+    theme_status_color(status, cx)
 }
 
 pub fn area_label(kind: sgg_core::ChangeKind) -> &'static str {
@@ -96,9 +133,16 @@ impl TreeStatusIndex {
         best
     }
 
-    pub fn color_for(&self, rel_path: &str, is_dir: bool, dim: f32, cx: &App) -> Hsla {
+    pub fn color_for(
+        &self,
+        rel_path: &str,
+        is_dir: bool,
+        dim: f32,
+        colors: &StatusColors,
+        cx: &App,
+    ) -> Hsla {
         match self.status_for(rel_path, is_dir) {
-            Some(status) => status_color(status, cx).opacity(dim),
+            Some(status) => status_color(status, colors, cx).opacity(dim),
             None => cx.theme().foreground.opacity(dim),
         }
     }

@@ -17,6 +17,63 @@ pub enum ThemePreference {
     System,
 }
 
+/// Per-status color overrides as `#rrggbb` / `#rrggbbaa` hex (None = theme default).
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct StatusColors {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub modified: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub added: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deleted: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub renamed: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub untracked: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub conflict: Option<String>,
+}
+
+impl StatusColors {
+    pub const KEYS: [&'static str; 6] = [
+        "modified",
+        "added",
+        "deleted",
+        "renamed",
+        "untracked",
+        "conflict",
+    ];
+
+    pub fn get(&self, status: &str) -> Option<&str> {
+        match status {
+            "modified" => self.modified.as_deref(),
+            "added" => self.added.as_deref(),
+            "deleted" => self.deleted.as_deref(),
+            "renamed" => self.renamed.as_deref(),
+            "untracked" => self.untracked.as_deref(),
+            "conflict" => self.conflict.as_deref(),
+            _ => None,
+        }
+    }
+
+    pub fn set(&mut self, status: &str, hex: Option<String>) {
+        let slot = match status {
+            "modified" => &mut self.modified,
+            "added" => &mut self.added,
+            "deleted" => &mut self.deleted,
+            "renamed" => &mut self.renamed,
+            "untracked" => &mut self.untracked,
+            "conflict" => &mut self.conflict,
+            _ => return,
+        };
+        *slot = hex;
+    }
+
+    pub fn clear(&mut self) {
+        *self = Self::default();
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppPrefs {
     pub theme: ThemePreference,
@@ -31,7 +88,7 @@ pub struct AppPrefs {
     #[serde(default)]
     pub changes_as_tree: bool,
     /// Periodically reload repository status / changes.
-    #[serde(default)]
+    #[serde(default = "default_true")]
     pub auto_refresh: bool,
     /// Ask whether to fetch when opening a repository (unless muted).
     #[serde(default = "default_true")]
@@ -39,6 +96,9 @@ pub struct AppPrefs {
     /// Absolute repo roots that should skip the fetch-on-open prompt.
     #[serde(default)]
     pub fetch_prompt_muted: Vec<String>,
+    /// Custom colors for git status labels in Changes / Files.
+    #[serde(default)]
+    pub status_colors: StatusColors,
 }
 
 fn default_true() -> bool {
@@ -54,9 +114,10 @@ impl Default for AppPrefs {
             change_sort: ChangeSort::NameAsc,
             group_by_status: true,
             changes_as_tree: false,
-            auto_refresh: false,
+            auto_refresh: true,
             ask_fetch_on_open: true,
             fetch_prompt_muted: Vec::new(),
+            status_colors: StatusColors::default(),
         }
     }
 }

@@ -5,7 +5,10 @@ mod files;
 mod i18n;
 mod ops;
 mod page;
+mod perf;
 mod prefs;
+mod progress;
+mod remote_url;
 mod render;
 mod sort;
 mod view;
@@ -20,7 +23,7 @@ pub use view::AppView;
 
 use prefs::absolute_path;
 
-gpui_kit::actions!(sgg, [HistoryBack, HistoryForward, SavePreview]);
+gpui_kit::actions!(sgg, [HistoryBack, HistoryForward, SavePreview, ClosePreview]);
 
 pub fn run(start: PathBuf) {
     let start = absolute_path(start);
@@ -39,6 +42,7 @@ pub fn run(start: PathBuf) {
                 KeyBinding::new("ctrl-[", HistoryBack, Some("AppView")),
                 KeyBinding::new("ctrl-]", HistoryForward, Some("AppView")),
                 KeyBinding::new("ctrl-s", SavePreview, Some("AppView")),
+                KeyBinding::new("ctrl-w", ClosePreview, Some("AppView")),
             ]);
 
             let bounds = Bounds::centered(None, size(px(1100.), px(720.)), cx);

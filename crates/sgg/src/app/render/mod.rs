@@ -3,7 +3,7 @@ mod files_page;
 mod preview_pane;
 mod settings;
 mod sidebar;
-mod status_style;
+pub(super) mod status_style;
 mod toolbar;
 
 use gpui_kit::component::ActiveTheme as _;
@@ -13,25 +13,24 @@ use gpui_kit::*;
 
 use super::page::AppPage;
 use super::view::AppView;
-use crate::app::{HistoryBack, HistoryForward, SavePreview};
+use crate::app::{ClosePreview, HistoryBack, HistoryForward, SavePreview};
+use sgg_core::{BranchInfo, RemoteInfo};
 
 impl Render for AppView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let changes = self
-            .snapshot
-            .as_ref()
-            .map(|s| s.changes.clone())
-            .unwrap_or_default();
+        // Borrow snapshot slices — avoid cloning large vecs every frame.
+        let empty_branches: &[BranchInfo] = &[];
+        let empty_remotes: &[RemoteInfo] = &[];
         let branches = self
             .snapshot
             .as_ref()
-            .map(|s| s.branches.clone())
-            .unwrap_or_default();
+            .map(|s| s.branches.as_slice())
+            .unwrap_or(empty_branches);
         let remotes = self
             .snapshot
             .as_ref()
-            .map(|s| s.remotes.clone())
-            .unwrap_or_default();
+            .map(|s| s.remotes.as_slice())
+            .unwrap_or(empty_remotes);
         let focus = self.focus_handle(cx);
         let preview_open = self.preview_path.is_some();
         let sidebar_collapsed = self.sidebar_collapsed;
@@ -54,6 +53,9 @@ impl Render for AppView {
             }))
             .on_action(cx.listener(|this, _: &SavePreview, window, cx| {
                 this.save_preview(window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &ClosePreview, window, cx| {
+                this.close_preview(window, cx);
             }))
             .on_mouse_down(
                 MouseButton::Navigate(NavigationDirection::Back),
@@ -89,19 +91,18 @@ impl Render for AppView {
                                         .size(px(360.))
                                         .size_range(px(340.)..px(560.))
                                         .child(
-                                            changes::render(self, changes, cx)
-                                                .into_any_element(),
+                                            changes::render(self, cx).into_any_element(),
                                         ),
                                 )
                                 .child(
                                     resizable_panel().child(
-                                        preview_pane::render(self, true, cx)
+                                        preview_pane::render(self, true, false, cx)
                                             .into_any_element(),
                                     ),
                                 )
                                 .into_any_element()
                         } else {
-                            changes::render(self, changes, cx).into_any_element()
+                            changes::render(self, cx).into_any_element()
                         };
 
                         h_resizable("git-panes")

@@ -2,26 +2,31 @@ use gpui_kit::assets::IconName as AssetIcon;
 use gpui_kit::base::StyledExt as _;
 use gpui_kit::component::button::ButtonVariants as _;
 use gpui_kit::component::input::Input;
+use gpui_kit::component::menu::ContextMenuExt as _;
+use gpui_kit::component::spinner::Spinner;
+use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::{
-    ActiveTheme as _, Disableable as _, IconName, Selectable as _, Sizable as _, resizable_panel,
-    v_resizable,
+    ActiveTheme as _, Disableable as _, IconName, Selectable as _, Sizable as _, Size,
+    resizable_panel, v_resizable,
 };
 use gpui_kit::prelude::FluentBuilder as _;
-use gpui_kit::*;
+use gpui_kit::{InteractiveElement as _, *};
 use sgg_core::{BranchInfo, RemoteInfo};
 
 use crate::app::busy::BusyKind;
 use crate::app::ops::RemoteAction;
-use crate::app::view::{AppView, BranchForm};
+use crate::app::progress::{ProgressState, PROGRESS_MAX_HEIGHT, PROGRESS_MIN_HEIGHT};
+use crate::app::remote_url::remote_browse_url;
+use crate::app::view::{AppView, BranchForm, RemoteForm};
 use crate::app::widgets::{
-    action_btn, action_row, confirm_btn, display_btn, icon_btn, icon_danger_btn, pane_body,
-    pane_header, pane_toolbar, with_busy,
+    action_btn, action_row, confirm_btn, display_btn, icon_btn, icon_danger_btn, list_row_btn,
+    menu_item_with_icon, pane_body, pane_header, with_busy,
 };
 
 pub fn render(
     view: &AppView,
-    branches: Vec<BranchInfo>,
-    remotes: Vec<RemoteInfo>,
+    branches: &[BranchInfo],
+    remotes: &[RemoteInfo],
     cx: &mut Context<AppView>,
 ) -> impl IntoElement {
     let t = view.t();
@@ -47,22 +52,59 @@ pub fn render(
     }
 
     let selected_remote = view.selected_remote.clone();
-    let form = view.branch_form.clone();
+    let branch_form = view.branch_form.clone();
+    let remote_form = view.remote_form.clone();
+    let remote_form_open = !matches!(remote_form, RemoteForm::Hidden);
+    let branch_form_open = !matches!(branch_form, BranchForm::Hidden);
+    let remote_compact = view.remote_actions_compact;
+    let entity = cx.entity();
+    let progress_collapsed = view.progress_collapsed;
+    let progress_h = view.progress_panel_height.clamp(
+        PROGRESS_MIN_HEIGHT,
+        PROGRESS_MAX_HEIGHT,
+    );
 
     div()
+        .relative()
         .flex()
         .flex_col()
         .size_full()
         .bg(cx.theme().sidebar)
         .child(
             pane_header(cx)
+                .id("remote-actions-header")
+                .relative()
                 .flex()
                 .items_center()
                 .gap_2()
                 .px_2()
                 .py_2()
                 .child(
-                    div()
+                    canvas(
+                        {
+                            let entity = entity.clone();
+                            move |bounds, _, cx| {
+                                // Fetch/Pull/Push labels need room beside the remote chip.
+                                let compact = bounds.size.width < px(360.);
+                                if entity.read_with(cx, |this, _| {
+                                    this.remote_actions_compact == compact
+                                }) {
+                                    return;
+                                }
+                                let _ = entity.update(cx, |this, cx| {
+                                    this.set_remote_actions_compact(compact, cx);
+                                });
+                            }
+                        },
+                        |_, _, _, _| {},
+                    )
+                    .absolute()
+                    .size_full()
+                    .invisible(),
+                )
+                .child(
+                    display_btn("selected-remote")
+                        .ghost()
                         .px_2()
                         .py_1()
                         .min_w_0()
@@ -71,11 +113,8 @@ pub fn render(
                         .bg(cx.theme().accent.opacity(0.28))
                         .font_semibold()
                         .text_sm()
-                        .text_left()
-                        .whitespace_nowrap()
-                        .overflow_hidden()
-                        .text_ellipsis()
-                        .child(selected_remote.clone()),
+                        .label(selected_remote.clone())
+                        .tooltip(selected_remote.clone()),
                 )
                 .child(
                     div()
@@ -89,7 +128,9 @@ pub fn render(
                                 action_btn("fetch", AssetIcon::CloudDownload)
                                     .outline()
                                     .small()
-                                    .label(t.fetch)
+                                    .when(remote_compact, |this| this.compact())
+                                    .when(!remote_compact, |this| this.label(t.fetch))
+                                    .accessibility_label(t.fetch)
                                     .tooltip(t.tip_fetch)
                                     .on_click(cx.listener(|this, _, window, cx| {
                                         this.confirm_remote_action(
@@ -107,7 +148,9 @@ pub fn render(
                                 action_btn("pull", AssetIcon::ArrowDownToLine)
                                     .outline()
                                     .small()
-                                    .label(t.pull)
+                                    .when(remote_compact, |this| this.compact())
+                                    .when(!remote_compact, |this| this.label(t.pull))
+                                    .accessibility_label(t.pull)
                                     .tooltip(t.tip_pull)
                                     .on_click(cx.listener(|this, _, window, cx| {
                                         this.confirm_remote_action(
@@ -125,7 +168,9 @@ pub fn render(
                                 action_btn("push", AssetIcon::CloudUpload)
                                     .primary()
                                     .small()
-                                    .label(t.push)
+                                    .when(remote_compact, |this| this.compact())
+                                    .when(!remote_compact, |this| this.label(t.push))
+                                    .accessibility_label(t.push)
                                     .tooltip(t.tip_push)
                                     .on_click(cx.listener(|this, _, window, cx| {
                                         this.confirm_remote_action(
@@ -148,42 +193,291 @@ pub fn render(
                         ),
                 ),
         )
-        .child(
-            div().flex_1().min_h_0().child(
-                v_resizable("sidebar-panes")
+        .child({
+            // Forms are painted as overlays (last children) so Branches / Progress
+            // headers cannot cover confirm buttons — GPUI has no CSS z-index.
+            let remotes_el = remotes_panel(view, remotes, selected_remote, cx);
+            let branches_el = branches_panel(view, branches, cx);
+
+            if progress_collapsed {
+                div()
+                    .flex()
+                    .flex_col()
+                    .flex_1()
+                    .min_h_0()
                     .child(
-                        resizable_panel()
-                            .size(px(140.))
-                            .size_range(px(80.)..px(360.))
-                            .child(remotes_panel(view, remotes, selected_remote, cx)),
+                        div().flex_1().min_h_0().child(
+                            v_resizable("sidebar-panes")
+                                .child(
+                                    resizable_panel()
+                                        .size(px(140.))
+                                        .size_range(px(80.)..px(360.))
+                                        .child(remotes_el),
+                                )
+                                .child(resizable_panel().child(branches_el)),
+                        ),
                     )
+                    .child(progress_header(view, true, cx))
+                    .into_any_element()
+            } else {
+                div()
+                    .flex()
+                    .flex_col()
+                    .flex_1()
+                    .min_h_0()
                     .child(
-                        resizable_panel().child(branches_panel(view, branches, form, cx)),
-                    ),
-            ),
+                        v_resizable("sidebar-panes-progress")
+                            .child(
+                                resizable_panel()
+                                    .size(px(140.))
+                                    .size_range(px(80.)..px(360.))
+                                    .child(remotes_el),
+                            )
+                            .child(resizable_panel().child(branches_el))
+                            .child(
+                                resizable_panel()
+                                    .size(px(progress_h))
+                                    .size_range(
+                                        px(PROGRESS_MIN_HEIGHT)..px(PROGRESS_MAX_HEIGHT),
+                                    )
+                                    .child(progress_panel(view, cx)),
+                            ),
+                    )
+                    .into_any_element()
+            }
+        })
+        .when(remote_form_open, |this| {
+            this.child(form_overlay(
+                "remote-form-overlay",
+                FormOverlayAnchor::Top,
+                progress_collapsed,
+                progress_h,
+                remote_form_panel(view, &remote_form, cx).into_any_element(),
+                cx,
+            ))
+        })
+        .when(branch_form_open, |this| {
+            this.child(form_overlay(
+                "branch-form-overlay",
+                FormOverlayAnchor::AboveProgress,
+                progress_collapsed,
+                progress_h,
+                branch_form_panel(view, &branch_form, cx).into_any_element(),
+                cx,
+            ))
+        })
+        .into_any_element()
+}
+
+enum FormOverlayAnchor {
+    /// Under the Fetch/Pull/Push chrome — covers Remotes list / Branches header.
+    Top,
+    /// Just above the Progress dock so confirm stays clickable.
+    AboveProgress,
+}
+
+fn form_overlay(
+    id: &'static str,
+    anchor: FormOverlayAnchor,
+    progress_collapsed: bool,
+    progress_h: f32,
+    body: AnyElement,
+    cx: &mut Context<AppView>,
+) -> impl IntoElement {
+    let progress_chrome = if progress_collapsed {
+        36.0
+    } else {
+        progress_h
+    };
+    let card = div()
+        .w_full()
+        .rounded(cx.theme().radius)
+        .border_1()
+        .border_color(cx.theme().border)
+        .bg(cx.theme().popover)
+        .shadow_md()
+        .occlude()
+        .child(body);
+
+    div()
+        .id(id)
+        .absolute()
+        .left_2()
+        .right_2()
+        .when(matches!(anchor, FormOverlayAnchor::Top), |this| {
+            // Sit under the remote-actions header (~48px).
+            this.top(px(48.))
+        })
+        .when(matches!(anchor, FormOverlayAnchor::AboveProgress), |this| {
+            this.bottom(px(progress_chrome + 4.))
+        })
+        .child(card)
+}
+
+fn progress_header(
+    view: &AppView,
+    collapsed: bool,
+    cx: &mut Context<AppView>,
+) -> impl IntoElement {
+    let t = view.t();
+    let busy = view.busy.is_some();
+    let chevron = if collapsed {
+        IconName::ChevronUp
+    } else {
+        IconName::ChevronDown
+    };
+
+    pane_header(cx)
+        .id("progress-header")
+        .flex()
+        .flex_shrink_0()
+        .items_center()
+        .justify_between()
+        .gap_2()
+        .px_3()
+        .py_1()
+        .cursor_pointer()
+        .border_t_1()
+        .border_color(cx.theme().sidebar_border)
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap_2()
+                .min_w_0()
+                .child(
+                    div()
+                        .font_semibold()
+                        .text_sm()
+                        .text_left()
+                        .child(t.progress),
+                )
+                .when(busy, |this| {
+                    this.child(Spinner::new().with_size(Size::Small))
+                }),
+        )
+        .child(div().flex_shrink_0().child(chevron))
+        .on_click(cx.listener(|this, _, _, cx| {
+            this.toggle_progress_collapsed(cx);
+        }))
+}
+
+fn progress_panel(view: &AppView, cx: &mut Context<AppView>) -> AnyElement {
+    let t = view.t();
+    let log_empty = view.progress_log.is_empty();
+
+    div()
+        .flex()
+        .flex_col()
+        .size_full()
+        .min_h_0()
+        .bg(cx.theme().sidebar)
+        .child(progress_header(view, false, cx))
+        .child(
+            pane_body(cx)
+                .id("progress-log")
+                .flex_1()
+                .min_h_0()
+                .px_2()
+                .py_1()
+                .flex()
+                .flex_col()
+                .gap_1()
+                .items_start()
+                .overflow_y_scrollbar()
+                .when(log_empty, |this| {
+                    this.child(
+                        div()
+                            .px_1()
+                            .py_1()
+                            .text_xs()
+                            .text_left()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(t.progress_empty),
+                    )
+                })
+                .children(view.progress_log.iter().rev().map(|entry| {
+                    let (color, mark) = match entry.state {
+                        ProgressState::Running => (cx.theme().accent, "…"),
+                        ProgressState::Done => (cx.theme().success, "✓"),
+                        ProgressState::Failed => (cx.theme().danger, "✗"),
+                    };
+                    div()
+                        .w_full()
+                        .flex()
+                        .flex_col()
+                        .gap_0()
+                        .px_1()
+                        .py_1()
+                        .rounded(cx.theme().radius)
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap_1()
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .font_semibold()
+                                        .text_color(color)
+                                        .child(mark),
+                                )
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .font_semibold()
+                                        .text_left()
+                                        .min_w_0()
+                                        .overflow_hidden()
+                                        .text_ellipsis()
+                                        .child(entry.title.clone()),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_left()
+                                .text_color(cx.theme().muted_foreground)
+                                .whitespace_normal()
+                                .child(entry.detail.clone()),
+                        )
+                        .into_any_element()
+                })),
         )
         .into_any_element()
 }
 
 fn remotes_panel(
     view: &AppView,
-    remotes: Vec<RemoteInfo>,
+    remotes: &[RemoteInfo],
     selected_remote: String,
     cx: &mut Context<AppView>,
 ) -> AnyElement {
     let t = view.t();
+    let form = view.remote_form.clone();
+    let entity = cx.entity();
     div()
         .flex()
         .flex_col()
         .size_full()
         .child(
-            div()
+            pane_header(cx)
+                .flex()
+                .items_center()
+                .justify_between()
+                .gap_2()
                 .px_3()
-                .pt_2()
-                .pb_1()
-                .font_semibold()
-                .text_left()
-                .child(t.remotes),
+                .py_2()
+                .child(div().font_semibold().text_left().child(t.remotes))
+                .child(
+                    icon_btn("remote-new", IconName::Plus)
+                        .accessibility_label(t.add_remote)
+                        .tooltip(t.tip_add_remote)
+                        .selected(matches!(form, RemoteForm::Add | RemoteForm::Edit { .. }))
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.toggle_add_remote_form(window, cx);
+                        })),
+                ),
         )
         .child(
             div()
@@ -197,41 +491,178 @@ fn remotes_panel(
                 .flex_col()
                 .items_start()
                 .overflow_y_scroll()
-                .children(remotes.into_iter().map(|r| {
+                .children(remotes.iter().map(|r| {
                     let name = r.name.clone();
+                    let name_select = name.clone();
                     let selected = name == selected_remote;
-                    let text = match r.url {
-                        Some(url) => format!("{} — {}", r.name, url),
+                    let url = r.url.clone();
+                    let text = match &url {
+                        Some(u) => format!("{} — {}", r.name, u),
                         None => r.name.clone(),
                     };
+                    let tip = text.clone();
+                    let browseable = url
+                        .as_deref()
+                        .and_then(remote_browse_url)
+                        .is_some();
+                    let entity = entity.clone();
                     div()
                         .id(SharedString::from(format!("remote-row:{}", r.name)))
                         .w_full()
+                        .flex()
+                        .justify_start()
                         .rounded(cx.theme().radius)
                         .when(selected, |this| this.bg(cx.theme().accent.opacity(0.28)))
                         .child(
-                            display_btn(SharedString::from(format!("remote:{}", r.name)))
-                                .ghost()
-                                .w_full()
-                                .label(text)
-                                .tooltip(t.tip_select_remote)
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    this.select_remote(name.clone(), cx);
-                                })),
+                            list_row_btn(
+                                SharedString::from(format!("remote:{}", r.name)),
+                                text,
+                            )
+                            .w_full()
+                            .tooltip(tip)
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.select_remote(name_select.clone(), cx);
+                            })),
                         )
+                        .context_menu(move |menu, _, _| {
+                            remote_context_menu(
+                                menu,
+                                &entity,
+                                &name,
+                                url.clone(),
+                                browseable,
+                                t.edit_remote,
+                                t.delete_remote,
+                                t.open_remote_url,
+                            )
+                        })
                         .into_any_element()
                 })),
         )
         .into_any_element()
 }
 
+fn remote_form_panel(
+    view: &AppView,
+    form: &RemoteForm,
+    cx: &mut Context<AppView>,
+) -> impl IntoElement {
+    let t = view.t();
+    let title = match form {
+        RemoteForm::Add => t.add_remote,
+        RemoteForm::Edit { name } => name.as_str(),
+        RemoteForm::Hidden => "",
+    };
+    let busy_kind = match form {
+        RemoteForm::Edit { .. } => BusyKind::EditRemote,
+        _ => BusyKind::AddRemote,
+    };
+    let icon = match form {
+        RemoteForm::Edit { .. } => AssetIcon::Pencil,
+        _ => AssetIcon::Plus,
+    };
+
+    div()
+        .flex()
+        .flex_col()
+        .gap_2()
+        .p_3()
+        .child(
+            div()
+                .text_xs()
+                .text_left()
+                .text_color(cx.theme().muted_foreground)
+                .child(title.to_string()),
+        )
+        .child(Input::new(&view.remote_name_input))
+        .child(Input::new(&view.remote_url_input))
+        .child(
+            action_row()
+                .child(
+                    action_btn("remote-form-cancel", AssetIcon::Close)
+                        .ghost()
+                        .small()
+                        .label(t.branch_cancel)
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.close_remote_form(window, cx);
+                        })),
+                )
+                .child(with_busy(
+                    confirm_btn("remote-form-confirm", icon, cx)
+                        .small()
+                        .label(t.branch_confirm)
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.confirm_remote_form(window, cx);
+                        })),
+                    view.busy,
+                    busy_kind,
+                )),
+        )
+}
+
+fn remote_context_menu(
+    menu: gpui_kit::component::menu::PopupMenu,
+    entity: &Entity<AppView>,
+    name: &str,
+    url: Option<String>,
+    browseable: bool,
+    edit_label: &'static str,
+    delete_label: &'static str,
+    open_label: &'static str,
+) -> gpui_kit::component::menu::PopupMenu {
+    let name_edit = name.to_string();
+    let name_del = name.to_string();
+    let url_edit = url.clone();
+    let entity_edit = entity.clone();
+    let entity_del = entity.clone();
+    let entity_open = entity.clone();
+
+    let menu = menu
+        .item(menu_item_with_icon(
+            edit_label,
+            AssetIcon::Pencil,
+            move |_, window, cx| {
+                entity_edit.update(cx, |this, cx| {
+                    this.start_edit_remote(name_edit.clone(), url_edit.clone(), window, cx);
+                });
+            },
+        ))
+        .item(menu_item_with_icon(
+            delete_label,
+            AssetIcon::Trash,
+            move |_, window, cx| {
+                entity_del.update(cx, |this, cx| {
+                    this.confirm_delete_remote(name_del.clone(), window, cx);
+                });
+            },
+        ));
+
+    if browseable {
+        if let Some(raw_url) = url {
+            menu.separator().item(menu_item_with_icon(
+                open_label,
+                AssetIcon::ExternalLink,
+                move |_, _, cx| {
+                    entity_open.update(cx, |this, cx| {
+                        this.open_remote_in_browser(&raw_url, cx);
+                    });
+                },
+            ))
+        } else {
+            menu
+        }
+    } else {
+        menu
+    }
+}
+
 fn branches_panel(
     view: &AppView,
-    branches: Vec<BranchInfo>,
-    form: BranchForm,
+    branches: &[BranchInfo],
     cx: &mut Context<AppView>,
 ) -> AnyElement {
     let t = view.t();
+    let form = view.branch_form.clone();
     div()
         .flex()
         .flex_col()
@@ -249,15 +680,15 @@ fn branches_panel(
                     icon_btn("branch-new", IconName::Plus)
                         .accessibility_label(t.create_switch)
                         .tooltip(t.tip_new_branch)
-                        .selected(matches!(form, BranchForm::Create))
+                        .selected(matches!(
+                            form,
+                            BranchForm::Create | BranchForm::Rename { .. }
+                        ))
                         .on_click(cx.listener(|this, _, window, cx| {
                             this.toggle_create_branch_form(window, cx);
                         })),
                 ),
         )
-        .when(!matches!(form, BranchForm::Hidden), |this| {
-            this.child(branch_form_panel(view, &form, cx))
-        })
         .child(
             pane_body(cx)
                 .id("branch-list")
@@ -269,7 +700,7 @@ fn branches_panel(
                 .flex_col()
                 .items_start()
                 .overflow_y_scroll()
-                .children(branches.into_iter().map(|b| branch_row(b, view, cx))),
+                .children(branches.iter().map(|b| branch_row(b, view, cx))),
         )
         .into_any_element()
 }
@@ -286,7 +717,7 @@ fn branch_form_panel(
         BranchForm::Hidden => "",
     };
 
-    pane_toolbar(cx)
+    div()
         .flex()
         .flex_col()
         .gap_2()
@@ -335,7 +766,7 @@ fn branch_form_panel(
 }
 
 fn branch_row(
-    branch: BranchInfo,
+    branch: &BranchInfo,
     view: &AppView,
     cx: &mut Context<AppView>,
 ) -> AnyElement {
@@ -351,6 +782,11 @@ fn branch_row(
     } else {
         format!("  {}", branch.name)
     };
+    let tip = if branch.is_remote {
+        format!("remotes/{}", branch.name)
+    } else {
+        branch.name.clone()
+    };
     let can_switch = !branch.is_remote && !branch.is_head;
     let can_rename = !branch.is_remote;
     let can_delete = !branch.is_remote && !branch.is_head;
@@ -362,18 +798,23 @@ fn branch_row(
         .items_center()
         .justify_between()
         .gap_1()
+        .rounded(cx.theme().radius)
+        .when(branch.is_head, |this| this.bg(cx.theme().accent.opacity(0.28)))
         .child(
-            display_btn(SharedString::from(format!("branch:{}", branch.name)))
-                .ghost()
-                .flex_1()
-                .min_w_0()
-                .justify_start()
-                .label(label)
-                .tooltip(t.tip_switch_branch)
-                .disabled(!can_switch)
-                .on_click(cx.listener(move |this, _, window, cx| {
+            list_row_btn(
+                SharedString::from(format!("branch:{}", branch.name)),
+                label,
+            )
+            .flex_1()
+            .min_w_0()
+            .tooltip(tip)
+            // Remote rows stay non-interactive; HEAD uses accent bg instead of disabled dim.
+            .disabled(branch.is_remote)
+            .when(can_switch, |this| {
+                this.on_click(cx.listener(move |this, _, window, cx| {
                     this.confirm_switch_branch(name_switch.clone(), window, cx);
-                })),
+                }))
+            }),
         )
         .child(
             div()

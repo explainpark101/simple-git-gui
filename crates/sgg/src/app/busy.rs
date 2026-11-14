@@ -22,4 +22,9 @@ pub enum BusyKind {
     FileRename,
     FileDelete,
     FileMove,
+    FileCreate,
+    FolderCreate,
+    AddRemote,
+    EditRemote,
+    DeleteRemote,
 }

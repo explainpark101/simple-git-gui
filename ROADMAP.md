@@ -34,12 +34,69 @@ This document tracks planned work beyond the current MVP.
 ### More git operations
 
 - Fetch (all / selected remote)
-- Rebase (onto branch, continue/abort/skip)
+- Rebase — see **Rebase (planned)** below
 - Merge + conflict status surface
-- Stash list / push / pop / apply / drop
 - Cherry-pick
 - Tag create / delete / push
 - Remote add / rename / remove / set-url
+
+### Rebase (planned)
+
+Goal: rebase the current branch onto another branch (or upstream) from the GUI, with a clear path through conflicts via continue / abort / skip — without dropping to an external terminal for the happy path.
+
+**Core actions**
+
+- **Rebase onto** — pick a local branch (or remote-tracking ref) as the upstream; run `git rebase <onto>` (optional later: `--onto` with an explicit newbase)
+- **Rebase continue** — after the user resolves conflicts and stages files, run `git rebase --continue`
+- **Rebase abort** — `git rebase --abort` with confirm; restore pre-rebase state
+- **Rebase skip** — `git rebase --skip` when the current commit should be dropped during conflict recovery
+- **Interactive rebase (later)** — optional `git rebase -i` / todo editor; defer until History or a dedicated reorder UI exists
+- **Pull with rebase (later)** — Settings or Pull menu option for `git pull --rebase`
+
+**Conflict / in-progress UX**
+
+- Detect in-progress rebase (`.git/rebase-merge` / `rebase-apply`) on load and after ops; surface a banner or Progress dock entry: “Rebase in progress”
+- Changes view while rebasing: emphasize conflicted paths; Stage / continue workflow matches existing conflict handling where possible
+- Disable or confirm dangerous actions (switch branch, hard reset) while a rebase is in progress
+- Status line / Progress log: started onto `X`, stopped on commit, continued, aborted, completed, or failed
+
+**UI sketch**
+
+- Branches panel: context menu or toolbar action “Rebase onto…” → pick target branch (confirm dialog with busy spinner, same pattern as switch/fetch)
+- While rebasing: sticky actions Continue / Skip / Abort near Changes or in the Progress dock
+- Optional: show “onto” branch and current stop commit in the banner
+
+**Implementation notes**
+
+- Prefer git CLI (`rebase`, `rebase --continue|--abort|--skip`) via existing core helpers; refresh `RepoSnapshot` (and conflicted change list) after each step
+- Wire `BusyKind` variants (`Rebase`, `RebaseContinue`, `RebaseAbort`, `RebaseSkip`) and i18n (en/ko) for labels and confirm copy
+- Do not auto-rebase on pull in v1; keep rebase explicit unless the user opts into pull-with-rebase later
+- Interactive rebase and rebase of a range from History can wait for the History panel
+
+### Stash (planned)
+
+Goal: stash dirty work from the Changes view and restore it later without leaving the GUI.
+
+**Core actions**
+
+- **Stash push** — save current tracked (and optionally untracked) changes; optional message; confirm when working tree is empty or only untracked
+- **Stash pop** — apply latest (or selected) stash and drop it on success; surface conflicts and keep the stash entry if apply fails
+- **Stash apply** — same as pop but keep the stash entry
+- **Stash drop** — remove one entry (with confirm)
+- **Stash list** — show `stash@{n}`, short message, and date in a sidebar panel or Changes toolbar dropdown
+
+**UI sketch**
+
+- Changes toolbar: Stash / Pop actions (busy spinner + confirm dialogs, same pattern as fetch/revert)
+- Optional stash panel: list entries; row actions Apply, Pop, Drop; click to preview stash diff later
+- Status line / error: conflict and empty-stash feedback via existing `set_ok_status` / `set_error`
+
+**Implementation notes**
+
+- Prefer git CLI (`stash push|pop|apply|drop|list`) via existing core helpers; refresh `RepoSnapshot` after each op
+- Wire `BusyKind` variants (`StashPush`, `StashPop`, …) and i18n (en/ko) for labels and confirm copy
+- Include untracked (`-u`) as a Settings or confirm checkbox, default off
+- Do not auto-stash on branch switch in v1; keep stash explicit from the Changes UI
 
 ### Diff UX
 

@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -13,7 +14,7 @@ pub struct FsNode {
 }
 
 /// List visible tree rows under `root`, expanding directories listed in `expanded`.
-pub fn list_tree(root: &Path, expanded: &[String]) -> Vec<FsNode> {
+pub fn list_tree(root: &Path, expanded: &HashSet<String>) -> Vec<FsNode> {
     let ignored_checker = RepoState::open_nearest(root).ok();
     let mut out = Vec::new();
     walk(root, "", 0, expanded, ignored_checker.as_ref(), &mut out);
@@ -24,7 +25,7 @@ fn walk(
     root: &Path,
     rel: &str,
     depth: usize,
-    expanded: &[String],
+    expanded: &HashSet<String>,
     repo: Option<&RepoState>,
     out: &mut Vec<FsNode>,
 ) {
@@ -73,7 +74,7 @@ fn walk(
             depth,
             ignored,
         });
-        if is_dir && expanded.iter().any(|p| p == &child_rel) {
+        if is_dir && expanded.contains(&child_rel) {
             walk(root, &child_rel, depth + 1, expanded, repo, out);
         }
     }

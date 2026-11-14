@@ -1,7 +1,9 @@
+use gpui_kit::assets::IconName as AssetIcon;
 use gpui_kit::base::StyledExt as _;
 use gpui_kit::component::button::ButtonVariants as _;
+use gpui_kit::component::color_picker::ColorSelect;
 use gpui_kit::component::input::Input;
-use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
+use gpui_kit::component::menu::DropdownMenu as _;
 use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::{ActiveTheme as _, Selectable as _, Sizable as _};
 use gpui_kit::prelude::FluentBuilder as _;
@@ -9,11 +11,11 @@ use gpui_kit::*;
 
 use crate::app::busy::BusyKind;
 use crate::app::editor::{EditorPreset, ZED_DOWNLOAD_URL};
-use crate::app::i18n::Locale;
-use crate::app::prefs::{ThemePreference, settings_path};
+use crate::app::i18n::{Locale, UiText};
+use crate::app::prefs::{StatusColors, ThemePreference, settings_path};
+use crate::app::render::status_style::display_label;
 use crate::app::view::AppView;
-use crate::app::widgets::{action_btn, display_btn, with_busy};
-use gpui_kit::assets::IconName as AssetIcon;
+use crate::app::widgets::{action_btn, display_btn, icon_btn, menu_item, with_busy};
 
 pub fn render(view: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
     let t = view.t();
@@ -30,65 +32,88 @@ pub fn render(view: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
         .flex_col()
         .flex_1()
         .min_h_0()
+        .items_center()
         .p_6()
-        .gap_6()
         .overflow_y_scrollbar()
-        .child(div().text_lg().font_semibold().text_left().child(t.settings))
         .child(
             div()
+                .w_full()
+                .max_w(px(720.))
                 .flex()
                 .flex_col()
-                .gap_3()
-                .p_4()
-                .rounded_lg()
-                .border_1()
-                .border_color(cx.theme().border)
-                .child(div().font_semibold().text_left().child(t.appearance))
-                .child(
-                    div()
-                        .text_xs()
-                        .text_left()
-                        .text_color(cx.theme().muted_foreground)
-                        .child(t.appearance_help),
-                )
+                .gap_6()
+                .child(div().text_lg().font_semibold().text_left().child(t.settings))
                 .child(
                     div()
                         .flex()
-                        .justify_start()
-                        .gap_2()
+                        .flex_col()
+                        .gap_3()
+                        .p_4()
+                        .rounded_lg()
+                        .border_1()
+                        .border_color(cx.theme().border)
+                        .child(div().font_semibold().text_left().child(t.appearance))
                         .child(
-                            display_btn("theme-light")
-                                .outline()
-                                .label(t.theme_light)
-                                .tooltip(t.tip_theme_light)
-                                .selected(theme == ThemePreference::Light)
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.set_theme_preference(ThemePreference::Light, cx)
-                                })),
+                            div()
+                                .text_xs()
+                                .text_left()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(t.appearance_help),
                         )
                         .child(
-                            display_btn("theme-dark")
-                                .outline()
-                                .label(t.theme_dark)
-                                .tooltip(t.tip_theme_dark)
-                                .selected(theme == ThemePreference::Dark)
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.set_theme_preference(ThemePreference::Dark, cx)
-                                })),
-                        )
-                        .child(
-                            display_btn("theme-system")
-                                .outline()
-                                .label(t.theme_system)
-                                .tooltip(t.tip_theme_system)
-                                .selected(theme == ThemePreference::System)
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.set_theme_preference(ThemePreference::System, cx)
-                                })),
+                            div()
+                                .flex()
+                                .justify_start()
+                                .gap_2()
+                                .child(
+                                    display_btn("theme-light")
+                                        .outline()
+                                        .icon(AssetIcon::Sun)
+                                        .label(t.theme_light)
+                                        .tooltip(t.tip_theme_light)
+                                        .selected(theme == ThemePreference::Light)
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            this.set_theme_preference(
+                                                ThemePreference::Light,
+                                                window,
+                                                cx,
+                                            )
+                                        })),
+                                )
+                                .child(
+                                    display_btn("theme-dark")
+                                        .outline()
+                                        .icon(AssetIcon::Moon)
+                                        .label(t.theme_dark)
+                                        .tooltip(t.tip_theme_dark)
+                                        .selected(theme == ThemePreference::Dark)
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            this.set_theme_preference(
+                                                ThemePreference::Dark,
+                                                window,
+                                                cx,
+                                            )
+                                        })),
+                                )
+                                .child(
+                                    display_btn("theme-system")
+                                        .outline()
+                                        .icon(AssetIcon::Monitor)
+                                        .label(t.theme_system)
+                                        .tooltip(t.tip_theme_system)
+                                        .selected(theme == ThemePreference::System)
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            this.set_theme_preference(
+                                                ThemePreference::System,
+                                                window,
+                                                cx,
+                                            )
+                                        })),
+                                ),
                         ),
-                ),
-        )
-        .child(
+                )
+                .child(status_colors_section(view, t, cx))
+                .child(
             div()
                 .flex()
                 .flex_col()
@@ -235,6 +260,7 @@ pub fn render(view: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
                             display_btn("zed-install")
                                 .ghost()
                                 .small()
+                                .icon(AssetIcon::Download)
                                 .label(t.zed_install)
                                 .tooltip(t.tip_zed_install)
                                 .on_click(|_, _, cx| {
@@ -463,13 +489,97 @@ pub fn render(view: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
                     ),
                 ),
         )
-        .child(
+                .child(
             div()
                 .text_xs()
                 .text_left()
                 .text_color(cx.theme().muted_foreground)
                 .child(format!("{}: {settings_file}", t.settings_file)),
+        ),
         )
+}
+
+fn status_colors_section(
+    view: &AppView,
+    t: UiText,
+    cx: &mut Context<AppView>,
+) -> impl IntoElement {
+    div()
+        .flex()
+        .flex_col()
+        .gap_3()
+        .p_4()
+        .rounded_lg()
+        .border_1()
+        .border_color(cx.theme().border)
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .justify_between()
+                .gap_2()
+                .child(div().font_semibold().text_left().child(t.status_colors))
+                .child(
+                    display_btn("status-colors-reset-all")
+                        .ghost()
+                        .small()
+                        .icon(AssetIcon::RotateCcw)
+                        .label(t.reset_status_colors)
+                        .tooltip(t.tip_reset_status_colors)
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.reset_status_colors(window, cx);
+                        })),
+                ),
+        )
+        .child(
+            div()
+                .text_xs()
+                .text_left()
+                .text_color(cx.theme().muted_foreground)
+                .child(t.status_colors_help),
+        )
+        .children(StatusColors::KEYS.into_iter().map(|key| {
+            let label = display_label(key);
+            let picker = view
+                .status_color_pickers
+                .get(key)
+                .expect("status picker")
+                .clone();
+            let status_key = key.to_string();
+            div()
+                .flex()
+                .items_center()
+                .justify_between()
+                .gap_3()
+                .child(
+                    div()
+                        .w(px(120.))
+                        .text_sm()
+                        .text_left()
+                        .child(label),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .flex_1()
+                        .min_w_0()
+                        .child(ColorSelect::new(&picker).w_full().flex_1())
+                        .child(
+                            icon_btn(
+                                SharedString::from(format!("status-color-reset:{key}")),
+                                AssetIcon::RotateCcw,
+                            )
+                            .accessibility_label(t.tip_reset_status_color)
+                            .tooltip(t.tip_reset_status_color)
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.reset_status_color(&status_key, window, cx);
+                            })),
+                        ),
+                )
+                .into_any_element()
+        }))
 }
 
 fn editor_select(
@@ -492,13 +602,12 @@ fn editor_select(
                     let entity = entity.clone();
                     let checked = current == preset;
                     menu.item(
-                        PopupMenuItem::new(preset.label())
-                            .checked(checked)
-                            .on_click(move |_, _, cx| {
-                                entity.update(cx, |this, cx| {
-                                    this.set_editor_preset(preset, cx);
-                                });
-                            }),
+                        menu_item(preset.label(), move |_, _, cx| {
+                            entity.update(cx, |this, cx| {
+                                this.set_editor_preset(preset, cx);
+                            });
+                        })
+                        .checked(checked),
                     )
                 })
             }),
