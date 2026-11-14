@@ -76,18 +76,43 @@ pub fn render(view: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
                 ),
         )
         .child(
-            with_busy(
-                action_btn("toolbar-open-editor", AssetIcon::ExternalLink)
-                    .outline()
-                    .small()
-                    .label(format!("{} {}", t.open_project_in, view.preferred_editor.label()))
-                    .tooltip(t.tip_open_project)
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        // Always open the repository root (project), never a single file.
-                        this.open_project_in_editor_busy(window, cx)
-                    })),
-                view.busy,
-                BusyKind::OpenProject,
-            ),
+            div()
+                .flex()
+                .items_center()
+                .gap_1()
+                .child(
+                    with_busy(
+                        action_btn("toolbar-open-folder", AssetIcon::FolderOpen)
+                            .outline()
+                            .small()
+                            .label(t.open_other_project)
+                            .tooltip(t.tip_open_other_project)
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.open_folder(window, cx)
+                            })),
+                        view.busy,
+                        BusyKind::OpenFolder,
+                    ),
+                )
+                .child(
+                    with_busy(
+                        action_btn("toolbar-open-editor", AssetIcon::ExternalLink)
+                            .outline()
+                            .small()
+                            .label(format!(
+                                "{} {}",
+                                t.open_project_in,
+                                view.preferred_editor.label()
+                            ))
+                            .tooltip(t.tip_open_project)
+                            .disabled(!view.has_repo())
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                // Always open the repository root (project), never a single file.
+                                this.open_project_in_editor_busy(window, cx)
+                            })),
+                        view.busy,
+                        BusyKind::OpenProject,
+                    ),
+                ),
         )
 }

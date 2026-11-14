@@ -6,13 +6,18 @@ mod sidebar;
 pub(super) mod status_style;
 mod toolbar;
 
+use gpui_kit::assets::IconName as AssetIcon;
+use gpui_kit::base::StyledExt as _;
 use gpui_kit::component::ActiveTheme as _;
+use gpui_kit::component::button::ButtonVariants as _;
 use gpui_kit::component::{h_resizable, resizable_panel};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use super::page::AppPage;
 use super::view::AppView;
+use crate::app::busy::BusyKind;
+use crate::app::widgets::{action_btn, with_busy};
 use crate::app::{ClosePreview, HistoryBack, HistoryForward, SavePreview};
 use sgg_core::{BranchInfo, RemoteInfo};
 
@@ -79,55 +84,101 @@ impl Render for AppView {
                 )
             })
             .child(
-                div().flex_1().min_h_0().w_full().child(match self.page {
-                    AppPage::Git => {
-                        // Changes min: wide enough that sort + stage-actions dropdown
-                        // do not overlap when the preview pane is open.
-                        // Sidebar min: remote header (fetch/pull/push + collapse) stays usable.
-                        let work = if preview_open {
-                            h_resizable("git-work")
+                div().flex_1().min_h_0().w_full().child(if !self.has_repo()
+                    && self.page != AppPage::Settings
+                {
+                    welcome(self, cx).into_any_element()
+                } else {
+                    match self.page {
+                        AppPage::Git => {
+                            // Changes min: wide enough that sort + stage-actions dropdown
+                            // do not overlap when the preview pane is open.
+                            // Sidebar min: remote header (fetch/pull/push + collapse) stays usable.
+                            let work = if preview_open {
+                                h_resizable("git-work")
+                                    .child(
+                                        resizable_panel()
+                                            .size(px(360.))
+                                            .size_range(px(340.)..px(560.))
+                                            .child(
+                                                changes::render(self, cx).into_any_element(),
+                                            ),
+                                    )
+                                    .child(
+                                        resizable_panel().child(
+                                            preview_pane::render(self, true, false, cx)
+                                                .into_any_element(),
+                                        ),
+                                    )
+                                    .into_any_element()
+                            } else {
+                                changes::render(self, cx).into_any_element()
+                            };
+
+                            h_resizable("git-panes")
                                 .child(
                                     resizable_panel()
-                                        .size(px(360.))
-                                        .size_range(px(340.)..px(560.))
+                                        .size(if sidebar_collapsed {
+                                            px(48.)
+                                        } else {
+                                            px(300.)
+                                        })
+                                        .size_range(if sidebar_collapsed {
+                                            px(40.)..px(56.)
+                                        } else {
+                                            px(280.)..px(480.)
+                                        })
                                         .child(
-                                            changes::render(self, cx).into_any_element(),
+                                            sidebar::render(self, branches, remotes, cx),
                                         ),
                                 )
-                                .child(
-                                    resizable_panel().child(
-                                        preview_pane::render(self, true, false, cx)
-                                            .into_any_element(),
-                                    ),
-                                )
+                                .child(resizable_panel().child(work))
                                 .into_any_element()
-                        } else {
-                            changes::render(self, cx).into_any_element()
-                        };
-
-                        h_resizable("git-panes")
-                            .child(
-                                resizable_panel()
-                                    .size(if sidebar_collapsed {
-                                        px(48.)
-                                    } else {
-                                        px(300.)
-                                    })
-                                    .size_range(if sidebar_collapsed {
-                                        px(40.)..px(56.)
-                                    } else {
-                                        px(280.)..px(480.)
-                                    })
-                                    .child(
-                                        sidebar::render(self, branches, remotes, cx),
-                                    ),
-                            )
-                            .child(resizable_panel().child(work))
-                            .into_any_element()
+                        }
+                        AppPage::Files => files_page::render(self, cx).into_any_element(),
+                        AppPage::Settings => settings::render(self, cx).into_any_element(),
                     }
-                    AppPage::Files => files_page::render(self, cx).into_any_element(),
-                    AppPage::Settings => settings::render(self, cx).into_any_element(),
                 }),
             )
     }
+}
+
+fn welcome(view: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
+    let t = view.t();
+    div()
+        .flex()
+        .flex_col()
+        .items_center()
+        .justify_center()
+        .size_full()
+        .gap_4()
+        .px_8()
+        .child(
+            div()
+                .text_xl()
+                .font_semibold()
+                .text_left()
+                .child(t.welcome_title),
+        )
+        .child(
+            div()
+                .max_w(px(420.))
+                .text_sm()
+                .text_color(cx.theme().muted_foreground)
+                .text_center()
+                .child(t.welcome_body),
+        )
+        .child(
+            with_busy(
+                action_btn("welcome-open-folder", AssetIcon::FolderOpen)
+                    .primary()
+                    .label(t.open_folder)
+                    .tooltip(t.tip_open_folder)
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.open_folder(window, cx)
+                    })),
+                view.busy,
+                BusyKind::OpenFolder,
+            ),
+        )
 }

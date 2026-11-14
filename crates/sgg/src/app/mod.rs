@@ -8,6 +8,7 @@ mod page;
 mod perf;
 mod prefs;
 mod progress;
+mod reload;
 mod remote_url;
 mod render;
 mod sort;
@@ -25,8 +26,8 @@ use prefs::absolute_path;
 
 gpui_kit::actions!(sgg, [HistoryBack, HistoryForward, SavePreview, ClosePreview]);
 
-pub fn run(start: PathBuf) {
-    let start = absolute_path(start);
+pub fn run(start: Option<PathBuf>) {
+    let start = start.map(absolute_path);
     // Full Lucide catalog (Pencil, Trash, FolderInput, …). Default `Assets`
     // only embeds the ~100 component icons, so many AssetIcon variants render blank.
     application()

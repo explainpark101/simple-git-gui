@@ -15,9 +15,26 @@ pub struct FsNode {
 
 /// List visible tree rows under `root`, expanding directories listed in `expanded`.
 pub fn list_tree(root: &Path, expanded: &HashSet<String>) -> Vec<FsNode> {
-    let ignored_checker = RepoState::open_nearest(root).ok();
+    list_tree_opts(root, expanded, true)
+}
+
+/// Like [`list_tree`], but can skip per-entry `is_path_ignored` (expensive via libgit2).
+pub fn list_tree_opts(root: &Path, expanded: &HashSet<String>, check_ignored: bool) -> Vec<FsNode> {
+    let ignored_checker = if check_ignored {
+        RepoState::open_nearest(root).ok()
+    } else {
+        None
+    };
     let mut out = Vec::new();
-    walk(root, "", 0, expanded, ignored_checker.as_ref(), &mut out);
+    walk(
+        root,
+        "",
+        0,
+        expanded,
+        ignored_checker.as_ref(),
+        check_ignored,
+        &mut out,
+    );
     out
 }
 
@@ -27,6 +44,7 @@ fn walk(
     depth: usize,
     expanded: &HashSet<String>,
     repo: Option<&RepoState>,
+    check_ignored: bool,
     out: &mut Vec<FsNode>,
 ) {
     let dir = if rel.is_empty() {
@@ -64,9 +82,12 @@ fn walk(
         } else {
             format!("{rel}/{name}")
         };
-        let ignored = repo
-            .map(|r| r.is_path_ignored(Path::new(&child_rel)))
-            .unwrap_or(false);
+        let ignored = if check_ignored {
+            repo.map(|r| r.is_path_ignored(Path::new(&child_rel)))
+                .unwrap_or(false)
+        } else {
+            false
+        };
         out.push(FsNode {
             name,
             rel_path: child_rel.clone(),
@@ -75,7 +96,15 @@ fn walk(
             ignored,
         });
         if is_dir && expanded.contains(&child_rel) {
-            walk(root, &child_rel, depth + 1, expanded, repo, out);
+            walk(
+                root,
+                &child_rel,
+                depth + 1,
+                expanded,
+                repo,
+                check_ignored,
+                out,
+            );
         }
     }
 }

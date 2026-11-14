@@ -824,8 +824,9 @@ impl AppView {
                 let _ = this.update(cx, |this, cx| {
                     this.busy = None;
                     this.fetch_prompted_root = None;
-                    this.start_path = absolute_path(path);
+                    this.start_path = Some(absolute_path(path));
                     this.reload(cx);
+                    this.sync_auto_refresh(cx);
                     this.maybe_prompt_fetch(window, cx);
                 });
             });

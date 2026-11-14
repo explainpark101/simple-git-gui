@@ -3,7 +3,6 @@ use gpui_kit::base::StyledExt as _;
 use gpui_kit::component::button::ButtonVariants as _;
 use gpui_kit::component::input::Input;
 use gpui_kit::component::menu::ContextMenuExt as _;
-use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::{ActiveTheme as _, Sizable as _, h_resizable, resizable_panel};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{InteractiveElement as _, Styled as _, *};
@@ -19,10 +18,9 @@ use crate::app::widgets::{
 pub fn render(view: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
     let t = view.t();
     let root_label = view.repo_root_display();
-    let nodes = view.files_tree_nodes.clone();
+    let node_count = view.files_tree_nodes.len();
     let form = view.file_op_form.clone();
     let entity = cx.entity();
-    let status_index = &view.files_status_index;
 
     h_resizable("files-panes")
         .child(
@@ -104,18 +102,13 @@ pub fn render(view: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
                         })
                         .child({
                             let entity_measure = entity.clone();
-                            let compact = view.files_tree_compact;
+                            let entity_list = entity.clone();
                             pane_body(cx)
                                 .id("files-tree")
                                 .relative()
                                 .flex_1()
                                 .min_h_0()
                                 .w_full()
-                                .py_1()
-                                .flex()
-                                .flex_col()
-                                .items_stretch()
-                                .overflow_y_scrollbar()
                                 .child(
                                     canvas(
                                         move |bounds, _, cx| {
@@ -135,261 +128,27 @@ pub fn render(view: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
                                     .size_full()
                                     .invisible(),
                                 )
-                                .children(nodes.into_iter().map(|node| {
-                                    let rel = node.rel_path.clone();
-                                    let rel_menu = node.rel_path.clone();
-                                    let rel_open = node.rel_path.clone();
-                                    let depth = node.depth;
-                                    let indent = px(TREE_INDENT_BASE + TREE_INDENT_STEP * depth as f32);
-                                    let guide_color = cx.theme().border.opacity(0.85);
-                                    let expanded =
-                                        view.expanded_dirs.contains(&node.rel_path);
-                                    let selected = view
-                                        .preview_path
-                                        .as_ref()
-                                        .is_some_and(|p| p == &node.rel_path);
-                                    let entity = entity.clone();
-                                    let is_dir = node.is_dir;
-                                    let ignored = node.ignored;
-                                    let dim = if ignored { 0.42 } else { 1.0 };
-                                    let fg = if ignored {
-                                        cx.theme().muted_foreground.opacity(0.55)
-                                    } else {
-                                        status_index.color_for(
-                                            &rel,
-                                            is_dir,
-                                            dim,
-                                            &view.status_colors,
-                                            cx,
-                                        )
-                                    };
-                                    let group =
-                                        SharedString::from(format!("fs-row:{rel}"));
-                                    let compact = compact;
-
-                                    if is_dir {
-                                        let folder_icon = if expanded {
-                                            AssetIcon::FolderOpen
-                                        } else {
-                                            AssetIcon::FolderClosed
-                                        };
-                                        let rel_toggle = rel.clone();
-                                        div()
-                                            .id(SharedString::from(format!("dir-row:{rel}")))
-                                            .group(group.clone())
-                                            .relative()
-                                            .w_full()
-                                            .flex()
-                                            .items_center()
-                                            .justify_between()
-                                            .gap_1()
-                                            .pl(indent)
-                                            .pr_1()
-                                            .py_1()
-                                            .when(ignored, |this| this.opacity(0.55))
-                                            .text_color(fg)
-                                            .child(tree_guides(depth, guide_color))
-                                            .child(
-                                                div()
-                                                    .id(SharedString::from(format!("dir:{rel}")))
-                                                    .flex()
-                                                    .items_center()
-                                                    .justify_start()
-                                                    .gap_1()
-                                                    .min_w_0()
-                                                    .flex_1()
-                                                    .cursor_pointer()
-                                                    .child(
-                                                        div()
-                                                            .flex_shrink_0()
-                                                            .text_color(fg)
-                                                            .child(folder_icon),
+                                .child(
+                                    uniform_list("files-tree-vl", node_count, {
+                                        let entity = entity_list;
+                                        move |range, window, cx| {
+                                            let entity = entity.clone();
+                                            let view = entity.read(cx);
+                                            let compact = view.files_tree_compact;
+                                            let t = view.t();
+                                            range
+                                                .filter_map(|i| view.files_tree_nodes.get(i).cloned())
+                                                .map(|node| {
+                                                    files_tree_row(
+                                                        &entity, &view, node, compact, t, window, cx,
                                                     )
-                                                    .child(
-                                                        div()
-                                                            .text_sm()
-                                                            .text_left()
-                                                            .text_color(fg)
-                                                            .whitespace_nowrap()
-                                                            .overflow_hidden()
-                                                            .text_ellipsis()
-                                                            .child(node.name.clone()),
-                                                    )
-                                                    .on_click(cx.listener(move |this, _, _, cx| {
-                                                        this.toggle_dir(rel_toggle.clone(), cx);
-                                                    })),
-                                            )
-                                            .when(!compact, |this| {
-                                                this.child(file_op_icons(
-                                                    &rel,
-                                                    t.tip_rename_file,
-                                                    t.tip_delete_file,
-                                                    t.tip_move_file,
-                                                    dim,
-                                                    cx,
-                                                ))
-                                            })
-                                            .when(compact, |this| {
-                                                this.child(
-                                                    div()
-                                                        .absolute()
-                                                        .right_1()
-                                                        .top_0()
-                                                        .bottom_0()
-                                                        .flex()
-                                                        .items_center()
-                                                        .invisible()
-                                                        .group_hover(group, |s| s.visible())
-                                                        .bg(cx.theme().colors.list.opacity(0.92))
-                                                        .child(file_op_icons(
-                                                            &rel,
-                                                            t.tip_rename_file,
-                                                            t.tip_delete_file,
-                                                            t.tip_move_file,
-                                                            dim,
-                                                            cx,
-                                                        )),
-                                                )
-                                            })
-                                            .context_menu(move |menu, _, _| {
-                                                file_context_menu(
-                                                    menu,
-                                                    &entity,
-                                                    &rel_menu,
-                                                    true,
-                                                    t.new_file,
-                                                    t.new_folder,
-                                                    t.rename_file,
-                                                    t.delete_file,
-                                                    t.move_file,
-                                                    t.open_external,
-                                                )
-                                            })
-                                            .into_any_element()
-                                    } else {
-                                        let rel_preview = rel.clone();
-                                        let file_actions = |cx: &mut Context<AppView>| {
-                                            div()
-                                                .flex()
-                                                .items_center()
-                                                .justify_end()
-                                                .gap_0()
-                                                .child(file_op_icons(
-                                                    &rel,
-                                                    t.tip_rename_file,
-                                                    t.tip_delete_file,
-                                                    t.tip_move_file,
-                                                    dim,
-                                                    cx,
-                                                ))
-                                                .child(
-                                                    icon_btn(
-                                                        SharedString::from(format!(
-                                                            "file-open:{rel_open}"
-                                                        )),
-                                                        AssetIcon::ExternalLink,
-                                                    )
-                                                    .accessibility_label(t.open)
-                                                    .tooltip(t.tip_open)
-                                                    .on_click(cx.listener({
-                                                        let rel_open = rel_open.clone();
-                                                        move |this, _, _, cx| {
-                                                            this.open_path_in_editor(
-                                                                &rel_open, cx,
-                                                            );
-                                                        }
-                                                    })),
-                                                )
-                                        };
-                                        div()
-                                            .id(SharedString::from(format!("file:{rel}")))
-                                            .group(group.clone())
-                                            .relative()
-                                            .w_full()
-                                            .flex()
-                                            .items_center()
-                                            .justify_between()
-                                            .gap_1()
-                                            .pl(indent)
-                                            .pr_1()
-                                            .py_1()
-                                            .cursor_pointer()
-                                            .when(ignored, |this| this.opacity(0.55))
-                                            .text_color(fg)
-                                            .when(selected, |this| {
-                                                this.bg(cx.theme().accent.opacity(0.22))
-                                            })
-                                            .hover(|this| this.bg(cx.theme().muted.opacity(0.4)))
-                                            .on_click(cx.listener(move |this, _, window, cx| {
-                                                this.preview_file(
-                                                    rel_preview.clone(),
-                                                    window,
-                                                    cx,
-                                                );
-                                            }))
-                                            .child(tree_guides(depth, guide_color))
-                                            .child(
-                                                div()
-                                                    .flex()
-                                                    .items_center()
-                                                    .justify_start()
-                                                    .gap_1()
-                                                    .min_w_0()
-                                                    .flex_1()
-                                                    .child(
-                                                        div()
-                                                            .flex_shrink_0()
-                                                            .text_color(fg)
-                                                            .child(AssetIcon::File),
-                                                    )
-                                                    .child(
-                                                        div()
-                                                            .text_sm()
-                                                            .text_left()
-                                                            .text_color(fg)
-                                                            .whitespace_nowrap()
-                                                            .overflow_hidden()
-                                                            .text_ellipsis()
-                                                            .child(node.name.clone()),
-                                                    ),
-                                            )
-                                            .when(!compact, |this| this.child(file_actions(cx)))
-                                            .when(compact, |this| {
-                                                this.child(
-                                                    div()
-                                                        .absolute()
-                                                        .right_1()
-                                                        .top_0()
-                                                        .bottom_0()
-                                                        .flex()
-                                                        .items_center()
-                                                        .invisible()
-                                                        .group_hover(group, |s| s.visible())
-                                                        .bg(cx.theme().colors.list.opacity(0.92))
-                                                        .child(file_actions(cx)),
-                                                )
-                                            })
-                                            .context_menu({
-                                                let entity = entity.clone();
-                                                let rel_menu = rel.clone();
-                                                move |menu, _, _| {
-                                                    file_context_menu(
-                                                        menu,
-                                                        &entity,
-                                                        &rel_menu,
-                                                        false,
-                                                        t.new_file,
-                                                        t.new_folder,
-                                                        t.rename_file,
-                                                        t.delete_file,
-                                                        t.move_file,
-                                                        t.open_external,
-                                                    )
-                                                }
-                                            })
-                                            .into_any_element()
-                                    }
-                                }))
+                                                })
+                                                .collect()
+                                        }
+                                    })
+                                    .size_full()
+                                    .py_1(),
+                                )
                         })
                         .into_any_element(),
                 ),
@@ -425,17 +184,234 @@ fn tree_guides(depth: usize, color: gpui_kit::Hsla) -> impl IntoElement {
         }))
 }
 
-fn file_op_icons(
+
+fn files_tree_row(
+    entity: &Entity<AppView>,
+    view: &AppView,
+    node: crate::app::files::FsNode,
+    compact: bool,
+    t: crate::app::i18n::UiText,
+    _window: &mut Window,
+    cx: &App,
+) -> AnyElement {
+    let _ = compact;
+    let rel = node.rel_path.clone();
+    let depth = node.depth;
+    let indent = px(TREE_INDENT_BASE + TREE_INDENT_STEP * depth as f32);
+    let guide_color = cx.theme().border.opacity(0.85);
+    let expanded = view.expanded_dirs.contains(&node.rel_path);
+    let selected = view
+        .preview_path
+        .as_ref()
+        .is_some_and(|p| p == &node.rel_path);
+    let is_dir = node.is_dir;
+    let ignored = node.ignored;
+    let dim = if ignored { 0.42 } else { 1.0 };
+    let fg = if ignored {
+        cx.theme().muted_foreground.opacity(0.55)
+    } else {
+        view.files_status_index.color_for(
+            &rel,
+            is_dir,
+            dim,
+            &view.status_colors,
+            cx,
+        )
+    };
+    let group = SharedString::from(format!("fs-row:{rel}"));
+    let entity_toggle = entity.clone();
+    let entity_preview = entity.clone();
+    let entity_menu = entity.clone();
+    let actions = file_op_icons_entity(entity, &rel, t, dim);
+
+    if is_dir {
+        let folder_icon = if expanded {
+            AssetIcon::FolderOpen
+        } else {
+            AssetIcon::FolderClosed
+        };
+        let rel_toggle = rel.clone();
+        let rel_menu = rel.clone();
+        div()
+            .id(SharedString::from(format!("dir-row:{rel}")))
+            .group(group.clone())
+            .relative()
+            .w_full()
+            .h(px(28.))
+            .flex()
+            .items_center()
+            .justify_between()
+            .gap_1()
+            .pl(indent)
+            .pr_1()
+            .when(ignored, |this| this.opacity(0.55))
+            .text_color(fg)
+            .child(tree_guides(depth, guide_color))
+            .child(
+                div()
+                    .id(SharedString::from(format!("dir-hit:{rel}")))
+                    .flex()
+                    .items_center()
+                    .justify_start()
+                    .gap_1()
+                    .min_w_0()
+                    .flex_1()
+                    .cursor_pointer()
+                    .child(div().flex_shrink_0().text_color(fg).child(folder_icon))
+                    .child(
+                        div()
+                            .text_sm()
+                            .text_left()
+                            .text_color(fg)
+                            .whitespace_nowrap()
+                            .overflow_hidden()
+                            .text_ellipsis()
+                            .child(node.name.clone()),
+                    )
+                    .on_click(move |_, _, cx| {
+                        let _ = entity_toggle.update(cx, |this, cx| {
+                            this.toggle_dir(rel_toggle.clone(), cx);
+                        });
+                    }),
+            )
+            .child(
+                div()
+                    .absolute()
+                    .right_1()
+                    .top_0()
+                    .bottom_0()
+                    .flex()
+                    .items_center()
+                    .invisible()
+                    .group_hover(group, |s| s.visible())
+                    .bg(cx.theme().colors.list.opacity(0.92))
+                    .child(actions),
+            )
+            .context_menu(move |menu, _, _| {
+                file_context_menu(
+                    menu,
+                    &entity_menu,
+                    &rel_menu,
+                    true,
+                    t.new_file,
+                    t.new_folder,
+                    t.rename_file,
+                    t.delete_file,
+                    t.move_file,
+                    t.open_external,
+                )
+            })
+            .into_any_element()
+    } else {
+        let rel_preview = rel.clone();
+        let rel_menu = rel.clone();
+        let rel_open = rel.clone();
+        let entity_open = entity.clone();
+        div()
+            .id(SharedString::from(format!("file:{rel}")))
+            .group(group.clone())
+            .relative()
+            .w_full()
+            .h(px(28.))
+            .flex()
+            .items_center()
+            .justify_between()
+            .gap_1()
+            .pl(indent)
+            .pr_1()
+            .cursor_pointer()
+            .when(ignored, |this| this.opacity(0.55))
+            .text_color(fg)
+            .when(selected, |this| this.bg(cx.theme().accent.opacity(0.22)))
+            .hover(|this| this.bg(cx.theme().muted.opacity(0.4)))
+            .on_click(move |_, window, cx| {
+                let _ = entity_preview.update(cx, |this, cx| {
+                    this.preview_file(rel_preview.clone(), window, cx);
+                });
+            })
+            .child(tree_guides(depth, guide_color))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_start()
+                    .gap_1()
+                    .min_w_0()
+                    .flex_1()
+                    .child(div().flex_shrink_0().text_color(fg).child(AssetIcon::File))
+                    .child(
+                        div()
+                            .text_sm()
+                            .text_left()
+                            .text_color(fg)
+                            .whitespace_nowrap()
+                            .overflow_hidden()
+                            .text_ellipsis()
+                            .child(node.name.clone()),
+                    ),
+            )
+            .child(
+                div()
+                    .absolute()
+                    .right_1()
+                    .top_0()
+                    .bottom_0()
+                    .flex()
+                    .items_center()
+                    .invisible()
+                    .group_hover(group, |s| s.visible())
+                    .bg(cx.theme().colors.list.opacity(0.92))
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_0()
+                            .child(actions)
+                            .child(
+                                icon_btn(
+                                    SharedString::from(format!("file-open:{rel_open}")),
+                                    AssetIcon::ExternalLink,
+                                )
+                                .accessibility_label(t.open)
+                                .on_click(move |_, _, cx| {
+                                    cx.stop_propagation();
+                                    let _ = entity_open.update(cx, |this, cx| {
+                                        this.open_path_in_editor(&rel_open, cx);
+                                    });
+                                }),
+                            ),
+                    ),
+            )
+            .context_menu(move |menu, _, _| {
+                file_context_menu(
+                    menu,
+                    &entity_menu,
+                    &rel_menu,
+                    false,
+                    t.new_file,
+                    t.new_folder,
+                    t.rename_file,
+                    t.delete_file,
+                    t.move_file,
+                    t.open_external,
+                )
+            })
+            .into_any_element()
+    }
+}
+
+fn file_op_icons_entity(
+    entity: &Entity<AppView>,
     rel: &str,
-    tip_rename: &'static str,
-    tip_delete: &'static str,
-    tip_move: &'static str,
+    t: crate::app::i18n::UiText,
     opacity: f32,
-    cx: &mut Context<AppView>,
 ) -> impl IntoElement {
     let rel_rename = rel.to_string();
     let rel_delete = rel.to_string();
     let rel_move = rel.to_string();
+    let entity_ren = entity.clone();
+    let entity_del = entity.clone();
+    let entity_mov = entity.clone();
     div()
         .flex()
         .items_center()
@@ -448,33 +424,39 @@ fn file_op_icons(
                 SharedString::from(format!("fs-ren:{rel}")),
                 AssetIcon::Pencil,
             )
-            .accessibility_label(tip_rename)
-            .tooltip(tip_rename)
-            .on_click(cx.listener(move |this, _, window, cx| {
-                this.start_file_rename(rel_rename.clone(), window, cx);
-            })),
+            .accessibility_label(t.tip_rename_file)
+            .on_click(move |_, window, cx| {
+                cx.stop_propagation();
+                let _ = entity_ren.update(cx, |this, cx| {
+                    this.start_file_rename(rel_rename.clone(), window, cx);
+                });
+            }),
         )
         .child(
             icon_danger_btn(
                 SharedString::from(format!("fs-del:{rel}")),
                 AssetIcon::Trash,
             )
-            .accessibility_label(tip_delete)
-            .tooltip(tip_delete)
-            .on_click(cx.listener(move |this, _, window, cx| {
-                this.confirm_delete_path(rel_delete.clone(), window, cx);
-            })),
+            .accessibility_label(t.tip_delete_file)
+            .on_click(move |_, window, cx| {
+                cx.stop_propagation();
+                let _ = entity_del.update(cx, |this, cx| {
+                    this.confirm_delete_path(rel_delete.clone(), window, cx);
+                });
+            }),
         )
         .child(
             icon_btn(
                 SharedString::from(format!("fs-mov:{rel}")),
                 AssetIcon::FolderInput,
             )
-            .accessibility_label(tip_move)
-            .tooltip(tip_move)
-            .on_click(cx.listener(move |this, _, window, cx| {
-                this.start_file_move(rel_move.clone(), window, cx);
-            })),
+            .accessibility_label(t.tip_move_file)
+            .on_click(move |_, window, cx| {
+                cx.stop_propagation();
+                let _ = entity_mov.update(cx, |this, cx| {
+                    this.start_file_move(rel_move.clone(), window, cx);
+                });
+            }),
         )
 }
 

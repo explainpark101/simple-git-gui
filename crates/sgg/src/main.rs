@@ -2,8 +2,6 @@ mod app;
 mod cli;
 mod shell;
 
-use std::path::PathBuf;
-
 use clap::Parser;
 
 use cli::{Cli, Commands};
@@ -26,10 +24,9 @@ fn main() {
             println!("Shell integration removed.");
         }
         None => {
-            let start = cli.path.unwrap_or_else(|| {
-                std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
-            });
-            app::run(start);
+            // No PATH → empty start (pick a folder in-app). `sgg <path>` / shell
+            // "Open here" still open that location.
+            app::run(cli.path);
         }
     }
 }

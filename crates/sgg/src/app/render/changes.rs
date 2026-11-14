@@ -1,12 +1,13 @@
+use std::ops::Range;
+
 use gpui_kit::assets::IconName as AssetIcon;
 use gpui_kit::base::StyledExt as _;
 use gpui_kit::component::button::ButtonVariants as _;
 use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::input::Textarea;
-use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::switch::Switch;
 use gpui_kit::component::{
-    ActiveTheme as _, IconName, Sizable as _, h_resizable, resizable_panel,
+    ActiveTheme as _, IconName, Sizable as _, h_resizable, resizable_panel, v_resizable,
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{InteractiveElement as _, *};
@@ -15,9 +16,7 @@ use sgg_core::{ChangeKind, FileChange};
 use super::status_style::{area_label, display_label, status_color, status_letter};
 use crate::app::busy::BusyKind;
 use crate::app::i18n::UiText;
-use crate::app::sort::{
-    paths_under_dir, section_as_tree, ChangeSection, ChangeSort, ChangeTreeRow,
-};
+use crate::app::sort::{ChangeFlatRow, ChangeSort};
 use crate::app::view::AppView;
 use crate::app::widgets::{
     confirm_btn, display_btn, icon_btn, icon_danger_btn, pane_body, pane_header, pane_toolbar,
@@ -28,9 +27,14 @@ pub fn render(view: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
     let t = view.t();
     let sort = view.change_sort.normalized();
     let group_by_status = view.group_by_status;
-    let as_tree = view.changes_as_tree;
-    // Prefetched on reload / sort / group toggles — avoid regroup+sort every paint.
-    let sections = view.changes_sections.clone();
+    let section_count = view.changes_sections.len();
+    let staged_idxs: Vec<usize> = (0..section_count)
+        .filter(|&i| view.changes_sections[i].title == "Staged")
+        .collect();
+    let working_idxs: Vec<usize> = (0..section_count)
+        .filter(|&i| view.changes_sections[i].title != "Staged")
+        .collect();
+    let all_idxs: Vec<usize> = (0..section_count).collect();
 
     div()
         .flex()
@@ -86,21 +90,19 @@ pub fn render(view: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
         .child({
             let entity = cx.entity();
             let compact = view.changes_list_compact;
-            let hide_labels = view.changes_hide_labels;
-            let use_split = view.changes_split_view && group_by_status;
+            // Top sections are always Staged vs working; split does not need status subgroups.
+            let use_split = view.changes_split_view;
             let measure = canvas(
                 {
                     let entity = entity.clone();
                     move |bounds, _, cx| {
                         let pane_w = bounds.size.width;
                         // Progressive density (widest → narrowest), per column:
-                        //   1) hide_labels — section header buttons icon-only
-                        //   2) compact     — letter status + row actions on hover
-                        //   3) drop split  — stack sections in one column
+                        //   1) compact — letter status + row actions on hover
+                        //   2) drop split — stack sections in one column
+                        // Section header icon-only is measured per section header.
                         // Compact MUST be reachable while split is on: with split at
                         // 720px, each col is ~360px, so row compact at 420px still fires.
-                        // (A prior title-budget of 280px made compact impossible under split.)
-                        const HIDE_LABELS_W: f32 = 520.;
                         const ROW_COMPACT_W: f32 = 420.;
                         const SPLIT_MIN_W: f32 = 720.;
                         let split = pane_w >= px(SPLIT_MIN_W);
@@ -109,19 +111,17 @@ pub fn render(view: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
                         } else {
                             pane_w
                         };
-                        let hide_labels = col_w < px(HIDE_LABELS_W);
                         let compact = col_w < px(ROW_COMPACT_W);
                         // Skip entity.update during layout when flags are unchanged.
                         let same = entity.read_with(cx, |this, _| {
-                            this.changes_hide_labels == hide_labels
-                                && this.changes_list_compact == compact
+                            this.changes_list_compact == compact
                                 && this.changes_split_view == split
                         });
                         if same {
                             return;
                         }
                         let _ = entity.update(cx, |this, cx| {
-                            this.set_changes_density(hide_labels, compact, split, cx);
+                            this.set_changes_density(compact, split, cx);
                         });
                     }
                 },
@@ -132,9 +132,6 @@ pub fn render(view: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
             .invisible();
 
             if use_split {
-                let (staged, working): (Vec<_>, Vec<_>) = sections
-                    .into_iter()
-                    .partition(|s| s.title == "Staged");
                 pane_body(cx)
                     .id("changes-list-split")
                     .relative()
@@ -152,10 +149,8 @@ pub fn render(view: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
                                         changes_column(
                                             "changes-working",
                                             view,
-                                            working,
-                                            as_tree,
+                                            &working_idxs,
                                             compact,
-                                            hide_labels,
                                             t,
                                             cx,
                                         )
@@ -167,10 +162,8 @@ pub fn render(view: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
                                     changes_column(
                                         "changes-staged",
                                         view,
-                                        staged,
-                                        as_tree,
+                                        &staged_idxs,
                                         compact,
-                                        hide_labels,
                                         t,
                                         cx,
                                     )
@@ -183,17 +176,27 @@ pub fn render(view: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
                 pane_body(cx)
                     .id("changes-list")
                     .relative()
-                    .flex_1()
-                    .min_h_0()
-                    .p_2()
-                    .gap_2()
                     .flex()
                     .flex_col()
-                    .items_stretch()
+                    .flex_1()
+                    .min_h_0()
+                    .min_w_0()
+                    .p_2()
                     .child(measure)
-                    .children(render_section_panels(
-                        view, sections, as_tree, compact, hide_labels, t, cx,
-                    ))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_h_0()
+                            .min_w_0()
+                            .child(section_stack(
+                                "changes-stack",
+                                view,
+                                &all_idxs,
+                                compact,
+                                t,
+                                cx,
+                            )),
+                    )
                     .into_any_element()
             }
         })
@@ -202,10 +205,8 @@ pub fn render(view: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
 fn changes_column(
     id: &'static str,
     view: &AppView,
-    sections: Vec<ChangeSection>,
-    as_tree: bool,
+    section_idxs: &[usize],
     compact: bool,
-    hide_labels: bool,
     t: UiText,
     cx: &mut Context<AppView>,
 ) -> impl IntoElement {
@@ -217,192 +218,229 @@ fn changes_column(
         .min_w_0()
         .min_h_0()
         .p_2()
-        .gap_2()
-        .items_stretch()
-        .children(render_section_panels(
-            view, sections, as_tree, compact, hide_labels, t, cx,
-        ))
+        .child(
+            div()
+                .flex_1()
+                .min_h_0()
+                .min_w_0()
+                .child(section_stack(
+                    SharedString::from(format!("{id}-stack")),
+                    view,
+                    section_idxs,
+                    compact,
+                    t,
+                    cx,
+                )),
+        )
 }
 
-/// One panel per status section: sticky header + independently scrolling body.
-/// GPUI has no CSS `position: sticky`, so the header stays pinned as a sibling
-/// above the scroll viewport instead of living inside it.
+/// Stack of status sections with vertical resize handles between them.
+fn section_stack(
+    stack_id: impl Into<ElementId>,
+    view: &AppView,
+    section_idxs: &[usize],
+    compact: bool,
+    t: UiText,
+    cx: &mut Context<AppView>,
+) -> impl IntoElement {
+    let panels = render_section_panels(view, section_idxs, compact, t, cx);
+    match panels.len() {
+        0 => div().size_full().min_h_0().into_any_element(),
+        1 => div()
+            .size_full()
+            .min_h_0()
+            .child(panels.into_iter().next().unwrap())
+            .into_any_element(),
+        _ => {
+            let last = panels.len() - 1;
+            let mut group = v_resizable(stack_id);
+            for (i, panel) in panels.into_iter().enumerate() {
+                let slot = if i == last {
+                    // Last panel absorbs remaining height.
+                    resizable_panel().child(panel)
+                } else {
+                    resizable_panel()
+                        .size(px(180.))
+                        .size_range(px(72.)..px(900.))
+                        .child(panel)
+                };
+                group = group.child(slot);
+            }
+            group.into_any_element()
+        }
+    }
+}
+
+/// One panel per status section: sticky header + virtualized body.
 fn render_section_panels(
     view: &AppView,
-    sections: Vec<ChangeSection>,
-    as_tree: bool,
+    section_idxs: &[usize],
     compact: bool,
-    hide_labels: bool,
     t: UiText,
     cx: &mut Context<AppView>,
 ) -> Vec<AnyElement> {
-    sections
-        .into_iter()
-        .map(|section| {
-            let title_key = section.title.to_string();
+    let entity = cx.entity();
+    section_idxs
+        .iter()
+        .copied()
+        .filter_map(|section_idx| {
+            let section = view.changes_sections.get(section_idx)?;
+            let title = section.title;
+            let item_count = section.items.len();
+            let title_key = title.to_string();
             let expanded = !view.collapsed_change_sections.contains(&title_key);
-            let body_rows = if expanded {
-                section_body_rows(view, &section, as_tree, compact, t, cx)
-            } else {
-                Vec::new()
-            };
+            let row_count = view
+                .changes_flat_rows
+                .get(section_idx)
+                .map(|r| r.len())
+                .unwrap_or(0);
 
-            div()
-                .id(SharedString::from(format!("section-panel:{}", section.title)))
-                .w_full()
-                .min_w_0()
-                .min_h_0()
-                .flex()
-                .flex_col()
-                .rounded(cx.theme().radius)
-                .border_1()
-                .border_color(cx.theme().border)
-                .overflow_hidden()
-                .when(expanded, |this| this.flex_1())
-                .when(!expanded, |this| this.flex_none())
-                .child(section_header(
-                    view,
-                    section.title,
-                    section.items.len(),
-                    expanded,
-                    hide_labels,
-                    t,
-                    cx,
-                ))
-                .when(expanded, |this| {
-                    this.child(
-                        div()
-                            .id(SharedString::from(format!(
-                                "section-body:{}",
-                                section.title
-                            )))
+            Some(
+                div()
+                    .id(SharedString::from(format!("section-panel:{title}")))
+                    .size_full()
+                    .min_w_0()
+                    .min_h_0()
+                    .flex()
+                    .flex_col()
+                    .rounded(cx.theme().radius)
+                    .border_1()
+                    .border_color(cx.theme().border)
+                    .overflow_hidden()
+                    .child(section_header(
+                        view, title, item_count, expanded, t, cx,
+                    ))
+                    .when(expanded, |this| {
+                        let entity = entity.clone();
+                        this.child(
+                            uniform_list(
+                                SharedString::from(format!("section-vl:{title}")),
+                                row_count,
+                                move |range: Range<usize>, window, cx| {
+                                    render_flat_range(
+                                        &entity, section_idx, range, compact, t, window, cx,
+                                    )
+                                },
+                            )
                             .flex_1()
+                            .size_full()
                             .min_h_0()
-                            .w_full()
-                            .flex()
-                            .flex_col()
-                            .items_start()
                             .px_1()
-                            .py_1()
-                            .gap_0()
-                            .overflow_y_scrollbar()
-                            .children(body_rows),
-                    )
-                })
-                .into_any_element()
+                            .py_1(),
+                        )
+                    })
+                    .into_any_element(),
+            )
         })
         .collect()
 }
 
-fn section_body_rows(
-    view: &AppView,
-    section: &ChangeSection,
-    as_tree: bool,
+fn render_flat_range(
+    entity: &Entity<AppView>,
+    section_idx: usize,
+    range: Range<usize>,
     compact: bool,
     t: UiText,
-    cx: &mut Context<AppView>,
+    _window: &mut Window,
+    cx: &mut App,
 ) -> Vec<AnyElement> {
-    let mut rows = Vec::new();
-    if section.items.is_empty() {
-        rows.push(
-            div()
+    let view = entity.read(cx);
+    let rows = view
+        .changes_flat_rows
+        .get(section_idx)
+        .map(|r| r.as_slice())
+        .unwrap_or(&[]);
+    range
+        .filter_map(|i| rows.get(i).cloned())
+        .map(|row| match row {
+            ChangeFlatRow::Empty => div()
                 .px_2()
                 .py_1()
+                .h(px(28.))
                 .text_xs()
                 .text_left()
                 .text_color(cx.theme().muted_foreground)
                 .child(t.section_empty)
                 .into_any_element(),
-        );
-        return rows;
-    }
-
-    if as_tree {
-        let tree = section_as_tree(
-            section.title,
-            &section.items,
-            &view.collapsed_change_dirs,
-        );
-        for row in tree {
-            match row {
-                ChangeTreeRow::Dir {
-                    name,
-                    path,
-                    key,
-                    depth,
-                } => {
-                    let dir_expanded = !view.collapsed_change_dirs.contains(&key);
-                    let folder_icon = if dir_expanded {
-                        IconName::FolderOpen
-                    } else {
-                        IconName::FolderClosed
-                    };
-                    let indent = px(8.0 + 14.0 * depth as f32);
-                    let key_toggle = key.clone();
-                    let child_paths = paths_under_dir(&section.items, &path);
-                            let all_selected = !child_paths.is_empty()
-                                && child_paths.iter().all(|p| view.selected.contains(p));
-                    let cb_id =
-                        SharedString::from(format!("cb-dir:{}:{}", section.title, path));
-                    rows.push(
+            ChangeFlatRow::StatusGroup { label, count } => div()
+                .w_full()
+                .h(px(24.))
+                .flex()
+                .items_center()
+                .px_2()
+                .text_xs()
+                .font_semibold()
+                .text_left()
+                .text_color(cx.theme().muted_foreground)
+                .child(format!("{label} ({count})"))
+                .into_any_element(),
+            ChangeFlatRow::Dir {
+                name,
+                path: _,
+                key,
+                depth,
+                child_paths,
+            } => {
+                let dir_expanded = !view.collapsed_change_dirs.contains(&key);
+                let folder_icon = if dir_expanded {
+                    IconName::FolderOpen
+                } else {
+                    IconName::FolderClosed
+                };
+                let indent = px(8.0 + 14.0 * depth as f32);
+                let key_toggle = key.clone();
+                let all_selected = !child_paths.is_empty()
+                    && child_paths.iter().all(|p| view.selected.contains(p));
+                let entity_dir = entity.clone();
+                let entity_cb = entity.clone();
+                let child_paths_cb = child_paths.clone();
+                div()
+                    .id(SharedString::from(format!("chdir:{key}")))
+                    .w_full()
+                    .h(px(28.))
+                    .flex()
+                    .items_center()
+                    .justify_start()
+                    .gap_1()
+                    .pl(indent)
+                    .pr_1()
+                    .cursor_pointer()
+                    .child(
+                        Checkbox::new(SharedString::from(format!("cb-dir:{key}")))
+                            .checked(all_selected)
+                            .on_click(move |checked, _, cx| {
+                                cx.stop_propagation();
+                                let _ = entity_cb.update(cx, |this, cx| {
+                                    this.set_selected_many(&child_paths_cb, *checked, cx);
+                                });
+                            }),
+                    )
+                    .child(div().flex_shrink_0().child(folder_icon))
+                    .child(
                         div()
-                            .id(SharedString::from(format!("chdir:{key}")))
-                            .w_full()
-                            .flex()
-                            .items_center()
-                            .justify_start()
-                            .gap_1()
-                            .pl(indent)
-                            .pr_1()
-                            .py_1()
-                            .cursor_pointer()
-                            .child(
-                                Checkbox::new(cb_id)
-                                    .checked(all_selected)
-                                    .tooltip(t.tip_select_dir)
-                                    .on_click(cx.listener(move |this, checked, _, cx| {
-                                        cx.stop_propagation();
-                                        this.set_selected_many(&child_paths, *checked, cx);
-                                    })),
-                            )
-                            .child(div().flex_shrink_0().child(folder_icon))
-                            .child(
-                                div()
-                                    .text_sm()
-                                    .text_left()
-                                    .min_w_0()
-                                    .whitespace_nowrap()
-                                    .overflow_hidden()
-                                    .text_ellipsis()
-                                    .child(format!("{name}/")),
-                            )
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.toggle_change_dir(key_toggle.clone(), cx);
-                            }))
-                            .into_any_element(),
-                    );
-                }
-                ChangeTreeRow::File {
-                    change,
-                    display_name,
-                    depth,
-                } => {
-                    rows.push(
-                        change_row(view, &change, &display_name, depth, compact, t, cx)
-                            .into_any_element(),
-                    );
-                }
+                            .text_sm()
+                            .text_left()
+                            .min_w_0()
+                            .whitespace_nowrap()
+                            .overflow_hidden()
+                            .text_ellipsis()
+                            .child(format!("{name}/")),
+                    )
+                    .on_click(move |_, _, cx| {
+                        let _ = entity_dir.update(cx, |this, cx| {
+                            this.toggle_change_dir(key_toggle.clone(), cx);
+                        });
+                    })
+                    .into_any_element()
             }
-        }
-    } else {
-        for change in &section.items {
-            let display = change.path.clone();
-            rows.push(
-                change_row(view, change, &display, 0, compact, t, cx).into_any_element(),
-            );
-        }
-    }
-    rows
+            ChangeFlatRow::File {
+                change,
+                display_name,
+                depth,
+            } => change_row(entity, &view, &change, &display_name, depth, compact, t, cx)
+                .into_any_element(),
+        })
+        .collect()
 }
 
 fn stage_filter_row(
@@ -468,20 +506,27 @@ fn section_header(
     title: &'static str,
     count: usize,
     expanded: bool,
-    hide_labels: bool,
     t: UiText,
     cx: &mut Context<AppView>,
 ) -> impl IntoElement {
     let label = section_title(title, t);
     let title_toggle = title.to_string();
+    let hide_labels = view
+        .changes_section_hide_labels
+        .get(title)
+        .copied()
+        .unwrap_or(false);
     let chevron = if expanded {
         AssetIcon::ChevronDown
     } else {
         AssetIcon::ChevronRight
     };
+    let entity = cx.entity();
+    let measure_title = title.to_string();
 
     pane_header(cx)
         .id(SharedString::from(format!("section-head:{title}")))
+        .relative()
         .w_full()
         .flex_shrink_0()
         .flex()
@@ -490,6 +535,36 @@ fn section_header(
         .gap_2()
         .px_2()
         .py_1()
+        .child(
+            canvas(
+                {
+                    let entity = entity.clone();
+                    move |bounds, _, cx| {
+                        // Icon-only when this section header itself is narrow
+                        // (split columns / stacked pane — measured per section).
+                        const HIDE_LABELS_W: f32 = 520.;
+                        let hide = bounds.size.width < px(HIDE_LABELS_W);
+                        if entity.read_with(cx, |this, _| {
+                            this.changes_section_hide_labels
+                                .get(measure_title.as_str())
+                                .copied()
+                                .unwrap_or(false)
+                                == hide
+                        }) {
+                            return;
+                        }
+                        let title = measure_title.clone();
+                        let _ = entity.update(cx, |this, cx| {
+                            this.set_section_hide_labels(&title, hide, cx);
+                        });
+                    }
+                },
+                |_, _, _, _| {},
+            )
+            .absolute()
+            .size_full()
+            .invisible(),
+        )
         .child(
             // Left: title + bulk actions (Stage/Unstage All).
             div()
@@ -722,20 +797,22 @@ fn section_title(title: &str, t: UiText) -> &'static str {
 }
 
 fn change_row(
+    entity: &Entity<AppView>,
     view: &AppView,
     change: &FileChange,
     display_name: &str,
     depth: usize,
     compact: bool,
     t: UiText,
-    cx: &mut Context<AppView>,
+    cx: &App,
 ) -> impl IntoElement {
-    let path_for_checkbox = change.path.clone();
-    let path_for_row = change.path.clone();
-    let path_open = change.path.clone();
-    let path_revert = change.path.clone();
-    let path_stage = change.path.clone();
-    let path_unstage = change.path.clone();
+    let path = change.path.clone();
+    let path_cb = path.clone();
+    let path_preview = path.clone();
+    let path_open = path.clone();
+    let path_revert = path.clone();
+    let path_stage = path.clone();
+    let path_unstage = path.clone();
     let show_stage = change.kind != ChangeKind::Staged;
     let show_unstage = change.kind == ChangeKind::Staged;
     let selected = view.selected.contains(&change.path);
@@ -743,110 +820,110 @@ fn change_row(
         .preview_path
         .as_ref()
         .is_some_and(|p| p == &change.path);
-    let full_status = display_label(&change.status_label);
     let status = if compact {
         status_letter(&change.status_label)
     } else {
-        full_status
+        display_label(&change.status_label)
     };
     let area = area_label(change.kind);
     let color = status_color(&change.status_label, &view.status_colors, cx);
     let indent = px(8.0 + 14.0 * depth as f32);
     let group = SharedString::from(format!("change-row:{}:{}", area, change.path));
 
-    let build_actions = |cx: &mut Context<AppView>| {
-        div()
-            .flex()
-            .items_center()
-            .justify_end()
-            .gap_0()
-            .child(
+    // Hover-reveal actions only (one set). No per-button tooltips — those
+    // register MouseMove listeners on every row and dominate hit-testing cost.
+    let entity_open = entity.clone();
+    let entity_stage = entity.clone();
+    let entity_unstage = entity.clone();
+    let entity_revert = entity.clone();
+    let actions = div()
+        .flex()
+        .items_center()
+        .justify_end()
+        .gap_0()
+        .child(
+            icon_btn(
+                SharedString::from(format!("open:{path}")),
+                IconName::ExternalLink,
+            )
+            .accessibility_label(t.open)
+            .on_click(move |_, _, cx| {
+                cx.stop_propagation();
+                let _ = entity_open.update(cx, |this, cx| {
+                    this.open_path_in_editor(&path_open, cx);
+                });
+            }),
+        )
+        .when(show_stage, |this| {
+            this.child(
                 icon_btn(
-                    SharedString::from(format!("open:{}", change.path)),
-                    IconName::ExternalLink,
+                    SharedString::from(format!("stage:{path}")),
+                    IconName::Plus,
                 )
-                .accessibility_label(t.open)
-                .tooltip(t.tip_open)
-                .on_click(cx.listener({
-                    let path_open = path_open.clone();
-                    move |this, _, _, cx| {
-                        this.open_path_in_editor(&path_open, cx);
-                    }
-                })),
+                .accessibility_label(t.stage)
+                .on_click(move |_, window, cx| {
+                    cx.stop_propagation();
+                    let _ = entity_stage.update(cx, |this, cx| {
+                        this.stage_one(path_stage.clone(), window, cx);
+                    });
+                }),
             )
-            .when(show_stage, |this| {
-                this.child(
-                    icon_btn(
-                        SharedString::from(format!("stage:{}", change.path)),
-                        IconName::Plus,
-                    )
-                    .accessibility_label(t.stage)
-                    .tooltip(t.tip_stage_one)
-                    .on_click(cx.listener({
-                        let path_stage = path_stage.clone();
-                        move |this, _, window, cx| {
-                            this.stage_one(path_stage.clone(), window, cx);
-                        }
-                    })),
+        })
+        .when(show_unstage, |this| {
+            this.child(
+                icon_btn(
+                    SharedString::from(format!("unstage:{path}")),
+                    IconName::Minus,
                 )
-            })
-            .when(show_unstage, |this| {
-                this.child(
-                    icon_btn(
-                        SharedString::from(format!("unstage:{}", change.path)),
-                        IconName::Minus,
-                    )
-                    .accessibility_label(t.unstage)
-                    .tooltip(t.tip_unstage_one)
-                    .on_click(cx.listener({
-                        let path_unstage = path_unstage.clone();
-                        move |this, _, window, cx| {
-                            this.unstage_one(path_unstage.clone(), window, cx);
-                        }
-                    })),
-                )
-            })
-            .child(
-                icon_danger_btn(
-                    SharedString::from(format!("revert:{}", change.path)),
-                    IconName::Undo2,
-                )
-                .accessibility_label(t.revert)
-                .tooltip(t.tip_revert)
-                .on_click(cx.listener({
-                    let path_revert = path_revert.clone();
-                    move |this, _, window, cx| {
-                        this.confirm_revert_one(path_revert.clone(), window, cx);
-                    }
-                })),
+                .accessibility_label(t.unstage)
+                .on_click(move |_, window, cx| {
+                    cx.stop_propagation();
+                    let _ = entity_unstage.update(cx, |this, cx| {
+                        this.unstage_one(path_unstage.clone(), window, cx);
+                    });
+                }),
             )
-    };
+        })
+        .child(
+            icon_danger_btn(
+                SharedString::from(format!("revert:{path}")),
+                IconName::Undo2,
+            )
+            .accessibility_label(t.revert)
+            .on_click(move |_, window, cx| {
+                cx.stop_propagation();
+                let _ = entity_revert.update(cx, |this, cx| {
+                    this.confirm_revert_one(path_revert.clone(), window, cx);
+                });
+            }),
+        );
 
+    let entity_cb = entity.clone();
+    let entity_row = entity.clone();
     div()
-        .id(SharedString::from(format!(
-            "change:{}:{}",
-            area, change.path
-        )))
+        .id(SharedString::from(format!("change:{area}:{path}")))
         .group(group.clone())
         .relative()
         .flex()
         .w_full()
+        .h(px(28.))
         .items_center()
         .justify_start()
         .gap_2()
         .pl(indent)
         .pr_2()
-        .py_1()
         .rounded_md()
         .when(selected || previewing, |this| this.bg(cx.theme().accent.opacity(0.25)))
+        // Single row hover listener (not also on path/buttons).
         .hover(|this| this.bg(cx.theme().muted.opacity(0.45)))
         .child(
-            Checkbox::new(SharedString::from(format!("cb:{}:{}", area, change.path)))
+            Checkbox::new(SharedString::from(format!("cb:{area}:{path}")))
                 .checked(selected)
-                .tooltip(t.tip_select_change)
-                .on_click(cx.listener(move |this, checked, _, cx| {
-                    this.set_selected(path_for_checkbox.clone(), *checked, cx);
-                })),
+                .on_click(move |checked, _, cx| {
+                    let _ = entity_cb.update(cx, |this, cx| {
+                        this.set_selected(path_cb.clone(), *checked, cx);
+                    });
+                }),
         )
         .child(
             div()
@@ -861,7 +938,6 @@ fn change_row(
         .child(IconName::File)
         .child(
             div()
-                .id(SharedString::from(format!("path:{}:{}", area, change.path)))
                 .flex_1()
                 .min_w_0()
                 .text_sm()
@@ -869,27 +945,24 @@ fn change_row(
                 .overflow_hidden()
                 .text_ellipsis()
                 .text_left()
-                .cursor_pointer()
-                .on_click(cx.listener(move |this, _, window, cx| {
-                    this.preview_file(path_for_row.clone(), window, cx);
-                }))
                 .child(display_name.to_string()),
         )
-        .when(!compact, |this| this.child(build_actions(cx)))
-        .when(compact, |this| {
-            // Overlay so hidden actions do not steal width from the file name.
-            this.child(
-                div()
-                    .absolute()
-                    .right_1()
-                    .top_0()
-                    .bottom_0()
-                    .flex()
-                    .items_center()
-                    .invisible()
-                    .group_hover(group, |style| style.visible())
-                    .bg(cx.theme().colors.list.opacity(0.92))
-                    .child(build_actions(cx)),
-            )
+        .on_click(move |_, window, cx| {
+            let _ = entity_row.update(cx, |this, cx| {
+                this.preview_file(path_preview.clone(), window, cx);
+            });
         })
+        .child(
+            div()
+                .absolute()
+                .right_1()
+                .top_0()
+                .bottom_0()
+                .flex()
+                .items_center()
+                .invisible()
+                .group_hover(group, |style| style.visible())
+                .bg(cx.theme().colors.list.opacity(0.92))
+                .child(actions),
+        )
 }

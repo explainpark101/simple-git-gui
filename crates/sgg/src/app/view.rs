@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -13,13 +13,13 @@ use super::editor::{EditorPreset, ExternalEditor};
 use super::files::{list_tree, FsNode};
 use super::i18n::{Locale, UiText};
 use super::page::{AppPage, NavEntry};
-use super::perf::snapshot_fingerprint;
 use super::prefs::{AppPrefs, StatusColors, ThemePreference, absolute_path, display_path};
 use super::progress::{
     ProgressEntry, ProgressState, PROGRESS_DEFAULT_HEIGHT, PROGRESS_LOG_LIMIT,
 };
+use super::reload::{load_repo, LoadRepoError, LoadedRepo};
 use super::render::status_style::{hsla_to_hex, theme_status_color, TreeStatusIndex};
-use super::sort::{group_and_sort, ChangeSection, ChangeSort};
+use super::sort::{group_and_sort, section_flat_rows, ChangeFlatRow, ChangeSection, ChangeSort};
 
 #[derive(Clone)]
 pub(super) struct StatusColorPickers {
@@ -46,7 +46,7 @@ impl StatusColorPickers {
 }
 
 /// Default polling interval when auto-refresh is enabled.
-pub(super) const AUTO_REFRESH_SECS: u64 = 3;
+pub(super) const AUTO_REFRESH_SECS: u64 = 5;
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub(super) enum BranchForm {
@@ -96,7 +96,8 @@ pub(super) struct PreviewTab {
 }
 
 pub struct AppView {
-    pub(super) start_path: PathBuf,
+    /// Working folder used to find the nearest git repo. `None` = nothing open yet.
+    pub(super) start_path: Option<PathBuf>,
     pub(super) snapshot: Option<RepoSnapshot>,
     /// Last applied snapshot fingerprint (skip notify when auto-refresh is a no-op).
     snapshot_fp: u64,
@@ -120,6 +121,10 @@ pub struct AppView {
     pub(super) group_by_status: bool,
     /// Grouped/sorted Changes rows; rebuilt on snapshot or sort/group prefs.
     pub(super) changes_sections: Vec<ChangeSection>,
+    /// Precomputed virtualized body rows per section (same order as `changes_sections`).
+    pub(super) changes_flat_rows: Vec<Vec<ChangeFlatRow>>,
+    /// Coalesce in-flight background reloads.
+    reload_task: Option<Task<()>>,
     pub(super) preferred_editor: ExternalEditor,
     pub(super) theme_pref: ThemePreference,
     pub(super) locale: Locale,
@@ -156,8 +161,8 @@ pub struct AppView {
     pub(super) progress_panel_height: f32,
     /// Narrow Changes list: letter status + action buttons only on row hover.
     pub(super) changes_list_compact: bool,
-    /// Mid-width Changes: section header buttons show icons only (no labels).
-    pub(super) changes_hide_labels: bool,
+    /// Per Changes section title: header action buttons icon-only (no labels).
+    pub(super) changes_section_hide_labels: HashMap<String, bool>,
     /// Wide Changes pane: Unstaged/Untracked left, Staged right.
     pub(super) changes_split_view: bool,
     /// Narrow sidebar remote header: Fetch/Pull/Push show icons only.
@@ -179,9 +184,9 @@ impl Focusable for AppView {
 }
 
 impl AppView {
-    pub fn new(start_path: PathBuf, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(start_path: Option<PathBuf>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let prefs = AppPrefs::load();
-        let start_path = absolute_path(start_path);
+        let start_path = start_path.map(absolute_path);
         let t = prefs.locale.text();
         let focus_handle = cx.focus_handle();
 
@@ -227,13 +232,18 @@ impl AppView {
             conflict: cx.new(|cx| ColorPickerState::new(window, cx)),
         };
 
+        let initial_status = if start_path.is_some() {
+            t.loading.into()
+        } else {
+            t.no_folder_open.into()
+        };
         let mut view = Self {
             start_path,
             snapshot: None,
             snapshot_fp: 0,
             selected: HashSet::new(),
             selected_remote: "origin".into(),
-            status_line: t.loading.into(),
+            status_line: initial_status,
             commit_input,
             branch_input,
             file_op_input,
@@ -249,6 +259,8 @@ impl AppView {
             change_sort: prefs.change_sort.normalized(),
             group_by_status: prefs.group_by_status,
             changes_sections: Vec::new(),
+            changes_flat_rows: Vec::new(),
+            reload_task: None,
             preferred_editor: prefs.editor,
             theme_pref: prefs.theme,
             locale: prefs.locale,
@@ -276,7 +288,7 @@ impl AppView {
             progress_collapsed: false,
             progress_panel_height: PROGRESS_DEFAULT_HEIGHT,
             changes_list_compact: false,
-            changes_hide_labels: false,
+            changes_section_hide_labels: HashMap::new(),
             changes_split_view: false,
             remote_actions_compact: false,
             files_tree_compact: false,
@@ -287,15 +299,23 @@ impl AppView {
         };
         view.apply_theme(cx);
         view.wire_status_color_pickers(window, cx);
-        view.reload(cx);
-        view.sync_auto_refresh(cx);
-        // Root (dialogs/sheets) is wrapped around this view after construction.
-        // Defer the fetch prompt until the window host is ready.
-        cx.defer_in(window, |this, window, cx| {
-            this.maybe_prompt_fetch(window, cx);
-        });
+        if view.start_path.is_some() {
+            view.reload(cx);
+            view.sync_auto_refresh(cx);
+            // Root (dialogs/sheets) is wrapped around this view after construction.
+            // Defer the fetch prompt until the window host is ready.
+            cx.defer_in(window, |this, window, cx| {
+                this.maybe_prompt_fetch(window, cx);
+            });
+        } else {
+            view.sync_auto_refresh(cx);
+        }
         window.focus(&focus_handle, cx);
         view
+    }
+
+    pub(super) fn has_repo(&self) -> bool {
+        self.snapshot.is_some()
     }
 
     pub(super) fn t(&self) -> UiText {
@@ -363,10 +383,14 @@ impl AppView {
         self.snapshot
             .as_ref()
             .map(|s| s.root.clone())
-            .unwrap_or_else(|| self.start_path.clone())
+            .or_else(|| self.start_path.clone())
+            .unwrap_or_default()
     }
 
     pub(super) fn repo_root_display(&self) -> String {
+        if self.start_path.is_none() && self.snapshot.is_none() {
+            return self.t().no_folder_open.to_string();
+        }
         display_path(&self.repo_root())
     }
 
@@ -374,74 +398,112 @@ impl AppView {
     where
         F: FnOnce(&RepoState) -> Result<T, sgg_core::RepoError>,
     {
-        let start = self.repo_root();
+        let start = self
+            .snapshot
+            .as_ref()
+            .map(|s| s.root.clone())
+            .or_else(|| self.start_path.clone())
+            .ok_or_else(|| SharedString::from(self.t().no_folder_open))?;
         let repo = RepoState::open_nearest(&start).map_err(|e| SharedString::from(e.to_string()))?;
         f(&repo).map_err(|e| SharedString::from(e.to_string()))
     }
 
     pub(super) fn reload(&mut self, cx: &mut Context<Self>) {
-        self.reload_inner(true, cx);
+        self.queue_reload(true, true, cx);
     }
 
     pub(super) fn reload_auto(&mut self, cx: &mut Context<Self>) {
-        self.reload_inner(false, cx);
+        // Skip if a reload is already in flight (coalesce mouse-time refreshes).
+        if self.reload_task.is_some() {
+            return;
+        }
+        self.queue_reload(false, self.page == AppPage::Files, cx);
     }
 
-    fn reload_inner(&mut self, clear_selection: bool, cx: &mut Context<Self>) {
-        match RepoState::open_nearest(&self.start_path) {
-            Ok(repo) => match repo.snapshot() {
-                Ok(snap) => {
-                    let root = absolute_path(snap.root.clone());
-                    let branch = snap
-                        .head_branch
-                        .clone()
-                        .unwrap_or_else(|| "(detached)".into());
-                    let status = SharedString::from(format!(
-                        "{}  ·  {}  ·  {} changes",
-                        display_path(&root),
-                        branch,
-                        snap.changes.len()
-                    ));
-                    let mut snap = snap;
-                    snap.root = root;
-                    let fp = snapshot_fingerprint(&snap);
-                    // Auto-refresh: skip full UI rebuild when nothing meaningful changed.
-                    if !clear_selection && self.error.is_none() && self.snapshot_fp == fp {
-                        return;
-                    }
-                    self.sync_selected_remote(&snap);
-                    if clear_selection {
-                        self.selected.clear();
-                    } else {
-                        let paths: HashSet<_> =
-                            snap.changes.iter().map(|c| c.path.as_str()).collect();
-                        self.selected.retain(|p| paths.contains(p.as_str()));
-                    }
-                    self.snapshot_fp = fp;
-                    self.snapshot = Some(snap);
-                    self.status_line = status;
-                    self.error = None;
-                    self.rebuild_changes_sections();
-                    self.rebuild_files_status_index();
-                    self.rebuild_files_tree();
+    fn queue_reload(
+        &mut self,
+        clear_selection: bool,
+        build_files_tree: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(start) = self.start_path.clone() else {
+            self.snapshot = None;
+            self.snapshot_fp = 0;
+            self.selected.clear();
+            self.files_tree_nodes.clear();
+            self.changes_sections.clear();
+            self.changes_flat_rows.clear();
+            self.files_status_index = TreeStatusIndex::default();
+            self.error = None;
+            self.status_line = self.t().no_folder_open.into();
+            cx.notify();
+            return;
+        };
+
+        let expanded = self.expanded_dirs.clone();
+        // Full ignore scan only on Files page / manual reload.
+        let check_ignored = build_files_tree && (clear_selection || self.page == AppPage::Files);
+        self.reload_task = Some(cx.spawn(async move |this, cx| {
+            let loaded = cx
+                .background_spawn(async move {
+                    load_repo(start, expanded, build_files_tree, check_ignored)
+                })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                this.reload_task = None;
+                this.apply_loaded_repo(loaded, clear_selection, build_files_tree, cx);
+            });
+        }));
+    }
+
+    fn apply_loaded_repo(
+        &mut self,
+        loaded: Result<LoadedRepo, LoadRepoError>,
+        clear_selection: bool,
+        build_files_tree: bool,
+        cx: &mut Context<Self>,
+    ) {
+        match loaded {
+            Ok(loaded) => {
+                if !clear_selection && self.error.is_none() && self.snapshot_fp == loaded.fingerprint
+                {
+                    return;
                 }
-                Err(err) => {
-                    self.error = Some(err.to_string().into());
-                    self.status_line = "Failed to read repository".into();
-                    self.snapshot_fp = 0;
-                    self.changes_sections.clear();
-                    self.files_status_index = TreeStatusIndex::default();
+                self.sync_selected_remote(&loaded.snap);
+                if clear_selection {
+                    self.selected.clear();
+                } else {
+                    let paths: HashSet<_> =
+                        loaded.snap.changes.iter().map(|c| c.path.as_str()).collect();
+                    self.selected.retain(|p| paths.contains(p.as_str()));
                 }
-            },
-            Err(err) => {
+                self.snapshot_fp = loaded.fingerprint;
+                self.status_line = loaded.status_line.into();
+                self.error = None;
+                self.snapshot = Some(loaded.snap);
+                self.rebuild_changes_sections();
+                self.rebuild_files_status_index();
+                if build_files_tree {
+                    self.files_tree_nodes = loaded.files_tree;
+                }
+            }
+            Err(LoadRepoError::Snapshot(err)) => {
+                self.error = Some(err.into());
+                self.status_line = "Failed to read repository".into();
+                self.snapshot_fp = 0;
+                self.changes_sections.clear();
+                self.changes_flat_rows.clear();
+                self.files_status_index = TreeStatusIndex::default();
+            }
+            Err(LoadRepoError::NoRepo(err)) => {
                 self.snapshot = None;
                 self.snapshot_fp = 0;
                 self.files_tree_nodes.clear();
                 self.changes_sections.clear();
+                self.changes_flat_rows.clear();
                 self.files_status_index = TreeStatusIndex::default();
-                self.error = Some(err.to_string().into());
-                self.status_line =
-                    format!("No git repo near {}", display_path(&self.start_path)).into();
+                self.error = Some(err.into());
+                self.status_line = self.t().no_folder_open.into();
             }
         }
         cx.notify();
@@ -455,6 +517,26 @@ impl AppView {
             .unwrap_or(&[]);
         self.changes_sections =
             group_and_sort(changes, self.change_sort, self.group_by_status);
+        self.rebuild_changes_flat_rows();
+    }
+
+    pub(super) fn rebuild_changes_flat_rows(&mut self) {
+        let as_tree = self.changes_as_tree;
+        let collapsed = &self.collapsed_change_dirs;
+        let group_by_file_status = self.group_by_status;
+        self.changes_flat_rows = self
+            .changes_sections
+            .iter()
+            .map(|section| {
+                section_flat_rows(
+                    section.title,
+                    &section.items,
+                    as_tree,
+                    group_by_file_status,
+                    collapsed,
+                )
+            })
+            .collect();
     }
 
     pub(super) fn rebuild_files_status_index(&mut self) {
@@ -468,6 +550,10 @@ impl AppView {
 
     pub(super) fn rebuild_files_tree(&mut self) {
         let root = self.repo_root();
+        if root.as_os_str().is_empty() {
+            self.files_tree_nodes.clear();
+            return;
+        }
         self.files_tree_nodes = list_tree(&root, &self.expanded_dirs);
     }
 
@@ -525,6 +611,10 @@ impl AppView {
             return;
         }
         self.page = page;
+        // Auto-refresh may skip the files tree while on Git; rebuild when opening Files.
+        if page == AppPage::Files && self.has_repo() {
+            self.rebuild_files_tree();
+        }
         self.push_nav_entry(self.current_nav_entry());
         cx.notify();
     }
@@ -907,6 +997,7 @@ impl AppView {
 
     pub(super) fn set_changes_as_tree(&mut self, enabled: bool, cx: &mut Context<Self>) {
         self.changes_as_tree = enabled;
+        self.rebuild_changes_flat_rows();
         self.persist_prefs(cx);
         cx.notify();
     }
@@ -1033,19 +1124,15 @@ impl AppView {
     }
 
     /// Progressive density for the Changes pane (widest → narrowest):
-    /// labels → icon-only headers → hover-only row actions → single column.
+    /// hover-only row actions → single column. Section header icon-only
+    /// mode is measured per section via [`set_section_hide_labels`].
     pub(super) fn set_changes_density(
         &mut self,
-        hide_labels: bool,
         compact: bool,
         split: bool,
         cx: &mut Context<Self>,
     ) {
         let mut changed = false;
-        if self.changes_hide_labels != hide_labels {
-            self.changes_hide_labels = hide_labels;
-            changed = true;
-        }
         if self.changes_list_compact != compact {
             self.changes_list_compact = compact;
             changed = true;
@@ -1057,6 +1144,25 @@ impl AppView {
         if changed {
             cx.notify();
         }
+    }
+
+    pub(super) fn set_section_hide_labels(
+        &mut self,
+        title: &str,
+        hide: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let prev = self
+            .changes_section_hide_labels
+            .get(title)
+            .copied()
+            .unwrap_or(false);
+        if prev == hide {
+            return;
+        }
+        self.changes_section_hide_labels
+            .insert(title.to_string(), hide);
+        cx.notify();
     }
 
     pub(super) fn set_remote_actions_compact(&mut self, compact: bool, cx: &mut Context<Self>) {
@@ -1102,6 +1208,7 @@ impl AppView {
         if !self.collapsed_change_dirs.remove(&key) {
             self.collapsed_change_dirs.insert(key);
         }
+        self.rebuild_changes_flat_rows();
         cx.notify();
     }
 

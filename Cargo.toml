@@ -4,7 +4,7 @@ members = ["crates/sgg-core", "crates/sgg"]
 default-members = ["crates/sgg"]
 
 [workspace.package]
-version = "1.0.0"
+version = "1.1.0"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/example/simple-git-gui"
@@ -17,3 +17,8 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
 sgg-core = { path = "crates/sgg-core" }
+
+# Keep UI deps fast during `cargo run` (debug). Matches report: debug mouse
+# dispatch was ~2× slower than release without this.
+[profile.dev.package."*"]
+opt-level = 3

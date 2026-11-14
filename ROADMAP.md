@@ -115,7 +115,7 @@ Goal: stash dirty work from the Changes view and restore it later without leavin
 ### CLI
 
 - Ship / expose `sgg` as a command-line entry point (on `PATH` after install)
-- Open a repository from the shell: `sgg [path]` (default: cwd; resolve nearest `.git`)
+- Open a repository from the shell: `sgg [path]` (omit path → empty start / pick folder in UI; with path → nearest `.git`)
 - Common flags: `--help`, `--version`, optional `--page git|files|settings`
 - Headless-friendly error messages when path is not a git repo
 - Document install paths so shells and agents can invoke the same binary as the GUI
