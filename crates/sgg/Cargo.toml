@@ -37,7 +37,10 @@ publisher = "simple-git-gui"
 before-packaging-command = "cargo build --release -p sgg"
 binaries-dir = "../../target/release"
 out-dir = "../../dist"
-icons = ["assets/icon/app-icon-1024.png"]
+# macOS ICNS packing rejects a bare 1024×1024 PNG (density 1 → no IconType).
+# Name the same bitmap as 512@2x so cargo-packager maps it to a valid ICNS type.
+# Keep app-icon-1024.png for Windows build.rs embedding / source art.
+icons = ["assets/icon/app-icon-512x512@2x.png"]
 category = "DeveloperTool"
 
 [[package.metadata.packager.binaries]]
