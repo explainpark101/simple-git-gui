@@ -5,6 +5,7 @@ use gpui_kit::component::color_picker::ColorSelect;
 use gpui_kit::component::input::Input;
 use gpui_kit::component::menu::DropdownMenu as _;
 use gpui_kit::component::scroll::ScrollableElement as _;
+use gpui_kit::component::switch::Switch;
 use gpui_kit::component::{ActiveTheme as _, Selectable as _, Sizable as _};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
@@ -238,6 +239,33 @@ pub fn render(view: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
                                     this.set_auto_refresh(false, cx)
                                 })),
                         ),
+                ),
+        )
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .gap_3()
+                .p_4()
+                .rounded_lg()
+                .border_1()
+                .border_color(cx.theme().border)
+                .child(div().font_semibold().text_left().child(t.branches))
+                .child(
+                    div()
+                        .text_xs()
+                        .text_left()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(t.tip_show_remote_branches),
+                )
+                .child(
+                    Switch::new("settings-show-remote-branches")
+                        .label(t.show_remote_branches)
+                        .checked(view.show_remote_branches)
+                        .tooltip(t.tip_show_remote_branches)
+                        .on_click(cx.listener(|this, checked, _, cx| {
+                            this.set_show_remote_branches(*checked, cx);
+                        })),
                 ),
         )
         .child(

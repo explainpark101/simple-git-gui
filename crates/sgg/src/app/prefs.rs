@@ -90,6 +90,9 @@ pub struct AppPrefs {
     /// Periodically reload repository status / changes.
     #[serde(default = "default_true")]
     pub auto_refresh: bool,
+    /// Include remote-tracking branches in the Branches list.
+    #[serde(default = "default_true")]
+    pub show_remote_branches: bool,
     /// Ask whether to fetch when opening a repository (unless muted).
     #[serde(default = "default_true")]
     pub ask_fetch_on_open: bool,
@@ -115,6 +118,7 @@ impl Default for AppPrefs {
             group_by_status: true,
             changes_as_tree: false,
             auto_refresh: true,
+            show_remote_branches: true,
             ask_fetch_on_open: true,
             fetch_prompt_muted: Vec::new(),
             status_colors: StatusColors::default(),

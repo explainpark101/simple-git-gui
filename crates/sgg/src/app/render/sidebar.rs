@@ -3,8 +3,10 @@ use gpui_kit::base::StyledExt as _;
 use gpui_kit::component::button::ButtonVariants as _;
 use gpui_kit::component::input::Input;
 use gpui_kit::component::menu::ContextMenuExt as _;
-use gpui_kit::component::spinner::Spinner;
 use gpui_kit::component::scroll::ScrollableElement as _;
+use gpui_kit::component::spinner::Spinner;
+use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
+use gpui_kit::component::switch::Switch;
 use gpui_kit::component::{
     ActiveTheme as _, Disableable as _, IconName, Selectable as _, Sizable as _, Size,
     resizable_panel, v_resizable,
@@ -663,6 +665,12 @@ fn branches_panel(
 ) -> AnyElement {
     let t = view.t();
     let form = view.branch_form.clone();
+    let show_remote = view.show_remote_branches;
+    let visible: Vec<&BranchInfo> = branches
+        .iter()
+        .filter(|b| show_remote || !b.is_remote)
+        .collect();
+    let entity = cx.entity();
     div()
         .flex()
         .flex_col()
@@ -677,16 +685,54 @@ fn branches_panel(
                 .py_2()
                 .child(div().font_semibold().text_left().child(t.branches))
                 .child(
-                    icon_btn("branch-new", IconName::Plus)
-                        .accessibility_label(t.create_switch)
-                        .tooltip(t.tip_new_branch)
-                        .selected(matches!(
-                            form,
-                            BranchForm::Create | BranchForm::Rename { .. }
-                        ))
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            this.toggle_create_branch_form(window, cx);
-                        })),
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_0()
+                        .child(
+                            icon_btn("branch-new", IconName::Plus)
+                                .accessibility_label(t.create_switch)
+                                .tooltip(t.tip_new_branch)
+                                .selected(matches!(
+                                    form,
+                                    BranchForm::Create | BranchForm::Rename { .. }
+                                ))
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.toggle_create_branch_form(window, cx);
+                                })),
+                        )
+                        .child(
+                            icon_btn("branch-more", IconName::Ellipsis)
+                                .accessibility_label(t.tip_branch_more)
+                                .tooltip(t.tip_branch_more)
+                                .dropdown_menu_with_anchor(Anchor::BottomRight, {
+                                    let entity = entity.clone();
+                                    let label = t.show_remote_branches;
+                                    let tip = t.tip_show_remote_branches;
+                                    move |menu, _, cx| {
+                                        let show_remote = entity
+                                            .read(cx)
+                                            .show_remote_branches;
+                                        let entity = entity.clone();
+                                        menu.item(PopupMenuItem::element(move |_, _| {
+                                            Switch::new("branch-menu-show-remote")
+                                                .label(label)
+                                                .checked(show_remote)
+                                                .tooltip(tip)
+                                                .on_click({
+                                                    let entity = entity.clone();
+                                                    move |checked, _, cx| {
+                                                        let _ = entity.update(cx, |this, cx| {
+                                                            this.set_show_remote_branches(
+                                                                *checked, cx,
+                                                            );
+                                                        });
+                                                    }
+                                                })
+                                        }))
+                                    }
+                                }),
+                        ),
                 ),
         )
         .child(
@@ -700,7 +746,7 @@ fn branches_panel(
                 .flex_col()
                 .items_start()
                 .overflow_y_scroll()
-                .children(branches.iter().map(|b| branch_row(b, view, cx))),
+                .children(visible.into_iter().map(|b| branch_row(b, view, cx))),
         )
         .into_any_element()
 }

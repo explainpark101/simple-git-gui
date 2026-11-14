@@ -130,6 +130,7 @@ pub struct AppView {
     pub(super) locale: Locale,
     pub(super) changes_as_tree: bool,
     pub(super) auto_refresh: bool,
+    pub(super) show_remote_branches: bool,
     pub(super) ask_fetch_on_open: bool,
     pub(super) fetch_prompt_muted: Vec<String>,
     pub(super) status_colors: StatusColors,
@@ -266,6 +267,7 @@ impl AppView {
             locale: prefs.locale,
             changes_as_tree: prefs.changes_as_tree,
             auto_refresh: prefs.auto_refresh,
+            show_remote_branches: prefs.show_remote_branches,
             ask_fetch_on_open: prefs.ask_fetch_on_open,
             fetch_prompt_muted: prefs.fetch_prompt_muted,
             status_colors,
@@ -747,6 +749,12 @@ impl AppView {
         cx.notify();
     }
 
+    pub(super) fn set_show_remote_branches(&mut self, enabled: bool, cx: &mut Context<Self>) {
+        self.show_remote_branches = enabled;
+        self.persist_prefs(cx);
+        cx.notify();
+    }
+
     pub(super) fn set_editor_preset(&mut self, preset: EditorPreset, cx: &mut Context<Self>) {
         self.preferred_editor.preset = preset;
         self.sync_custom_command_from_input(cx);
@@ -1048,6 +1056,7 @@ impl AppView {
             group_by_status: self.group_by_status,
             changes_as_tree: self.changes_as_tree,
             auto_refresh: self.auto_refresh,
+            show_remote_branches: self.show_remote_branches,
             ask_fetch_on_open: self.ask_fetch_on_open,
             fetch_prompt_muted: self.fetch_prompt_muted.clone(),
             status_colors: self.status_colors.clone(),
