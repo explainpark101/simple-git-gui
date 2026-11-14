@@ -192,6 +192,7 @@ impl AppView {
                         )
                         .child(
                             Checkbox::new("fetch-dont-ask")
+                                .cursor_pointer()
                                 .label(dont_ask_label)
                                 .checked(checked)
                                 .on_click(move |checked, _, cx| {
