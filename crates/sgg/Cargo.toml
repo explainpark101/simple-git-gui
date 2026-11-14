@@ -1,0 +1,20 @@
+[package]
+name = "sgg"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "simple-git-gui — lightweight Git GUI"
+default-run = "sgg"
+
+[[bin]]
+name = "sgg"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+sgg-core.workspace = true
+gpui-kit = "0.9"
+clap = { version = "4", features = ["derive"] }
+
+[target.'cfg(windows)'.dependencies]
+winreg = "0.55"

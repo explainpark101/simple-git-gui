@@ -1,0 +1,12 @@
+[package]
+name = "sgg-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Git repository helpers for simple-git-gui"
+
+[dependencies]
+anyhow.workspace = true
+git2.workspace = true
+thiserror.workspace = true
+serde.workspace = true
