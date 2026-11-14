@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=simple-git-gui
+GenericName=Git GUI
+Comment=Lightweight native Git GUI
+Exec=sgg %f
+Icon=sgg
+Terminal=false
+Categories=Development;RevisionControl;
+MimeType=inode/directory;
+StartupNotify=true
+Keywords=git;vcs;gui;

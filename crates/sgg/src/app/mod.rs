@@ -1,3 +1,5 @@
+mod busy;
+mod dialogs;
 mod editor;
 mod files;
 mod i18n;
@@ -44,6 +46,10 @@ pub fn run(start: PathBuf) {
                     title: Some("simple-git-gui".into()),
                     ..Default::default()
                 }),
+                // Prefer full refresh while resizing / interacting (DirectX GPU + Direct Composition).
+                inactive_frame_interval: None,
+                low_power_frame_interval: None,
+                thermal_frame_interval: None,
                 ..Default::default()
             };
 

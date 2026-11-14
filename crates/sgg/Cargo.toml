@@ -17,7 +17,7 @@ dirs.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sgg-core.workspace = true
-gpui-kit = "0.9"
+gpui-kit = { version = "0.9", features = ["gpui-fast"] }
 clap = { version = "4", features = ["derive"] }
 
 [target.'cfg(windows)'.dependencies]
@@ -27,3 +27,35 @@ winreg = "0.55"
 image = "0.25"
 ico = "0.4"
 winresource = "0.1"
+
+# cargo-packager (NSIS / DMG / AppImage). Prefer over Inno Setup.
+# See build-exe.sh, build-dmg.sh, build-appimage.sh
+[package.metadata.packager]
+product-name = "simple-git-gui"
+identifier = "com.simple-git-gui.sgg"
+publisher = "simple-git-gui"
+before-packaging-command = "cargo build --release -p sgg"
+binaries-dir = "../../target/release"
+out-dir = "../../dist"
+icons = ["assets/icon/app-icon-1024.png"]
+category = "DeveloperTool"
+
+[[package.metadata.packager.binaries]]
+path = "sgg"
+main = true
+
+[package.metadata.packager.nsis]
+install-mode = "currentUser"
+template = "../../packaging/windows/installer.nsi"
+languages = ["English"]
+
+[package.metadata.packager.dmg]
+window-size = { width = 660, height = 400 }
+app-position = { x = 180, y = 170 }
+app-folder-position = { x = 480, y = 170 }
+
+[package.metadata.packager.deb]
+desktop-template = "../../packaging/linux/sgg.desktop"
+
+[package.metadata.packager.appimage.files]
+"../../packaging/linux/sgg.desktop" = "usr/share/applications/sgg.desktop"

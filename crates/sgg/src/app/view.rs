@@ -6,14 +6,37 @@ use gpui_kit::*;
 
 use sgg_core::{RepoSnapshot, RepoState};
 
+use super::busy::BusyKind;
 use super::editor::{EditorPreset, ExternalEditor};
 use super::i18n::{Locale, UiText};
-use super::page::AppPage;
+use super::page::{AppPage, NavEntry};
 use super::prefs::{AppPrefs, ThemePreference, absolute_path, display_path};
 use super::sort::ChangeSort;
 
 /// Default polling interval when auto-refresh is enabled.
 pub(super) const AUTO_REFRESH_SECS: u64 = 3;
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub(super) enum BranchForm {
+    #[default]
+    Hidden,
+    Create,
+    Rename {
+        from: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub(super) enum FileOpForm {
+    #[default]
+    Hidden,
+    Rename {
+        from: String,
+    },
+    Move {
+        from: String,
+    },
+}
 
 pub struct AppView {
     pub(super) start_path: PathBuf,
@@ -23,6 +46,7 @@ pub struct AppView {
     pub(super) status_line: SharedString,
     pub(super) commit_input: Entity<TextareaState>,
     pub(super) branch_input: Entity<InputState>,
+    pub(super) file_op_input: Entity<InputState>,
     pub(super) custom_editor_input: Entity<InputState>,
     pub(super) preview_input: Entity<TextareaState>,
     pub(super) preview_path: Option<String>,
@@ -35,10 +59,24 @@ pub struct AppView {
     pub(super) locale: Locale,
     pub(super) changes_as_tree: bool,
     pub(super) auto_refresh: bool,
+    pub(super) ask_fetch_on_open: bool,
+    pub(super) fetch_prompt_muted: Vec<String>,
     pub(super) expanded_dirs: Vec<String>,
     pub(super) expanded_change_dirs: Vec<String>,
-    pub(super) page_history: Vec<AppPage>,
+    pub(super) nav_history: Vec<NavEntry>,
     pub(super) history_index: usize,
+    /// Suppresses history pushes while applying back/forward.
+    navigating_history: bool,
+    pub(super) branch_form: BranchForm,
+    pub(super) file_op_form: FileOpForm,
+    pub(super) sidebar_collapsed: bool,
+    pub(super) busy: Option<BusyKind>,
+    /// When the stage action strip is too narrow, collapse actions into a dropdown.
+    pub(super) stage_bar_compact: bool,
+    /// Checkbox state for the fetch-on-open prompt.
+    pub(super) fetch_dont_ask: bool,
+    /// Repo root we already prompted for this session (avoid repeat).
+    pub(super) fetch_prompted_root: Option<PathBuf>,
     pub(super) focus_handle: FocusHandle,
     refresh_task: Option<Task<()>>,
 }
@@ -63,6 +101,8 @@ impl AppView {
         });
         let branch_input =
             cx.new(|cx| InputState::new(window, cx).placeholder(t.branch_placeholder));
+        let file_op_input =
+            cx.new(|cx| InputState::new(window, cx).placeholder(t.file_op_placeholder));
         let custom_editor_input = cx.new(|cx| {
             InputState::new(window, cx).placeholder(r#"e.g. "C:\path\to\editor.exe" --wait"#)
         });
@@ -84,6 +124,7 @@ impl AppView {
             status_line: t.loading.into(),
             commit_input,
             branch_input,
+            file_op_input,
             custom_editor_input,
             preview_input,
             preview_path: None,
@@ -96,16 +137,31 @@ impl AppView {
             locale: prefs.locale,
             changes_as_tree: prefs.changes_as_tree,
             auto_refresh: prefs.auto_refresh,
+            ask_fetch_on_open: prefs.ask_fetch_on_open,
+            fetch_prompt_muted: prefs.fetch_prompt_muted,
             expanded_dirs: Vec::new(),
             expanded_change_dirs: Vec::new(),
-            page_history: vec![AppPage::Git],
+            nav_history: vec![NavEntry::page_only(AppPage::Git)],
             history_index: 0,
+            navigating_history: false,
+            branch_form: BranchForm::Hidden,
+            file_op_form: FileOpForm::Hidden,
+            sidebar_collapsed: false,
+            busy: None,
+            stage_bar_compact: false,
+            fetch_dont_ask: false,
+            fetch_prompted_root: None,
             focus_handle: focus_handle.clone(),
             refresh_task: None,
         };
         view.apply_theme(cx);
         view.reload(cx);
         view.sync_auto_refresh(cx);
+        // Root (dialogs/sheets) is wrapped around this view after construction.
+        // Defer the fetch prompt until the window host is ready.
+        cx.defer_in(window, |this, window, cx| {
+            this.maybe_prompt_fetch(window, cx);
+        });
         window.focus(&focus_handle, cx);
         view
     }
@@ -119,7 +175,50 @@ impl AppView {
     }
 
     pub(super) fn can_go_forward(&self) -> bool {
-        self.history_index + 1 < self.page_history.len()
+        self.history_index + 1 < self.nav_history.len()
+    }
+
+    pub(super) fn current_nav_entry(&self) -> NavEntry {
+        NavEntry {
+            page: self.page,
+            preview: self.preview_path.clone(),
+        }
+    }
+
+    pub(super) fn push_nav_entry(&mut self, entry: NavEntry) {
+        if self.navigating_history {
+            return;
+        }
+        if self
+            .nav_history
+            .get(self.history_index)
+            .is_some_and(|cur| cur == &entry)
+        {
+            return;
+        }
+        self.nav_history.truncate(self.history_index + 1);
+        self.nav_history.push(entry);
+        self.history_index = self.nav_history.len() - 1;
+    }
+
+    fn apply_nav_entry(
+        &mut self,
+        entry: NavEntry,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.navigating_history = true;
+        self.page = entry.page;
+        match entry.preview {
+            Some(path) => {
+                self.ensure_parents_expanded(&path);
+                self.load_preview_into(&path, window, cx);
+            }
+            None => {
+                self.preview_path = None;
+            }
+        }
+        self.navigating_history = false;
     }
 
     pub(super) fn repo_root(&self) -> PathBuf {
@@ -238,34 +337,57 @@ impl AppView {
         if page == self.page {
             return;
         }
-        self.page_history.truncate(self.history_index + 1);
-        self.page_history.push(page);
-        self.history_index = self.page_history.len() - 1;
         self.page = page;
+        self.push_nav_entry(self.current_nav_entry());
         cx.notify();
     }
 
-    pub(super) fn history_back(&mut self, cx: &mut Context<Self>) {
+    pub(super) fn history_back(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !self.can_go_back() {
             return;
         }
         self.history_index -= 1;
-        self.page = self.page_history[self.history_index];
+        let entry = self.nav_history[self.history_index].clone();
+        self.apply_nav_entry(entry, window, cx);
         cx.notify();
     }
 
-    pub(super) fn history_forward(&mut self, cx: &mut Context<Self>) {
+    pub(super) fn history_forward(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !self.can_go_forward() {
             return;
         }
         self.history_index += 1;
-        self.page = self.page_history[self.history_index];
+        let entry = self.nav_history[self.history_index].clone();
+        self.apply_nav_entry(entry, window, cx);
         cx.notify();
     }
 
     pub(super) fn set_change_sort(&mut self, sort: ChangeSort, cx: &mut Context<Self>) {
         self.change_sort = sort.normalized();
         self.persist_prefs(cx);
+        cx.notify();
+    }
+
+    pub(super) fn toggle_change_sort_name(&mut self, cx: &mut Context<Self>) {
+        let next = match self.change_sort.normalized() {
+            ChangeSort::NameAsc => ChangeSort::NameDesc,
+            ChangeSort::NameDesc => ChangeSort::NameAsc,
+            ChangeSort::Legacy => ChangeSort::NameDesc,
+        };
+        self.set_change_sort(next, cx);
+    }
+
+    pub(super) fn toggle_sidebar_collapsed(&mut self, cx: &mut Context<Self>) {
+        self.sidebar_collapsed = !self.sidebar_collapsed;
+        cx.notify();
+    }
+
+    pub(super) fn close_preview(&mut self, cx: &mut Context<Self>) {
+        if self.preview_path.is_none() {
+            return;
+        }
+        self.preview_path = None;
+        self.push_nav_entry(self.current_nav_entry());
         cx.notify();
     }
 
@@ -305,12 +427,106 @@ impl AppView {
         self.commit_input.update(cx, |input, cx| {
             input.set_placeholder(t.commit_placeholder, window, cx);
         });
+        let branch_ph = match &self.branch_form {
+            BranchForm::Rename { .. } => t.rename_placeholder,
+            _ => t.branch_placeholder,
+        };
         self.branch_input.update(cx, |input, cx| {
-            input.set_placeholder(t.branch_placeholder, window, cx);
+            input.set_placeholder(branch_ph, window, cx);
         });
         self.preview_input.update(cx, |input, cx| {
             input.set_placeholder(t.preview_placeholder, window, cx);
         });
+    }
+
+    pub(super) fn toggle_create_branch_form(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if matches!(self.branch_form, BranchForm::Create) {
+            self.close_branch_form(window, cx);
+            return;
+        }
+        self.branch_form = BranchForm::Create;
+        let t = self.t();
+        self.branch_input.update(cx, |input, cx| {
+            input.set_value("", window, cx);
+            input.set_placeholder(t.branch_placeholder, window, cx);
+        });
+        cx.notify();
+    }
+
+    pub(super) fn start_rename_branch(
+        &mut self,
+        name: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.branch_form = BranchForm::Rename {
+            from: name.clone(),
+        };
+        let t = self.t();
+        self.branch_input.update(cx, |input, cx| {
+            input.set_value(&name, window, cx);
+            input.set_placeholder(t.rename_placeholder, window, cx);
+        });
+        cx.notify();
+    }
+
+    pub(super) fn close_branch_form(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.branch_form = BranchForm::Hidden;
+        let t = self.t();
+        self.branch_input.update(cx, |input, cx| {
+            input.set_value("", window, cx);
+            input.set_placeholder(t.branch_placeholder, window, cx);
+        });
+        cx.notify();
+    }
+
+    pub(super) fn start_file_rename(
+        &mut self,
+        path: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let name = path
+            .rsplit('/')
+            .next()
+            .unwrap_or(path.as_str())
+            .to_string();
+        self.file_op_form = FileOpForm::Rename { from: path };
+        let t = self.t();
+        self.file_op_input.update(cx, |input, cx| {
+            input.set_value(&name, window, cx);
+            input.set_placeholder(t.file_op_placeholder, window, cx);
+        });
+        cx.notify();
+    }
+
+    pub(super) fn start_file_move(
+        &mut self,
+        path: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.file_op_form = FileOpForm::Move { from: path.clone() };
+        let t = self.t();
+        self.file_op_input.update(cx, |input, cx| {
+            input.set_value(&path, window, cx);
+            input.set_placeholder(t.move_placeholder, window, cx);
+        });
+        cx.notify();
+    }
+
+    pub(super) fn close_file_op_form(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.file_op_form = FileOpForm::Hidden;
+        let t = self.t();
+        self.file_op_input.update(cx, |input, cx| {
+            input.set_value("", window, cx);
+            input.set_placeholder(t.file_op_placeholder, window, cx);
+        });
+        cx.notify();
     }
 
     pub(super) fn apply_theme(&self, cx: &mut App) {
@@ -375,10 +591,36 @@ impl AppView {
             group_by_status: self.group_by_status,
             changes_as_tree: self.changes_as_tree,
             auto_refresh: self.auto_refresh,
+            ask_fetch_on_open: self.ask_fetch_on_open,
+            fetch_prompt_muted: self.fetch_prompt_muted.clone(),
         };
         if let Err(err) = prefs.save() {
             self.error = Some(format!("Failed to save settings: {err:#}").into());
         }
+    }
+
+    pub(super) fn set_stage_bar_compact(&mut self, compact: bool, cx: &mut Context<Self>) {
+        if self.stage_bar_compact != compact {
+            self.stage_bar_compact = compact;
+            cx.notify();
+        }
+    }
+
+    pub(super) fn set_ask_fetch_on_open(&mut self, enabled: bool, cx: &mut Context<Self>) {
+        self.ask_fetch_on_open = enabled;
+        self.persist_prefs(cx);
+        cx.notify();
+    }
+
+    pub(super) fn unmute_fetch_prompt(&mut self, root: String, cx: &mut Context<Self>) {
+        self.fetch_prompt_muted.retain(|p| p != &root);
+        self.persist_prefs(cx);
+        cx.notify();
+    }
+
+    pub(super) fn set_fetch_dont_ask(&mut self, checked: bool, cx: &mut Context<Self>) {
+        self.fetch_dont_ask = checked;
+        cx.notify();
     }
 
     pub(super) fn toggle_dir(&mut self, rel_path: String, cx: &mut Context<Self>) {

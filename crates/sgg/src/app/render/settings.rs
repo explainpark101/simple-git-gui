@@ -7,11 +7,13 @@ use gpui_kit::component::{ActiveTheme as _, Selectable as _, Sizable as _};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
+use crate::app::busy::BusyKind;
 use crate::app::editor::{EditorPreset, ZED_DOWNLOAD_URL};
 use crate::app::i18n::Locale;
 use crate::app::prefs::{ThemePreference, settings_path};
 use crate::app::view::AppView;
-use crate::app::widgets::{action_btn, display_btn};
+use crate::app::widgets::{action_btn, display_btn, with_busy};
+use gpui_kit::assets::IconName as AssetIcon;
 
 pub fn render(view: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
     let t = view.t();
@@ -222,7 +224,24 @@ pub fn render(view: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
                 .rounded_lg()
                 .border_1()
                 .border_color(cx.theme().border)
-                .child(div().font_semibold().text_left().child(t.external_editor))
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .gap_2()
+                        .child(div().font_semibold().text_left().child(t.external_editor))
+                        .child(
+                            display_btn("zed-install")
+                                .ghost()
+                                .small()
+                                .label(t.zed_install)
+                                .tooltip(t.tip_zed_install)
+                                .on_click(|_, _, cx| {
+                                    cx.open_url(ZED_DOWNLOAD_URL);
+                                }),
+                        ),
+                )
                 .child(
                     div()
                         .text_xs()
@@ -231,57 +250,58 @@ pub fn render(view: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
                         .child(t.external_editor_help),
                 )
                 .child(
-                    div().flex().justify_start().child(
-                        display_btn("zed-install")
-                            .outline()
-                            .small()
-                            .label(t.zed_install)
-                            .tooltip(t.tip_zed_install)
-                            .on_click(|_, _, cx| {
-                                cx.open_url(ZED_DOWNLOAD_URL);
-                            }),
-                    ),
+                    div()
+                        .flex()
+                        .items_center()
+                        .justify_start()
+                        .gap_2()
+                        .child(editor_select(view, t.tip_editor_select, cx))
+                        .child(
+                            with_busy(
+                                crate::app::widgets::confirm_btn(
+                                    "open-project-editor",
+                                    AssetIcon::ExternalLink,
+                                    cx,
+                                )
+                                .small()
+                                .label(format!("{} {}", t.open_project_in, editor.label()))
+                                .tooltip(t.tip_open_project)
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.open_project_in_editor_busy(window, cx)
+                                })),
+                                view.busy,
+                                BusyKind::OpenProject,
+                            ),
+                        ),
                 )
-                .child(editor_select(view, t.tip_editor_select, cx))
                 .when(editor.preset == EditorPreset::Custom, |this| {
                     this.child(
                         div()
                             .flex()
-                            .flex_col()
+                            .items_center()
                             .gap_2()
                             .child(
                                 div()
-                                    .text_xs()
-                                    .text_left()
-                                    .text_color(cx.theme().muted_foreground)
-                                    .child(t.custom_command),
+                                    .flex_1()
+                                    .min_w_0()
+                                    .child(Input::new(&view.custom_editor_input)),
                             )
-                            .child(Input::new(&view.custom_editor_input))
                             .child(
-                                div().flex().justify_center().child(
-                                    action_btn("save-custom-editor")
+                                with_busy(
+                                    action_btn("save-custom-editor", AssetIcon::Save)
                                         .outline()
                                         .small()
                                         .label(t.save_command)
                                         .tooltip(t.tip_save_command)
-                                        .on_click(cx.listener(|this, _, _, cx| {
-                                            this.save_custom_editor_command(cx)
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            this.save_custom_editor_command(window, cx)
                                         })),
+                                    view.busy,
+                                    BusyKind::SaveEditor,
                                 ),
                             ),
                     )
-                })
-                .child(
-                    div().flex().justify_center().child(
-                        action_btn("open-project-editor")
-                            .primary()
-                            .label(format!("{} {}", t.open_project_in, editor.label()))
-                            .tooltip(t.tip_open_project)
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.open_project_in_editor(cx)
-                            })),
-                    ),
-                ),
+                }),
         )
         .child(
             div()
@@ -292,23 +312,154 @@ pub fn render(view: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
                 .rounded_lg()
                 .border_1()
                 .border_color(cx.theme().border)
-                .child(div().font_semibold().text_left().child(t.repository))
+                .child(div().font_semibold().text_left().child(t.fetch_on_open))
                 .child(
                     div()
                         .text_xs()
                         .text_left()
                         .text_color(cx.theme().muted_foreground)
-                        .child(format!("{}: {path}", t.current_path)),
+                        .child(t.fetch_on_open_help),
                 )
                 .child(
-                    div().flex().justify_center().child(
-                        action_btn("settings-open-folder")
+                    div()
+                        .flex()
+                        .justify_start()
+                        .gap_2()
+                        .child(
+                            display_btn("ask-fetch-on")
+                                .outline()
+                                .label(t.ask_fetch_on)
+                                .tooltip(t.tip_ask_fetch_on)
+                                .selected(view.ask_fetch_on_open)
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.set_ask_fetch_on_open(true, cx)
+                                })),
+                        )
+                        .child(
+                            display_btn("ask-fetch-off")
+                                .outline()
+                                .label(t.ask_fetch_off)
+                                .tooltip(t.tip_ask_fetch_off)
+                                .selected(!view.ask_fetch_on_open)
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.set_ask_fetch_on_open(false, cx)
+                                })),
+                        ),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .gap_2()
+                        .child(
+                            div()
+                                .text_sm()
+                                .text_left()
+                                .font_semibold()
+                                .child(t.fetch_prompt_muted_list),
+                        )
+                        .child(
+                            action_btn("mute-current-fetch", AssetIcon::Ban)
+                                .outline()
+                                .small()
+                                .label(t.mute_current_repo)
+                                .tooltip(t.tip_mute_current_repo)
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.mute_current_fetch_prompt(cx)
+                                })),
+                        ),
+                )
+                .child(
+                    div()
+                        .text_xs()
+                        .text_left()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(t.fetch_prompt_muted_help),
+                )
+                .when(view.fetch_prompt_muted.is_empty(), |this| {
+                    this.child(
+                        div()
+                            .text_xs()
+                            .text_left()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(t.fetch_prompt_muted_empty),
+                    )
+                })
+                .children(view.fetch_prompt_muted.iter().cloned().map(|root| {
+                    let root_unmute = root.clone();
+                    div()
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .gap_2()
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .text_xs()
+                                .text_left()
+                                .whitespace_nowrap()
+                                .overflow_hidden()
+                                .text_ellipsis()
+                                .child(root),
+                        )
+                        .child(
+                            action_btn(
+                                SharedString::from(format!("unmute-fetch:{root_unmute}")),
+                                AssetIcon::RotateCcw,
+                            )
+                            .outline()
+                            .small()
+                            .label(t.unmute_fetch_prompt)
+                            .tooltip(t.tip_unmute_fetch_prompt)
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.unmute_fetch_prompt(root_unmute.clone(), cx);
+                            })),
+                        )
+                        .into_any_element()
+                })),
+        )
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .justify_between()
+                .gap_2()
+                .p_3()
+                .rounded_lg()
+                .border_1()
+                .border_color(cx.theme().border)
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap_1()
+                        .min_w_0()
+                        .child(div().font_semibold().text_left().child(t.repository))
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_left()
+                                .text_color(cx.theme().muted_foreground)
+                                .whitespace_nowrap()
+                                .overflow_hidden()
+                                .text_ellipsis()
+                                .child(format!("{}: {path}", t.current_path)),
+                        ),
+                )
+                .child(
+                    with_busy(
+                        action_btn("settings-open-folder", AssetIcon::FolderOpen)
                             .primary()
+                            .small()
                             .label(t.open_folder)
                             .tooltip(t.tip_open_folder)
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.open_folder(window, cx)
                             })),
+                        view.busy,
+                        BusyKind::OpenFolder,
                     ),
                 ),
         )
@@ -329,9 +480,10 @@ fn editor_select(
     let current = view.preferred_editor.preset;
     let entity = cx.entity();
 
-    div().w(px(280.)).child(
+    div().w(px(200.)).child(
         display_btn("editor-select-trigger")
             .outline()
+            .small()
             .w_full()
             .label(format!("{}  ▾", current.label()))
             .tooltip(tip)

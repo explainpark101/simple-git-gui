@@ -1,11 +1,13 @@
 mod changes;
 mod files_page;
+mod preview_pane;
 mod settings;
 mod sidebar;
 mod status_style;
 mod toolbar;
 
 use gpui_kit::component::ActiveTheme as _;
+use gpui_kit::component::{h_resizable, resizable_panel};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
@@ -31,6 +33,8 @@ impl Render for AppView {
             .map(|s| s.remotes.clone())
             .unwrap_or_default();
         let focus = self.focus_handle(cx);
+        let preview_open = self.preview_path.is_some();
+        let sidebar_collapsed = self.sidebar_collapsed;
 
         div()
             .id("sgg-root")
@@ -42,22 +46,22 @@ impl Render for AppView {
             .tab_index(0)
             .bg(cx.theme().background)
             .text_color(cx.theme().foreground)
-            .on_action(cx.listener(|this, _: &HistoryBack, _, cx| {
-                this.history_back(cx);
+            .on_action(cx.listener(|this, _: &HistoryBack, window, cx| {
+                this.history_back(window, cx);
             }))
-            .on_action(cx.listener(|this, _: &HistoryForward, _, cx| {
-                this.history_forward(cx);
+            .on_action(cx.listener(|this, _: &HistoryForward, window, cx| {
+                this.history_forward(window, cx);
             }))
-            .on_action(cx.listener(|this, _: &SavePreview, _, cx| {
-                this.save_preview(cx);
+            .on_action(cx.listener(|this, _: &SavePreview, window, cx| {
+                this.save_preview(window, cx);
             }))
             .on_mouse_down(
                 MouseButton::Navigate(NavigationDirection::Back),
-                cx.listener(|this, _, _, cx| this.history_back(cx)),
+                cx.listener(|this, _, window, cx| this.history_back(window, cx)),
             )
             .on_mouse_down(
                 MouseButton::Navigate(NavigationDirection::Forward),
-                cx.listener(|this, _, _, cx| this.history_forward(cx)),
+                cx.listener(|this, _, window, cx| this.history_forward(window, cx)),
             )
             .child(toolbar::render(self, cx))
             .when_some(self.error.clone(), |this, err| {
@@ -72,16 +76,54 @@ impl Render for AppView {
                         .child(err),
                 )
             })
-            .child(match self.page {
-                AppPage::Git => div()
-                    .flex()
-                    .flex_1()
-                    .min_h_0()
-                    .child(changes::render(self, changes, cx))
-                    .child(sidebar::render(self, branches, remotes, cx))
-                    .into_any_element(),
-                AppPage::Files => files_page::render(self, cx).into_any_element(),
-                AppPage::Settings => settings::render(self, cx).into_any_element(),
-            })
+            .child(
+                div().flex_1().min_h_0().w_full().child(match self.page {
+                    AppPage::Git => {
+                        let work = if preview_open {
+                            h_resizable("git-work")
+                                .child(
+                                    resizable_panel()
+                                        .size(px(320.))
+                                        .size_range(px(220.)..px(560.))
+                                        .child(
+                                            changes::render(self, changes, cx)
+                                                .into_any_element(),
+                                        ),
+                                )
+                                .child(
+                                    resizable_panel().child(
+                                        preview_pane::render(self, true, cx)
+                                            .into_any_element(),
+                                    ),
+                                )
+                                .into_any_element()
+                        } else {
+                            changes::render(self, changes, cx).into_any_element()
+                        };
+
+                        h_resizable("git-panes")
+                            .child(
+                                resizable_panel()
+                                    .size(if sidebar_collapsed {
+                                        px(48.)
+                                    } else {
+                                        px(300.)
+                                    })
+                                    .size_range(if sidebar_collapsed {
+                                        px(40.)..px(56.)
+                                    } else {
+                                        px(200.)..px(480.)
+                                    })
+                                    .child(
+                                        sidebar::render(self, branches, remotes, cx),
+                                    ),
+                            )
+                            .child(resizable_panel().child(work))
+                            .into_any_element()
+                    }
+                    AppPage::Files => files_page::render(self, cx).into_any_element(),
+                    AppPage::Settings => settings::render(self, cx).into_any_element(),
+                }),
+            )
     }
 }

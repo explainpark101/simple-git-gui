@@ -1,22 +1,33 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use sgg_core::RepoState;
+
 #[derive(Debug, Clone)]
 pub struct FsNode {
     pub name: String,
     pub rel_path: String,
     pub is_dir: bool,
     pub depth: usize,
+    pub ignored: bool,
 }
 
 /// List visible tree rows under `root`, expanding directories listed in `expanded`.
 pub fn list_tree(root: &Path, expanded: &[String]) -> Vec<FsNode> {
+    let ignored_checker = RepoState::open_nearest(root).ok();
     let mut out = Vec::new();
-    walk(root, "", 0, expanded, &mut out);
+    walk(root, "", 0, expanded, ignored_checker.as_ref(), &mut out);
     out
 }
 
-fn walk(root: &Path, rel: &str, depth: usize, expanded: &[String], out: &mut Vec<FsNode>) {
+fn walk(
+    root: &Path,
+    rel: &str,
+    depth: usize,
+    expanded: &[String],
+    repo: Option<&RepoState>,
+    out: &mut Vec<FsNode>,
+) {
     let dir = if rel.is_empty() {
         root.to_path_buf()
     } else {
@@ -52,14 +63,18 @@ fn walk(root: &Path, rel: &str, depth: usize, expanded: &[String], out: &mut Vec
         } else {
             format!("{rel}/{name}")
         };
+        let ignored = repo
+            .map(|r| r.is_path_ignored(Path::new(&child_rel)))
+            .unwrap_or(false);
         out.push(FsNode {
             name,
             rel_path: child_rel.clone(),
             is_dir,
             depth,
+            ignored,
         });
         if is_dir && expanded.iter().any(|p| p == &child_rel) {
-            walk(root, &child_rel, depth + 1, expanded, out);
+            walk(root, &child_rel, depth + 1, expanded, repo, out);
         }
     }
 }

@@ -1,0 +1,25 @@
+//! In-flight action kinds for button loading spinners.
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BusyKind {
+    Fetch,
+    Pull,
+    Push,
+    Commit,
+    Stage,
+    Unstage,
+    StageAll,
+    UnstageAll,
+    Revert,
+    CreateBranch,
+    SwitchBranch,
+    RenameBranch,
+    DeleteBranch,
+    SavePreview,
+    SaveEditor,
+    OpenFolder,
+    OpenProject,
+    FileRename,
+    FileDelete,
+    FileMove,
+}

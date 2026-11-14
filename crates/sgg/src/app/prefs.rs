@@ -33,6 +33,12 @@ pub struct AppPrefs {
     /// Periodically reload repository status / changes.
     #[serde(default)]
     pub auto_refresh: bool,
+    /// Ask whether to fetch when opening a repository (unless muted).
+    #[serde(default = "default_true")]
+    pub ask_fetch_on_open: bool,
+    /// Absolute repo roots that should skip the fetch-on-open prompt.
+    #[serde(default)]
+    pub fetch_prompt_muted: Vec<String>,
 }
 
 fn default_true() -> bool {
@@ -49,6 +55,8 @@ impl Default for AppPrefs {
             group_by_status: true,
             changes_as_tree: false,
             auto_refresh: false,
+            ask_fetch_on_open: true,
+            fetch_prompt_muted: Vec::new(),
         }
     }
 }

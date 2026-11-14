@@ -44,4 +44,26 @@ impl RepoState {
         run_git(&self.root, &["switch", name])?;
         Ok(())
     }
+
+    pub fn rename_branch(&self, old: &str, new: &str) -> Result<(), RepoError> {
+        let old = old.trim();
+        let new = new.trim();
+        if old.is_empty() || new.is_empty() {
+            return Err(RepoError::Message("branch name is empty".into()));
+        }
+        if old == new {
+            return Ok(());
+        }
+        run_git(&self.root, &["branch", "-m", old, new])?;
+        Ok(())
+    }
+
+    pub fn delete_branch(&self, name: &str) -> Result<(), RepoError> {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err(RepoError::Message("branch name is empty".into()));
+        }
+        run_git(&self.root, &["branch", "-D", name])?;
+        Ok(())
+    }
 }

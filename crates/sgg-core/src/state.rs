@@ -23,6 +23,11 @@ impl RepoState {
         &self.root
     }
 
+    /// Whether `rel` is ignored by `.gitignore` / exclude rules.
+    pub fn is_path_ignored(&self, rel: &Path) -> bool {
+        self.repo.is_path_ignored(rel).unwrap_or(false)
+    }
+
     pub fn snapshot(&self) -> Result<RepoSnapshot, RepoError> {
         Ok(RepoSnapshot {
             root: self.root.clone(),

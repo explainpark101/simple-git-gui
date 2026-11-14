@@ -93,7 +93,7 @@ impl ExternalEditor {
         self.launch(&root.join(rel), OpenKind::File)
     }
 
-    fn launch(&self, path: &Path, kind: OpenKind) -> Result<()> {
+    fn launch(&self, path: &Path, _kind: OpenKind) -> Result<()> {
         let path = path
             .canonicalize()
             .with_context(|| format!("canonicalize {}", path.display()))
@@ -110,8 +110,8 @@ impl ExternalEditor {
         let mut last_err = None;
         for bin in self.preset.candidates() {
             let mut command = Command::new(bin);
-            // Open files in an existing Zed window (`--existing`), not classic/new-window behavior.
-            if self.preset == EditorPreset::Zed && kind == OpenKind::File {
+            // Prefer an existing Zed window for both project folders and files.
+            if self.preset == EditorPreset::Zed {
                 command.arg("--existing");
             }
             command.arg(&path);

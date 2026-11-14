@@ -55,6 +55,14 @@ This document tracks planned work beyond the current MVP.
 - Preview / edit before commit
 - Offline fallback when no provider is configured
 
+### CLI
+
+- Ship / expose `sgg` as a command-line entry point (on `PATH` after install)
+- Open a repository from the shell: `sgg [path]` (default: cwd; resolve nearest `.git`)
+- Common flags: `--help`, `--version`, optional `--page git|files|settings`
+- Headless-friendly error messages when path is not a git repo
+- Document install paths so shells and agents can invoke the same binary as the GUI
+
 ### Packaging
 
 - Smaller release binary (`LTO`, strip, size-oriented profile)
