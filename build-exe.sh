@@ -3,6 +3,10 @@
 # Prefer cargo-packager (NSIS) over Inno Setup: one Rust toolchain for
 # Windows/macOS/Linux packages, and the custom NSIS template registers the
 # Explorer context menu ("여기서 sgg 열기") on install / removes it on uninstall.
+#
+# CI also copies target/release/sgg.exe into dist/ as a portable binary:
+#   sgg_portable.exe       (x86_64)
+#   sgg_portable_arm64.exe (aarch64 / Snapdragon)
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

@@ -81,6 +81,10 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
 
+  # Artifacts:
+  # - Windows: *-setup.exe (NSIS installer) + sgg_portable*.exe (no-install binary)
+  # - macOS: *.dmg
+  # - Linux: *.AppImage + linux_sgg_portable (raw ELF, same role as portable .exe)
   build:
     needs: prepare
     if: needs.prepare.outputs.should_release == 'true'
@@ -89,25 +93,38 @@ jobs:
       matrix:
         include:
           - os: windows-latest
-            target: windows
+            target: windows-x64
             script: ./build-exe.sh
-            artifact: windows
+            artifact: windows-x64
+            # Zip-friendly standalone binary (x86_64). Installer is separate.
+            portable_name: sgg_portable.exe
             glob: |
               dist/*-setup.exe
-              dist/sgg.exe
+              dist/sgg_portable.exe
+          - os: windows-11-arm
+            target: windows-arm64
+            script: ./build-exe.sh
+            artifact: windows-arm64
+            # Snapdragon / Windows on ARM portable binary.
+            portable_name: sgg_portable_arm64.exe
+            glob: |
+              dist/*-setup.exe
+              dist/sgg_portable_arm64.exe
           - os: macos-latest
             target: macos
             script: ./build-dmg.sh
             artifact: macos
+            portable_name: ""
             glob: |
               dist/*.dmg
           - os: ubuntu-latest
             target: linux
             script: ./build-appimage.sh
             artifact: linux
+            portable_name: linux_sgg_portable
             glob: |
               dist/*.AppImage
-              dist/sgg
+              dist/linux_sgg_portable
     runs-on: ${{ matrix.os }}
     defaults:
       run:
@@ -140,14 +157,24 @@ jobs:
           chmod +x build.sh run.sh build-exe.sh build-dmg.sh build-appimage.sh packaging/common.sh || true
           ${{ matrix.script }}
 
-      - name: Also keep release binary in dist
+      - name: Also keep portable release binary in dist
         run: |
+          set -euo pipefail
           mkdir -p dist
+          PORTABLE_NAME="${{ matrix.portable_name }}"
+          if [[ -z "${PORTABLE_NAME}" ]]; then
+            ls -lah dist || true
+            exit 0
+          fi
           if [[ -f target/release/sgg.exe ]]; then
-            cp -f target/release/sgg.exe dist/sgg.exe
+            cp -f target/release/sgg.exe "dist/${PORTABLE_NAME}"
           elif [[ -f target/release/sgg ]]; then
-            cp -f target/release/sgg dist/sgg
-            chmod +x dist/sgg
+            cp -f target/release/sgg "dist/${PORTABLE_NAME}"
+            chmod +x "dist/${PORTABLE_NAME}"
+          else
+            echo "error: release binary not found under target/release/" >&2
+            ls -lah target/release || true
+            exit 1
           fi
           ls -lah dist || true
 
