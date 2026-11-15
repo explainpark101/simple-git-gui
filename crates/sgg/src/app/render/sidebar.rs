@@ -609,6 +609,7 @@ fn progress_panel(view: &AppView, cx: &mut Context<AppView>) -> AnyElement {
                             div()
                                 .text_xs()
                                 .text_left()
+                                .font_family(".GitHub Mono, Cascadia Mono, Consolas, monospace")
                                 .text_color(cx.theme().muted_foreground)
                                 .whitespace_normal()
                                 .child(entry.detail.clone()),

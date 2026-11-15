@@ -81,6 +81,17 @@ pub fn render(view: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
                 .items_center()
                 .gap_1()
                 .child(
+                    action_btn("toolbar-terminal", AssetIcon::SquareTerminal)
+                        .outline()
+                        .small()
+                        .label(t.terminal)
+                        .tooltip(t.tip_toggle_terminal)
+                        .selected(view.terminal.visible)
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.toggle_terminal(window, cx)
+                        })),
+                )
+                .child(
                     with_busy(
                         action_btn("toolbar-open-folder", AssetIcon::FolderOpen)
                             .outline()

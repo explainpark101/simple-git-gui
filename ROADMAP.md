@@ -17,12 +17,12 @@ This document tracks planned work beyond the current MVP.
 
 ## Planned
 
-### Terminal emulator (high priority)
+### Terminal emulator — shipped in v1.3.0
 
-- Embed a PTY-backed terminal (`portable-pty` + VTE-style parser)
-- Render ANSI output inside a GPUI view
-- Default cwd = repo root
-- Split pane: Changes | Terminal
+- Embed a PTY-backed terminal (`portable-pty` + `alacritty_terminal` VTE)
+- Bottom dock with tabs; default cwd = repo root
+- Shortcuts: `Ctrl+`` / `Ctrl+~` toggle, `Ctrl+Shift+`` / `Ctrl+Shift+~` new tab
+- Later: libghostty-vt when Zig is available in the build toolchain; richer ANSI colors / scrollback UI
 
 ### History
 

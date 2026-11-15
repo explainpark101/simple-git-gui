@@ -20,7 +20,9 @@ use super::page::AppPage;
 use super::view::AppView;
 use crate::app::busy::BusyKind;
 use crate::app::widgets::{action_btn, list_row_btn, with_busy};
-use crate::app::{ClosePreview, HistoryBack, HistoryForward, SavePreview};
+use crate::app::{
+    ClosePreview, HistoryBack, HistoryForward, NewTerminalTab, SavePreview, ToggleTerminal,
+};
 use sgg_core::{BranchInfo, RemoteInfo};
 
 impl Render for AppView {
@@ -41,6 +43,7 @@ impl Render for AppView {
         let focus = self.focus_handle(cx);
         let preview_open = self.preview_path.is_some();
         let sidebar_collapsed = self.sidebar_collapsed;
+        let terminal_visible = self.terminal.visible;
 
         div()
             .id("sgg-root")
@@ -63,6 +66,12 @@ impl Render for AppView {
             }))
             .on_action(cx.listener(|this, _: &ClosePreview, window, cx| {
                 this.close_preview(window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &ToggleTerminal, window, cx| {
+                this.toggle_terminal(window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &NewTerminalTab, window, cx| {
+                this.new_terminal_tab(window, cx);
             }))
             .on_mouse_down(
                 MouseButton::Navigate(NavigationDirection::Back),
@@ -142,6 +151,9 @@ impl Render for AppView {
                     }
                 }),
             )
+            .when(terminal_visible, |this| {
+                this.child(crate::app::terminal::render_panel(self, cx))
+            })
     }
 }
 

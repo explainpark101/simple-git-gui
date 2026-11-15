@@ -19,6 +19,11 @@ serde_json.workspace = true
 sgg-core.workspace = true
 gpui-kit = { version = "0.9", features = ["gpui-fast"] }
 clap = { version = "4", features = ["derive"] }
+# In-app terminal: PTY + VTE parser (ROADMAP). libghostty-vt needs Zig at
+# build time; alacritty_terminal is the portable VTE engine we ship today.
+portable-pty = "0.9"
+alacritty_terminal = "0.26"
+parking_lot = "0.12"
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.55"

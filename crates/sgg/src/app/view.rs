@@ -19,6 +19,7 @@ use super::prefs::{
 use super::progress::{
     ProgressEntry, ProgressState, PROGRESS_DEFAULT_HEIGHT, PROGRESS_LOG_LIMIT,
 };
+use super::terminal::TerminalDock;
 use super::reload::{load_repo, LoadRepoError, LoadedRepo};
 use super::render::status_style::{hsla_to_hex, theme_status_color, TreeStatusIndex};
 use super::sort::{group_and_sort, section_flat_rows, ChangeFlatRow, ChangeSection, ChangeSort};
@@ -167,6 +168,11 @@ pub struct AppView {
     pub(super) progress_collapsed: bool,
     /// Expanded Progress panel height (px); adjusted via the resizable split.
     pub(super) progress_panel_height: f32,
+    /// Bottom PTY terminal dock (portable-pty + alacritty VTE).
+    pub(super) terminal: TerminalDock,
+    pub(super) terminal_focus: FocusHandle,
+    pub(super) terminal_focused: bool,
+    terminal_poll_task: Option<Task<()>>,
     /// Narrow Changes list: letter status + action buttons only on row hover.
     pub(super) changes_list_compact: bool,
     /// Per Changes section title: header action buttons icon-only (no labels).
@@ -306,6 +312,10 @@ impl AppView {
             progress_log: Vec::new(),
             progress_collapsed: false,
             progress_panel_height: PROGRESS_DEFAULT_HEIGHT,
+            terminal: TerminalDock::default(),
+            terminal_focus: cx.focus_handle(),
+            terminal_focused: false,
+            terminal_poll_task: None,
             changes_list_compact: false,
             changes_section_hide_labels: HashMap::new(),
             changes_split_view: false,
@@ -322,6 +332,7 @@ impl AppView {
         view.wire_status_color_pickers(window, cx);
         view.wire_branch_search(cx);
         view.wire_commit_input(window, cx);
+        view.start_terminal_poll(cx);
         if view.start_path.is_some() {
             view.reload(cx);
             view.sync_auto_refresh(cx);
@@ -1329,6 +1340,73 @@ impl AppView {
         cx.notify();
     }
 
+    pub(super) fn toggle_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let cwd = self.has_repo().then(|| self.repo_root());
+        match self.terminal.toggle(cwd.as_deref()) {
+            Ok(()) => {
+                if self.terminal.visible {
+                    let width: f32 = window.bounds().size.width.into();
+                    self.terminal.maybe_resize_from_px(width);
+                    self.focus_terminal(window, cx);
+                } else {
+                    self.terminal_focused = false;
+                }
+                cx.notify();
+            }
+            Err(err) => self.set_error(format!("Terminal: {err:#}").into(), cx),
+        }
+    }
+
+    pub(super) fn new_terminal_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let cwd = self.has_repo().then(|| self.repo_root());
+        match self.terminal.spawn_session(cwd.as_deref()) {
+            Ok(()) => {
+                let width: f32 = window.bounds().size.width.into();
+                self.terminal.maybe_resize_from_px(width);
+                self.focus_terminal(window, cx);
+                cx.notify();
+            }
+            Err(err) => self.set_error(format!("Terminal: {err:#}").into(), cx),
+        }
+    }
+
+    pub(super) fn focus_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.terminal_focused = true;
+        window.focus(&self.terminal_focus, cx);
+        cx.notify();
+    }
+
+    pub(super) fn handle_terminal_key(&mut self, event: &KeyDownEvent, _cx: &mut Context<Self>) {
+        if !self.terminal.visible || !self.terminal_focused {
+            return;
+        }
+        if let Some(bytes) = super::terminal::key_event_to_bytes(event) {
+            self.terminal.write_input(&bytes);
+        }
+    }
+
+    fn start_terminal_poll(&mut self, cx: &mut Context<Self>) {
+        self.terminal_poll_task = Some(cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor()
+                    .timer(Duration::from_millis(33))
+                    .await;
+                let cont = this
+                    .update(cx, |this, cx| {
+                        if this.terminal.visible && this.terminal.take_dirty() {
+                            this.terminal.refresh_lines();
+                            cx.notify();
+                        }
+                        true
+                    })
+                    .unwrap_or(false);
+                if !cont {
+                    break;
+                }
+            }
+        }));
+    }
+
     pub(super) fn toggle_progress_collapsed(&mut self, cx: &mut Context<Self>) {
         self.progress_collapsed = !self.progress_collapsed;
         cx.notify();
@@ -1336,6 +1414,8 @@ impl AppView {
 
     pub(super) fn begin_progress(&mut self, kind: BusyKind) {
         let t = self.t();
+        // Git CLI stdout/stderr are captured in-process (no external cmd window)
+        // and written into this Progress dock when the op finishes.
         self.progress_log.push(ProgressEntry {
             title: kind.progress_label(t).into(),
             detail: t.progress_running.into(),

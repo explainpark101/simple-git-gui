@@ -12,6 +12,7 @@ mod reload;
 mod remote_url;
 mod render;
 mod sort;
+mod terminal;
 mod view;
 mod widgets;
 
@@ -24,7 +25,17 @@ pub use view::AppView;
 
 use prefs::absolute_path;
 
-gpui_kit::actions!(sgg, [HistoryBack, HistoryForward, SavePreview, ClosePreview]);
+gpui_kit::actions!(
+    sgg,
+    [
+        HistoryBack,
+        HistoryForward,
+        SavePreview,
+        ClosePreview,
+        ToggleTerminal,
+        NewTerminalTab,
+    ]
+);
 
 pub fn run(start: Option<PathBuf>) {
     let start = start.map(absolute_path);
@@ -44,6 +55,12 @@ pub fn run(start: Option<PathBuf>) {
                 KeyBinding::new("ctrl-]", HistoryForward, Some("AppView")),
                 KeyBinding::new("ctrl-s", SavePreview, Some("AppView")),
                 KeyBinding::new("ctrl-w", ClosePreview, Some("AppView")),
+                // Terminal: Ctrl+` / Ctrl+~ toggle; Ctrl+Shift+` / Ctrl+Shift+~ new tab
+                // (same physical key as VS Code / ROADMAP ctrl ~ / ctrl shift ~).
+                KeyBinding::new("ctrl-`", ToggleTerminal, Some("AppView")),
+                KeyBinding::new("ctrl-~", ToggleTerminal, Some("AppView")),
+                KeyBinding::new("ctrl-shift-`", NewTerminalTab, Some("AppView")),
+                KeyBinding::new("ctrl-shift-~", NewTerminalTab, Some("AppView")),
             ]);
 
             let bounds = Bounds::centered(None, size(px(1100.), px(720.)), cx);
