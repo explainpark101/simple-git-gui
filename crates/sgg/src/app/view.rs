@@ -15,11 +15,13 @@ use super::i18n::{Locale, UiText};
 use super::page::{AppPage, NavEntry};
 use super::prefs::{
     absolute_path, display_path, remember_repo, AppPrefs, StatusColors, ThemePreference,
+    DEFAULT_TERMINAL_FONT_FAMILY, DEFAULT_TERMINAL_FONT_SIZE, DEFAULT_TERMINAL_LINE_HEIGHT,
 };
 use super::progress::{
     ProgressEntry, ProgressState, PROGRESS_DEFAULT_HEIGHT, PROGRESS_LOG_LIMIT,
 };
 use super::terminal::TerminalDock;
+use super::terminal_shell::{TerminalShellKind, TerminalShellPrefs};
 use super::reload::{load_repo, LoadRepoError, LoadedRepo};
 use super::render::status_style::{hsla_to_hex, theme_status_color, TreeStatusIndex};
 use super::sort::{group_and_sort, section_flat_rows, ChangeFlatRow, ChangeSection, ChangeSort};
@@ -114,7 +116,16 @@ pub struct AppView {
     pub(super) remote_name_input: Entity<InputState>,
     pub(super) remote_url_input: Entity<InputState>,
     pub(super) custom_editor_input: Entity<InputState>,
+    pub(super) terminal_font_input: Entity<InputState>,
     pub(super) preview_input: Entity<EditorState>,
+    pub(super) terminal_font_family: String,
+    pub(super) terminal_font_size: f32,
+    pub(super) terminal_line_height: f32,
+    pub(super) terminal_shell: TerminalShellPrefs,
+    pub(super) terminal_shell_input: Entity<InputState>,
+    /// Blinking caret phase for the focused terminal.
+    pub(super) terminal_caret_on: bool,
+    terminal_caret_ticks: u32,
     pub(super) preview_path: Option<String>,
     /// Open preview tabs on the Files page (Git uses a single `preview_path`).
     pub(super) preview_tabs: Vec<PreviewTab>,
@@ -226,6 +237,13 @@ impl AppView {
         let custom_editor_input = cx.new(|cx| {
             InputState::new(window, cx).placeholder(r#"e.g. "C:\path\to\editor.exe" --wait"#)
         });
+        let terminal_font_input = cx.new(|cx| {
+            InputState::new(window, cx).placeholder(DEFAULT_TERMINAL_FONT_FAMILY)
+        });
+        let terminal_shell_input = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder(r#"e.g. "C:\Program Files\Git\bin\bash.exe" --login"#)
+        });
         // Code editor: line numbers + Ctrl/Cmd-F. soft_wrap(false) keeps the
         // gpui-base display_map on buffer lines only (visible-range paint), which
         // avoids wrap-map thrash on large files. Syntax stays plaintext — tree-sitter
@@ -239,6 +257,12 @@ impl AppView {
 
         custom_editor_input.update(cx, |input, cx| {
             input.set_value(&prefs.editor.custom_command, window, cx);
+        });
+        terminal_font_input.update(cx, |input, cx| {
+            input.set_value(&prefs.terminal_font_family, window, cx);
+        });
+        terminal_shell_input.update(cx, |input, cx| {
+            input.set_value(&prefs.terminal_shell.custom_command, window, cx);
         });
 
         let status_colors = prefs.status_colors.clone();
@@ -271,7 +295,15 @@ impl AppView {
             remote_name_input,
             remote_url_input,
             custom_editor_input,
+            terminal_font_input,
             preview_input,
+            terminal_font_family: prefs.terminal_font_family.clone(),
+            terminal_font_size: prefs.terminal_font_size,
+            terminal_line_height: prefs.terminal_line_height,
+            terminal_shell: prefs.terminal_shell.clone(),
+            terminal_shell_input,
+            terminal_caret_on: true,
+            terminal_caret_ticks: 0,
             preview_path: None,
             preview_tabs: Vec::new(),
             preview_tab_index: 0,
@@ -1160,6 +1192,13 @@ impl AppView {
             fetch_prompt_muted: self.fetch_prompt_muted.clone(),
             recent_repos: self.recent_repos.clone(),
             status_colors: self.status_colors.clone(),
+            terminal_font_family: self.terminal_font_family.clone(),
+            terminal_font_size: self.terminal_font_size,
+            terminal_line_height: self.terminal_line_height,
+            terminal_shell: {
+                self.sync_terminal_shell_from_input(cx);
+                self.terminal_shell.clone()
+            },
         };
         if let Err(err) = prefs.save() {
             self.error = Some(format!("Failed to save settings: {err:#}").into());
@@ -1342,11 +1381,12 @@ impl AppView {
 
     pub(super) fn toggle_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let cwd = self.has_repo().then(|| self.repo_root());
-        match self.terminal.toggle(cwd.as_deref()) {
+        self.sync_terminal_shell_from_input(cx);
+        let shell = self.terminal_shell.clone();
+        match self.terminal.toggle(cwd.as_deref(), &shell) {
             Ok(()) => {
                 if self.terminal.visible {
-                    let width: f32 = window.bounds().size.width.into();
-                    self.terminal.maybe_resize_from_px(width);
+                    self.resize_terminal_to_window(window);
                     self.focus_terminal(window, cx);
                 } else {
                     self.terminal_focused = false;
@@ -1359,10 +1399,11 @@ impl AppView {
 
     pub(super) fn new_terminal_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let cwd = self.has_repo().then(|| self.repo_root());
-        match self.terminal.spawn_session(cwd.as_deref()) {
+        self.sync_terminal_shell_from_input(cx);
+        let shell = self.terminal_shell.clone();
+        match self.terminal.spawn_session(cwd.as_deref(), &shell) {
             Ok(()) => {
-                let width: f32 = window.bounds().size.width.into();
-                self.terminal.maybe_resize_from_px(width);
+                self.resize_terminal_to_window(window);
                 self.focus_terminal(window, cx);
                 cx.notify();
             }
@@ -1370,18 +1411,183 @@ impl AppView {
         }
     }
 
+    pub(super) fn sync_terminal_shell_from_input(&mut self, cx: &App) {
+        self.terminal_shell.custom_command =
+            self.terminal_shell_input.read(cx).value().to_string();
+    }
+
+    pub(super) fn set_terminal_shell_kind(
+        &mut self,
+        kind: TerminalShellKind,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.terminal_shell.kind = kind;
+        self.persist_prefs(cx);
+        cx.notify();
+    }
+
+    pub(super) fn apply_terminal_shell_custom(
+        &mut self,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.sync_terminal_shell_from_input(cx);
+        self.terminal_shell.kind = TerminalShellKind::Custom;
+        self.persist_prefs(cx);
+        cx.notify();
+    }
+
+    pub(super) fn terminal_line_px(&self) -> f32 {
+        super::terminal::terminal_line_px(self.terminal_font_size, self.terminal_line_height)
+    }
+
+    pub(super) fn resize_terminal_to_window(&mut self, window: &Window) {
+        let width: f32 = window.bounds().size.width.into();
+        self.terminal.maybe_resize_from_px(
+            width,
+            self.terminal_font_size,
+            self.terminal_line_height,
+        );
+    }
+
+    pub(super) fn set_terminal_height(
+        &mut self,
+        height: f32,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let prev = self.terminal.height();
+        self.terminal.set_height(height);
+        if (self.terminal.height() - prev).abs() < 0.5 {
+            return;
+        }
+        self.resize_terminal_to_window(window);
+        self.terminal.refresh_lines();
+        cx.notify();
+    }
+
+    pub(super) fn set_terminal_font_family(
+        &mut self,
+        family: impl Into<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let mut family = family.into();
+        if family.trim().is_empty() {
+            family = DEFAULT_TERMINAL_FONT_FAMILY.to_string();
+        }
+        self.terminal_font_family = family.clone();
+        self.terminal_font_input.update(cx, |input, cx| {
+            input.set_value(&family, window, cx);
+        });
+        self.resize_terminal_to_window(window);
+        self.persist_prefs(cx);
+        cx.notify();
+    }
+
+    pub(super) fn apply_terminal_font_from_input(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let family = self.terminal_font_input.read(cx).value().to_string();
+        self.set_terminal_font_family(family, window, cx);
+    }
+
+    pub(super) fn set_terminal_font_size(
+        &mut self,
+        size: f32,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.terminal_font_size = size.clamp(9.0, 32.0);
+        self.resize_terminal_to_window(window);
+        self.persist_prefs(cx);
+        cx.notify();
+    }
+
+    pub(super) fn bump_terminal_font_size(
+        &mut self,
+        delta: f32,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.set_terminal_font_size(self.terminal_font_size + delta, window, cx);
+    }
+
+    pub(super) fn set_terminal_line_height(
+        &mut self,
+        line_height: f32,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.terminal_line_height = line_height.clamp(1.0, 3.0);
+        self.resize_terminal_to_window(window);
+        self.persist_prefs(cx);
+        cx.notify();
+    }
+
+    pub(super) fn reset_terminal_font(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.terminal_font_size = DEFAULT_TERMINAL_FONT_SIZE;
+        self.terminal_line_height = DEFAULT_TERMINAL_LINE_HEIGHT;
+        self.set_terminal_font_family(DEFAULT_TERMINAL_FONT_FAMILY, window, cx);
+    }
+
     pub(super) fn focus_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.terminal_focused = true;
+        self.terminal_caret_on = true;
+        self.terminal_caret_ticks = 0;
         window.focus(&self.terminal_focus, cx);
         cx.notify();
     }
 
-    pub(super) fn handle_terminal_key(&mut self, event: &KeyDownEvent, _cx: &mut Context<Self>) {
-        if !self.terminal.visible || !self.terminal_focused {
+    pub(super) fn close_terminal_tab(
+        &mut self,
+        idx: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.terminal.close_at(idx);
+        if self.terminal.visible {
+            self.focus_terminal(window, cx);
+        } else {
+            self.terminal_focused = false;
+        }
+        cx.notify();
+    }
+
+    pub(super) fn close_active_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.terminal.close_active();
+        if self.terminal.visible {
+            self.focus_terminal(window, cx);
+        } else {
+            self.terminal_focused = false;
+        }
+        cx.notify();
+    }
+
+    pub(super) fn handle_terminal_key(
+        &mut self,
+        event: &KeyDownEvent,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.terminal.visible {
             return;
         }
+        // Ensure focus flag stays true while the pane is receiving keys.
+        self.terminal_focused = true;
         if let Some(bytes) = super::terminal::key_event_to_bytes(event) {
             self.terminal.write_input(&bytes);
+            // Restart blink so the caret stays visible while typing.
+            self.terminal_caret_on = true;
+            self.terminal_caret_ticks = 0;
+            cx.stop_propagation();
         }
     }
 
@@ -1393,8 +1599,21 @@ impl AppView {
                     .await;
                 let cont = this
                     .update(cx, |this, cx| {
+                        let mut dirty_ui = false;
                         if this.terminal.visible && this.terminal.take_dirty() {
                             this.terminal.refresh_lines();
+                            dirty_ui = true;
+                        }
+                        // ~530ms blink while the terminal pane is focused.
+                        if this.terminal.visible && this.terminal_focused {
+                            this.terminal_caret_ticks = this.terminal_caret_ticks.wrapping_add(1);
+                            if this.terminal_caret_ticks >= 16 {
+                                this.terminal_caret_ticks = 0;
+                                this.terminal_caret_on = !this.terminal_caret_on;
+                                dirty_ui = true;
+                            }
+                        }
+                        if dirty_ui {
                             cx.notify();
                         }
                         true

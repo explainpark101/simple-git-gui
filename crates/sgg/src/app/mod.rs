@@ -13,6 +13,7 @@ mod remote_url;
 mod render;
 mod sort;
 mod terminal;
+mod terminal_shell;
 mod view;
 mod widgets;
 

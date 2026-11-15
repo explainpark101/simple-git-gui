@@ -4,11 +4,12 @@
 //! preferred long-term but requires Zig at build time; we use alacritty's VTE
 //! engine for a dependency-light shippable terminal today.
 
+mod colors;
 mod panel;
 mod session;
 
-pub use panel::{key_event_to_bytes, render as render_panel};
-pub use session::{TerminalSession, TerminalSnapshot};
+pub use panel::{key_event_to_bytes, render as render_panel, terminal_line_px};
+pub use session::{CursorState, DisplayLine, TerminalSession, TerminalSnapshot};
 
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -25,7 +26,9 @@ pub struct TerminalDock {
     /// Reader threads flip this; the UI task clears it after `cx.notify`.
     pub(crate) dirty: Arc<AtomicBool>,
     /// Cached display lines for the active session (rebuilt when dirty).
-    pub lines: Vec<String>,
+    pub lines: Vec<DisplayLine>,
+    /// Cached caret for the active session.
+    pub cursor: CursorState,
     /// Bumps when sessions change so the UI can refresh titles/tabs.
     pub generation: u64,
     height: f32,
@@ -44,6 +47,7 @@ impl Default for TerminalDock {
             next_id: 1,
             dirty: Arc::new(AtomicBool::new(false)),
             lines: Vec::new(),
+            cursor: CursorState::default(),
             generation: 0,
             height: TERMINAL_DEFAULT_HEIGHT,
         }
@@ -55,6 +59,10 @@ impl TerminalDock {
         self.height.clamp(TERMINAL_MIN_HEIGHT, TERMINAL_MAX_HEIGHT)
     }
 
+    pub fn set_height(&mut self, height: f32) {
+        self.height = height.clamp(TERMINAL_MIN_HEIGHT, TERMINAL_MAX_HEIGHT);
+    }
+
     pub fn active_session(&self) -> Option<&TerminalSession> {
         self.sessions.get(self.active)
     }
@@ -64,23 +72,31 @@ impl TerminalDock {
     }
 
     /// Toggle the dock. Spawns the first session if opening with none.
-    pub fn toggle(&mut self, cwd: Option<&Path>) -> anyhow::Result<()> {
+    pub fn toggle(
+        &mut self,
+        cwd: Option<&Path>,
+        shell: &crate::app::terminal_shell::TerminalShellPrefs,
+    ) -> anyhow::Result<()> {
         if self.visible {
             self.visible = false;
             return Ok(());
         }
         self.visible = true;
         if self.sessions.is_empty() {
-            self.spawn_session(cwd)?;
+            self.spawn_session(cwd, shell)?;
         }
         self.refresh_lines();
         Ok(())
     }
 
-    pub fn spawn_session(&mut self, cwd: Option<&Path>) -> anyhow::Result<()> {
+    pub fn spawn_session(
+        &mut self,
+        cwd: Option<&Path>,
+        shell: &crate::app::terminal_shell::TerminalShellPrefs,
+    ) -> anyhow::Result<()> {
         let id = self.next_id;
         self.next_id += 1;
-        let session = TerminalSession::spawn(id, cwd, Arc::clone(&self.dirty))?;
+        let session = TerminalSession::spawn(id, cwd, shell, Arc::clone(&self.dirty))?;
         self.sessions.push(session);
         self.active = self.sessions.len() - 1;
         self.generation = self.generation.wrapping_add(1);
@@ -95,13 +111,25 @@ impl TerminalDock {
             return;
         }
         let idx = self.active.min(self.sessions.len() - 1);
+        self.close_at(idx);
+    }
+
+    pub fn close_at(&mut self, idx: usize) {
+        if idx >= self.sessions.len() {
+            return;
+        }
         self.sessions.remove(idx);
         if self.sessions.is_empty() {
             self.active = 0;
             self.visible = false;
             self.lines.clear();
+            self.cursor = CursorState::default();
         } else {
-            self.active = idx.min(self.sessions.len() - 1);
+            if self.active > idx {
+                self.active -= 1;
+            } else if self.active >= self.sessions.len() {
+                self.active = self.sessions.len() - 1;
+            }
             self.refresh_lines();
         }
         self.generation = self.generation.wrapping_add(1);
@@ -132,12 +160,13 @@ impl TerminalDock {
     }
 
     pub fn refresh_lines(&mut self) {
-        self.lines = self
-            .active_session()
-            .map(|s| s.display_lines())
-            .unwrap_or_default();
+        let (lines, cursor) = match self.sessions.get(self.active) {
+            Some(s) => (s.display_lines(), s.cursor_state()),
+            None => (Vec::new(), CursorState::default()),
+        };
+        self.lines = lines;
+        self.cursor = cursor;
     }
-
 }
 
 /// Shared counter for unique session titles.

@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use super::editor::ExternalEditor;
 use super::i18n::Locale;
 use super::sort::ChangeSort;
+use super::terminal_shell::TerminalShellPrefs;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
@@ -105,10 +106,54 @@ pub struct AppPrefs {
     /// Custom colors for git status labels in Changes / Files.
     #[serde(default)]
     pub status_colors: StatusColors,
+    /// Terminal font family (CSS-like cascade). Empty uses the built-in default.
+    #[serde(default = "default_terminal_font_family")]
+    pub terminal_font_family: String,
+    /// Terminal font size in pixels.
+    #[serde(default = "default_terminal_font_size")]
+    pub terminal_font_size: f32,
+    /// Terminal line-height multiplier (Zed-style: 1.3 standard, 1.618 comfortable).
+    #[serde(default = "default_terminal_line_height")]
+    pub terminal_line_height: f32,
+    /// Shell used for new terminal tabs (Zed `terminal.shell`).
+    #[serde(default)]
+    pub terminal_shell: TerminalShellPrefs,
 }
 
 fn default_true() -> bool {
     true
+}
+
+/// Windows PostScript/family name for MesloLGS Nerd Font (Powerlevel10k).
+/// GPUI takes a single family — use [`DEFAULT_TERMINAL_FONT_FALLBACKS`] for the rest.
+pub const DEFAULT_TERMINAL_FONT_FAMILY: &str = "MesloLGS NF";
+/// Fallbacks when the primary Nerd Font is missing (Zed-style `font_fallbacks`).
+pub const DEFAULT_TERMINAL_FONT_FALLBACKS: &[&str] = &[
+    "MesloLGS Nerd Font",
+    "MesloLGSNerdFont",
+    "JetBrainsMono NF",
+    "JetBrainsMono Nerd Font",
+    "FiraCode Nerd Font",
+    "Cascadia Mono",
+    "Consolas",
+    "monospace",
+];
+pub const DEFAULT_TERMINAL_FONT_SIZE: f32 = 13.0;
+/// Matches Zed `TerminalLineHeight::Standard` (good for TUIs / box-drawing).
+pub const DEFAULT_TERMINAL_LINE_HEIGHT: f32 = 1.3;
+/// Matches Zed `TerminalLineHeight::Comfortable`.
+pub const COMFORTABLE_TERMINAL_LINE_HEIGHT: f32 = 1.618;
+
+fn default_terminal_font_family() -> String {
+    DEFAULT_TERMINAL_FONT_FAMILY.to_string()
+}
+
+fn default_terminal_font_size() -> f32 {
+    DEFAULT_TERMINAL_FONT_SIZE
+}
+
+fn default_terminal_line_height() -> f32 {
+    DEFAULT_TERMINAL_LINE_HEIGHT
 }
 
 impl Default for AppPrefs {
@@ -126,9 +171,15 @@ impl Default for AppPrefs {
             fetch_prompt_muted: Vec::new(),
             recent_repos: Vec::new(),
             status_colors: StatusColors::default(),
+            terminal_font_family: default_terminal_font_family(),
+            terminal_font_size: DEFAULT_TERMINAL_FONT_SIZE,
+            terminal_line_height: DEFAULT_TERMINAL_LINE_HEIGHT,
+            terminal_shell: TerminalShellPrefs::default(),
         }
     }
 }
+
+pub use super::terminal_shell::TerminalShellKind;
 
 /// Move `path` to the front of the recent-repos list (deduped). No size cap.
 /// Returns `true` when the list order/content changed.
@@ -177,7 +228,35 @@ impl AppPrefs {
         let mut prefs: Self = serde_json::from_str(&raw)
             .with_context(|| format!("parse {}", path.display()))?;
         prefs.change_sort = prefs.change_sort.normalized();
+        prefs.normalize_terminal_font();
         Ok(prefs)
+    }
+
+    /// Clamp / fill terminal font fields after load.
+    pub fn normalize_terminal_font(&mut self) {
+        let trimmed = self.terminal_font_family.trim();
+        if trimmed.is_empty() {
+            self.terminal_font_family = DEFAULT_TERMINAL_FONT_FAMILY.to_string();
+        } else if trimmed.contains(',') {
+            // GPUI needs a single primary family; keep first name from old cascades.
+            if let Some(primary) = trimmed.split(',').next().map(str::trim) {
+                if !primary.is_empty() {
+                    self.terminal_font_family = primary.to_string();
+                }
+            }
+        }
+        // Migrate previous default label that Windows does not register.
+        if self.terminal_font_family == "MesloLGS Nerd Font" {
+            self.terminal_font_family = DEFAULT_TERMINAL_FONT_FAMILY.to_string();
+        }
+        if !self.terminal_font_size.is_finite() {
+            self.terminal_font_size = DEFAULT_TERMINAL_FONT_SIZE;
+        }
+        self.terminal_font_size = self.terminal_font_size.clamp(9.0, 32.0);
+        if !self.terminal_line_height.is_finite() {
+            self.terminal_line_height = DEFAULT_TERMINAL_LINE_HEIGHT;
+        }
+        self.terminal_line_height = self.terminal_line_height.clamp(1.0, 3.0);
     }
 
     pub fn save(&self) -> Result<()> {

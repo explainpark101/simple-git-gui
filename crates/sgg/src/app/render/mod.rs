@@ -12,11 +12,12 @@ use gpui_kit::assets::IconName as AssetIcon;
 use gpui_kit::base::StyledExt as _;
 use gpui_kit::component::ActiveTheme as _;
 use gpui_kit::component::button::ButtonVariants as _;
-use gpui_kit::component::{h_resizable, resizable_panel};
+use gpui_kit::component::{h_resizable, resizable_panel, v_resizable};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use super::page::AppPage;
+use super::terminal::{TERMINAL_MAX_HEIGHT, TERMINAL_MIN_HEIGHT};
 use super::view::AppView;
 use crate::app::busy::BusyKind;
 use crate::app::widgets::{action_btn, list_row_btn, with_busy};
@@ -94,8 +95,8 @@ impl Render for AppView {
                         .child(err),
                 )
             })
-            .child(
-                div().flex_1().min_h_0().w_full().child(if !self.has_repo()
+            .child({
+                let main = div().size_full().min_h_0().w_full().child(if !self.has_repo()
                     && self.page != AppPage::Settings
                 {
                     welcome(self, cx).into_any_element()
@@ -149,10 +150,48 @@ impl Render for AppView {
                         AppPage::Files => files_page::render(self, cx).into_any_element(),
                         AppPage::Settings => settings::render(self, cx).into_any_element(),
                     }
-                }),
-            )
-            .when(terminal_visible, |this| {
-                this.child(crate::app::terminal::render_panel(self, cx))
+                });
+
+                if terminal_visible {
+                    let term_h = self.terminal.height();
+                    let entity = cx.entity();
+                    div()
+                        .flex_1()
+                        .min_h_0()
+                        .w_full()
+                        .child(
+                            v_resizable("app-main-terminal")
+                                .child(resizable_panel().child(main))
+                                .child(
+                                    resizable_panel()
+                                        .size(px(term_h))
+                                        .size_range(
+                                            px(TERMINAL_MIN_HEIGHT)..px(TERMINAL_MAX_HEIGHT),
+                                        )
+                                        .child(crate::app::terminal::render_panel(self, cx)),
+                                )
+                                .on_resize(move |state, window, cx| {
+                                    let height = state
+                                        .read(cx)
+                                        .sizes()
+                                        .last()
+                                        .copied()
+                                        .map(f32::from)
+                                        .unwrap_or(term_h);
+                                    entity.update(cx, |this, cx| {
+                                        this.set_terminal_height(height, window, cx);
+                                    });
+                                }),
+                        )
+                        .into_any_element()
+                } else {
+                    div()
+                        .flex_1()
+                        .min_h_0()
+                        .w_full()
+                        .child(main)
+                        .into_any_element()
+                }
             })
     }
 }

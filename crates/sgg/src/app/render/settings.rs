@@ -13,7 +13,10 @@ use gpui_kit::*;
 use crate::app::busy::BusyKind;
 use crate::app::editor::{EditorPreset, ZED_DOWNLOAD_URL};
 use crate::app::i18n::{Locale, UiText};
-use crate::app::prefs::{StatusColors, ThemePreference, settings_path};
+use crate::app::prefs::{
+    settings_path, StatusColors, TerminalShellKind, ThemePreference,
+    COMFORTABLE_TERMINAL_LINE_HEIGHT, DEFAULT_TERMINAL_FONT_FAMILY, DEFAULT_TERMINAL_LINE_HEIGHT,
+};
 use crate::app::render::status_style::display_label;
 use crate::app::view::AppView;
 use crate::app::widgets::{action_btn, display_btn, icon_btn, list_row_btn, menu_item, with_busy};
@@ -114,6 +117,8 @@ pub fn render(view: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
                         ),
                 )
                 .child(status_colors_section(view, t, cx))
+                .child(terminal_shell_section(view, t, cx))
+                .child(terminal_font_section(view, t, cx))
                 .child(
             div()
                 .flex()
@@ -574,6 +579,280 @@ pub fn render(view: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
                 .text_color(cx.theme().muted_foreground)
                 .child(format!("{}: {settings_file}", t.settings_file)),
         ),
+        )
+}
+
+fn terminal_shell_section(
+    view: &AppView,
+    t: UiText,
+    cx: &mut Context<AppView>,
+) -> impl IntoElement {
+    let kind = view.terminal_shell.kind;
+    let tips = [
+        (
+            TerminalShellKind::PowerShell,
+            t.tip_terminal_shell_powershell,
+        ),
+        (TerminalShellKind::Cmd, t.tip_terminal_shell_cmd),
+        (TerminalShellKind::GitBash, t.tip_terminal_shell_git_bash),
+        (TerminalShellKind::Custom, t.tip_terminal_shell_custom),
+    ];
+
+    div()
+        .flex()
+        .flex_col()
+        .gap_3()
+        .p_4()
+        .rounded_lg()
+        .border_1()
+        .border_color(cx.theme().border)
+        .child(div().font_semibold().text_left().child(t.terminal_shell))
+        .child(
+            div()
+                .text_xs()
+                .text_left()
+                .text_color(cx.theme().muted_foreground)
+                .child(t.terminal_shell_help),
+        )
+        .child(
+            div()
+                .flex()
+                .flex_wrap()
+                .gap_2()
+                .children(tips.into_iter().map(|(shell_kind, tip)| {
+                    display_btn(SharedString::from(format!(
+                        "term-shell:{}",
+                        shell_kind.label()
+                    )))
+                    .outline()
+                    .small()
+                    .label(shell_kind.label().to_string())
+                    .tooltip(tip)
+                    .selected(kind == shell_kind)
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.set_terminal_shell_kind(shell_kind, window, cx);
+                    }))
+                    .into_any_element()
+                })),
+        )
+        .when(kind == TerminalShellKind::Custom, |this| {
+            this.child(
+                div()
+                    .text_sm()
+                    .text_left()
+                    .child(t.terminal_shell_custom),
+            )
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .child(Input::new(&view.terminal_shell_input)),
+                    )
+                    .child(
+                        action_btn("apply-terminal-shell", AssetIcon::Save)
+                            .outline()
+                            .small()
+                            .label(t.save)
+                            .tooltip(t.tip_apply_terminal_shell)
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.apply_terminal_shell_custom(window, cx);
+                            })),
+                    ),
+            )
+        })
+}
+
+fn terminal_font_section(
+    view: &AppView,
+    t: UiText,
+    cx: &mut Context<AppView>,
+) -> impl IntoElement {
+    let size_label = format!("{:.0}px", view.terminal_font_size);
+    let standard = (view.terminal_line_height - DEFAULT_TERMINAL_LINE_HEIGHT).abs() < 0.01;
+    let comfortable =
+        (view.terminal_line_height - COMFORTABLE_TERMINAL_LINE_HEIGHT).abs() < 0.01;
+    let presets = [
+        ("MesloLGS NF", "MesloLGS NF"),
+        ("JetBrainsMono NF", "JetBrainsMono NF"),
+        ("FiraCode NF", "FiraCode Nerd Font"),
+        ("Cascadia Mono", "Cascadia Mono"),
+        ("Consolas", "Consolas"),
+        ("Default", DEFAULT_TERMINAL_FONT_FAMILY),
+    ];
+
+    div()
+        .flex()
+        .flex_col()
+        .gap_3()
+        .p_4()
+        .rounded_lg()
+        .border_1()
+        .border_color(cx.theme().border)
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .justify_between()
+                .gap_2()
+                .child(div().font_semibold().text_left().child(t.terminal_font))
+                .child(
+                    display_btn("terminal-font-reset")
+                        .ghost()
+                        .small()
+                        .icon(AssetIcon::RotateCcw)
+                        .label(t.reset_status_colors)
+                        .tooltip(t.tip_reset_terminal_font)
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.reset_terminal_font(window, cx);
+                        })),
+                ),
+        )
+        .child(
+            div()
+                .text_xs()
+                .text_left()
+                .text_color(cx.theme().muted_foreground)
+                .child(t.terminal_font_help),
+        )
+        .child(
+            div()
+                .text_sm()
+                .text_left()
+                .child(t.terminal_font_family),
+        )
+        .child(
+            div()
+                .flex()
+                .flex_wrap()
+                .gap_2()
+                .children(presets.into_iter().map(|(label, family)| {
+                    let family = family.to_string();
+                    let selected = view.terminal_font_family == family
+                        || (label == "Default"
+                            && view.terminal_font_family == DEFAULT_TERMINAL_FONT_FAMILY);
+                    display_btn(SharedString::from(format!("term-font-preset:{label}")))
+                        .outline()
+                        .small()
+                        .label(label.to_string())
+                        .selected(selected)
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.set_terminal_font_family(family.clone(), window, cx);
+                        }))
+                        .into_any_element()
+                })),
+        )
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap_2()
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .child(Input::new(&view.terminal_font_input)),
+                )
+                .child(
+                    action_btn("apply-terminal-font", AssetIcon::Save)
+                        .outline()
+                        .small()
+                        .label(t.save)
+                        .tooltip(t.tip_apply_terminal_font)
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.apply_terminal_font_from_input(window, cx);
+                        })),
+                ),
+        )
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .justify_between()
+                .gap_2()
+                .child(
+                    div()
+                        .text_sm()
+                        .text_left()
+                        .child(format!("{}: {size_label}", t.terminal_font_size)),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .gap_2()
+                        .child(
+                            display_btn("term-font-smaller")
+                                .outline()
+                                .small()
+                                .label("A−")
+                                .tooltip(t.tip_terminal_font_smaller)
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.bump_terminal_font_size(-1.0, window, cx);
+                                })),
+                        )
+                        .child(
+                            display_btn("term-font-larger")
+                                .outline()
+                                .small()
+                                .label("A+")
+                                .tooltip(t.tip_terminal_font_larger)
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.bump_terminal_font_size(1.0, window, cx);
+                                })),
+                        ),
+                ),
+        )
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .justify_between()
+                .gap_2()
+                .child(
+                    div()
+                        .text_sm()
+                        .text_left()
+                        .child(t.terminal_line_height),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .gap_2()
+                        .child(
+                            display_btn("term-line-standard")
+                                .outline()
+                                .small()
+                                .label(t.terminal_line_standard)
+                                .tooltip(t.tip_terminal_line_standard)
+                                .selected(standard)
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.set_terminal_line_height(
+                                        DEFAULT_TERMINAL_LINE_HEIGHT,
+                                        window,
+                                        cx,
+                                    );
+                                })),
+                        )
+                        .child(
+                            display_btn("term-line-comfortable")
+                                .outline()
+                                .small()
+                                .label(t.terminal_line_comfortable)
+                                .tooltip(t.tip_terminal_line_comfortable)
+                                .selected(comfortable)
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.set_terminal_line_height(
+                                        COMFORTABLE_TERMINAL_LINE_HEIGHT,
+                                        window,
+                                        cx,
+                                    );
+                                })),
+                        ),
+                ),
         )
 }
 
