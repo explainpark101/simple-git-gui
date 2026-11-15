@@ -142,6 +142,7 @@ pub struct AppView {
     pub(super) status_color_pickers: StatusColorPickers,
     _status_color_subs: Vec<Subscription>,
     _branch_search_sub: Option<Subscription>,
+    _commit_input_sub: Option<Subscription>,
     pub(super) expanded_dirs: HashSet<String>,
     /// Cached Files tree rows; rebuilt on expand/collapse/reload/file ops.
     pub(super) files_tree_nodes: Vec<FsNode>,
@@ -174,6 +175,10 @@ pub struct AppView {
     pub(super) changes_split_view: bool,
     /// Narrow sidebar remote header: Fetch/Pull/Push show icons only.
     pub(super) remote_actions_compact: bool,
+    /// Narrow Branches header: search collapses to a magnifier + dropdown.
+    pub(super) branch_search_compact: bool,
+    /// Compact branch search dropdown open under the Branches header.
+    pub(super) branch_search_open: bool,
     /// Narrow Files tree: action buttons only on row hover.
     pub(super) files_tree_compact: bool,
     /// Checkbox state for the fetch-on-open prompt.
@@ -284,6 +289,7 @@ impl AppView {
             status_color_pickers,
             _status_color_subs: Vec::new(),
             _branch_search_sub: None,
+            _commit_input_sub: None,
             expanded_dirs: HashSet::new(),
             files_tree_nodes: Vec::new(),
             files_status_index: TreeStatusIndex::default(),
@@ -304,6 +310,8 @@ impl AppView {
             changes_section_hide_labels: HashMap::new(),
             changes_split_view: false,
             remote_actions_compact: false,
+            branch_search_compact: false,
+            branch_search_open: false,
             files_tree_compact: false,
             fetch_dont_ask: false,
             fetch_prompted_root: None,
@@ -313,6 +321,7 @@ impl AppView {
         view.apply_theme(cx);
         view.wire_status_color_pickers(window, cx);
         view.wire_branch_search(cx);
+        view.wire_commit_input(window, cx);
         if view.start_path.is_some() {
             view.reload(cx);
             view.sync_auto_refresh(cx);
@@ -841,6 +850,48 @@ impl AppView {
                 cx.notify();
             }
         }));
+    }
+
+    fn wire_commit_input(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let input = self.commit_input.clone();
+        // Ctrl/Cmd+Enter (secondary) commits; plain Enter inserts a newline in the textarea.
+        self._commit_input_sub = Some(cx.subscribe_in(
+            &input,
+            window,
+            |this, _, event: &InputEvent, window, cx| {
+                if let InputEvent::PressEnter {
+                    secondary: true, ..
+                } = event
+                {
+                    this.commit(window, cx);
+                }
+            },
+        ));
+    }
+
+    pub(super) fn set_branch_search_compact(&mut self, compact: bool, cx: &mut Context<Self>) {
+        if self.branch_search_compact == compact {
+            return;
+        }
+        self.branch_search_compact = compact;
+        if !compact {
+            self.branch_search_open = false;
+        }
+        cx.notify();
+    }
+
+    pub(super) fn toggle_branch_search_open(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.branch_search_open = !self.branch_search_open;
+        if self.branch_search_open {
+            self.branch_search_input.update(cx, |input, cx| {
+                input.focus(window, cx);
+            });
+        }
+        cx.notify();
     }
 
     pub(super) fn toggle_add_remote_form(

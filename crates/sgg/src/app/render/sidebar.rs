@@ -271,6 +271,11 @@ fn remote_sync_chip(
         .and_then(|s| s.branches.iter().find(|b| b.is_head && !b.is_remote));
     let ahead = head.map(|b| b.ahead).unwrap_or(0);
     let behind = head.map(|b| b.behind).unwrap_or(0);
+    let changes_count = view
+        .snapshot
+        .as_ref()
+        .map(|s| s.changes.len())
+        .unwrap_or(0);
     let operation = view
         .snapshot
         .as_ref()
@@ -315,6 +320,17 @@ fn remote_sync_chip(
                 "sync-ahead",
                 AssetIcon::ArrowUp,
                 ahead,
+                cx.theme().warning,
+                tip,
+            ))
+        })
+        // Dirty working tree with nothing to push yet → yellow status.
+        .when(changes_count > 0 && ahead == 0, |this| {
+            let tip = t.tip_sync_dirty.replace("{n}", &changes_count.to_string());
+            this.child(sync_count_badge(
+                "sync-dirty",
+                AssetIcon::FileDiff,
+                changes_count,
                 cx.theme().warning,
                 tip,
             ))
@@ -820,6 +836,13 @@ fn branches_panel(
     let t = view.t();
     let form = view.branch_form.clone();
     let show_remote = view.show_remote_branches;
+    let search_compact = view.branch_search_compact;
+    let search_open = view.branch_search_open;
+    let has_changes = view
+        .snapshot
+        .as_ref()
+        .map(|s| !s.changes.is_empty())
+        .unwrap_or(false);
     let query = view
         .branch_search_input
         .read(cx)
@@ -838,18 +861,72 @@ fn branches_panel(
         .size_full()
         .child(
             pane_header(cx)
+                .id("branches-header")
+                .relative()
                 .flex()
                 .items_center()
-                .justify_between()
                 .gap_2()
                 .px_3()
                 .py_2()
-                .child(div().font_semibold().text_left().child(t.branches))
+                .child(
+                    canvas(
+                        {
+                            let entity = entity.clone();
+                            move |bounds, _, cx| {
+                                // Title + actions leave room for an inline search field.
+                                let compact = bounds.size.width < px(280.);
+                                if entity.read_with(cx, |this, _| {
+                                    this.branch_search_compact == compact
+                                }) {
+                                    return;
+                                }
+                                let _ = entity.update(cx, |this, cx| {
+                                    this.set_branch_search_compact(compact, cx);
+                                });
+                            }
+                        },
+                        |_, _, _, _| {},
+                    )
+                    .absolute()
+                    .size_full()
+                    .invisible(),
+                )
+                .child(
+                    div()
+                        .font_semibold()
+                        .text_left()
+                        .flex_shrink_0()
+                        .child(t.branches),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .when(!search_compact, |this| {
+                            this.child(
+                                Input::new(&view.branch_search_input)
+                                    .cleanable(true)
+                                    .prefix(Icon::new(IconName::Search).small()),
+                            )
+                        }),
+                )
                 .child(
                     div()
                         .flex()
+                        .flex_shrink_0()
                         .items_center()
                         .gap_0()
+                        .when(search_compact, |this| {
+                            this.child(
+                                icon_btn("branch-search-toggle", IconName::Search)
+                                    .accessibility_label(t.tip_branch_search)
+                                    .tooltip(t.tip_branch_search)
+                                    .selected(search_open)
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.toggle_branch_search_open(window, cx);
+                                    })),
+                            )
+                        })
                         .child(
                             icon_btn("branch-new", IconName::Plus)
                                 .accessibility_label(t.create_switch)
@@ -896,17 +973,22 @@ fn branches_panel(
                         ),
                 ),
         )
-        .child(
-            div()
-                .px_2()
-                .pt_2()
-                .pb_1()
-                .child(
-                    Input::new(&view.branch_search_input)
-                        .cleanable(true)
-                        .prefix(Icon::new(IconName::Search).small()),
-                ),
-        )
+        .when(search_compact && search_open, |this| {
+            this.child(
+                div()
+                    .px_2()
+                    .pt_2()
+                    .pb_1()
+                    .border_b_1()
+                    .border_color(cx.theme().sidebar_border)
+                    .bg(cx.theme().sidebar)
+                    .child(
+                        Input::new(&view.branch_search_input)
+                            .cleanable(true)
+                            .prefix(Icon::new(IconName::Search).small()),
+                    ),
+            )
+        })
         .child(
             pane_body(cx)
                 .id("branch-list")
@@ -918,7 +1000,11 @@ fn branches_panel(
                 .flex_col()
                 .items_start()
                 .overflow_y_scroll()
-                .children(visible.into_iter().map(|b| branch_row(b, view, cx))),
+                .children(
+                    visible
+                        .into_iter()
+                        .map(|b| branch_row(b, has_changes, view, cx)),
+                ),
         )
         .into_any_element()
 }
@@ -985,6 +1071,7 @@ fn branch_form_panel(
 
 fn branch_row(
     branch: &BranchInfo,
+    has_changes: bool,
     view: &AppView,
     cx: &mut Context<AppView>,
 ) -> AnyElement {
@@ -993,14 +1080,12 @@ fn branch_row(
     let name_switch = name.clone();
     let name_rename = name.clone();
     let name_delete = name.clone();
-    let label = if branch.is_head {
-        format!("* {}", branch.name)
-    } else if branch.is_remote {
-        format!("  remotes/{}", branch.name)
+    let label = if branch.is_remote {
+        format!("remotes/{}", branch.name)
     } else {
-        format!("  {}", branch.name)
+        branch.name.clone()
     };
-    let sync = branch_sync_ui(branch, t, cx);
+    let sync = branch_sync_ui(branch, has_changes, t, cx);
     let tip = if branch.is_remote {
         format!("remotes/{}", branch.name)
     } else {
@@ -1012,6 +1097,11 @@ fn branch_row(
     let can_switch = !branch.is_remote && !branch.is_head;
     let can_rename = !branch.is_remote;
     let can_delete = !branch.is_remote && !branch.is_head;
+    let head_color = if has_changes {
+        cx.theme().warning
+    } else {
+        cx.theme().success
+    };
 
     div()
         .id(SharedString::from(format!("branch-row:{}", branch.name)))
@@ -1029,6 +1119,21 @@ fn branch_row(
                 .min_w_0()
                 .items_center()
                 .gap_1()
+                .when(branch.is_head, |this| {
+                    this.child(
+                        div()
+                            .flex_shrink_0()
+                            .child(
+                                Icon::new(AssetIcon::CircleCheck)
+                                    .small()
+                                    .text_color(head_color),
+                            ),
+                    )
+                })
+                .when(!branch.is_head && !branch.is_remote, |this| {
+                    // Align names with HEAD rows that show a check icon.
+                    this.child(div().w(px(14.)).flex_shrink_0())
+                })
                 .child(
                     list_row_btn(
                         SharedString::from(format!("branch:{}", branch.name)),
@@ -1094,20 +1199,34 @@ struct BranchSyncUi {
     tip: String,
 }
 
-fn branch_sync_ui(branch: &BranchInfo, t: UiText, cx: &App) -> Option<BranchSyncUi> {
+fn branch_sync_ui(
+    branch: &BranchInfo,
+    has_changes: bool,
+    t: UiText,
+    cx: &App,
+) -> Option<BranchSyncUi> {
     if branch.is_remote {
         return None;
     }
     let theme = cx.theme();
     let Some(upstream) = branch.upstream.as_deref() else {
-        return Some(BranchSyncUi {
-            color: theme.muted_foreground,
-            tip: t.tip_branch_no_remote.to_string(),
+        // No remote: gray when clean, yellow when the working tree is dirty.
+        return Some(if has_changes {
+            BranchSyncUi {
+                color: theme.warning,
+                tip: t.tip_branch_dirty.to_string(),
+            }
+        } else {
+            BranchSyncUi {
+                color: theme.muted_foreground,
+                tip: t.tip_branch_no_remote.to_string(),
+            }
         });
     };
     let ahead = branch.ahead;
     let behind = branch.behind;
     let (color, tip) = match (ahead > 0, behind > 0) {
+        (false, false) if has_changes => (theme.warning, t.tip_branch_dirty.to_string()),
         (false, false) => (
             theme.success,
             t.tip_branch_in_sync.replace("{upstream}", upstream),
