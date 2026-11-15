@@ -4,7 +4,7 @@ use git2::Repository;
 
 use crate::error::RepoError;
 use crate::find::find_git_root;
-use crate::types::RepoSnapshot;
+use crate::types::{RepoOperation, RepoSnapshot};
 
 pub struct RepoState {
     pub(crate) root: PathBuf,
@@ -35,6 +35,7 @@ impl RepoState {
             changes: self.list_changes()?,
             branches: self.list_branches()?,
             remotes: self.list_remotes()?,
+            operation: self.repo_operation(),
         })
     }
 
@@ -43,6 +44,19 @@ impl RepoState {
             Ok(head) => Ok(head.shorthand().map(|s| s.to_string())),
             Err(err) if err.code() == git2::ErrorCode::UnbornBranch => Ok(None),
             Err(err) => Err(err.into()),
+        }
+    }
+
+    pub(crate) fn repo_operation(&self) -> RepoOperation {
+        use git2::RepositoryState::*;
+        match self.repo.state() {
+            Clean => RepoOperation::Clean,
+            Merge => RepoOperation::Merge,
+            Rebase | RebaseInteractive | RebaseMerge => RepoOperation::Rebase,
+            CherryPick | CherryPickSequence => RepoOperation::CherryPick,
+            Revert | RevertSequence => RepoOperation::Revert,
+            Bisect => RepoOperation::Bisect,
+            ApplyMailbox | ApplyMailboxOrRebase => RepoOperation::Other,
         }
     }
 }

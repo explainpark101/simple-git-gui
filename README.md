@@ -36,6 +36,8 @@ sgg install-shell
 sgg uninstall-shell
 ```
 
+The Windows NSIS installer (`./build-exe.sh`) adds the install directory to the **user** `PATH`, so `sgg` is available in new terminals after setup. Uninstall removes that entry.
+
 ### Shell integration
 
 | OS | What `install-shell` does |

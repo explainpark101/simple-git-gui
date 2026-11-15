@@ -18,4 +18,6 @@ pub use error::RepoError;
 pub use find::find_git_root;
 pub use shell::{GitCliError, run_git};
 pub use state::RepoState;
-pub use types::{BranchInfo, ChangeKind, FileChange, RemoteInfo, RepoSnapshot};
+pub use types::{
+    BranchInfo, ChangeKind, FileChange, RemoteInfo, RepoOperation, RepoSnapshot,
+};

@@ -22,11 +22,15 @@ pub fn snapshot_fingerprint(snap: &RepoSnapshot) -> u64 {
         b.name.hash(&mut h);
         b.is_head.hash(&mut h);
         b.is_remote.hash(&mut h);
+        b.upstream.hash(&mut h);
+        b.ahead.hash(&mut h);
+        b.behind.hash(&mut h);
     }
     snap.remotes.len().hash(&mut h);
     for r in &snap.remotes {
         r.name.hash(&mut h);
         r.url.hash(&mut h);
     }
+    snap.operation.hash(&mut h);
     h.finish()
 }

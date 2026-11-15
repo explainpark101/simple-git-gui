@@ -1,5 +1,6 @@
 ; cargo-packager NSIS template (upstream installer.nsi) with sgg Explorer
 ; context-menu registration: HKCU ...\shell\OpenSgg ("여기서 sgg 열기").
+; Also appends $INSTDIR to the current-user PATH so `sgg` works from any shell.
 ; Keep in sync with crates/sgg/src/shell/windows.rs.
 
 ; Set the compression algorithm.
@@ -17,11 +18,13 @@ Unicode true
 !include FileFunc.nsh
 !include x64.nsh
 !include WordFunc.nsh
+!include WinMessages.nsh
 !include "FileAssociation.nsh"
 !include "StrFunc.nsh"
 !include "StrFunc.nsh"
 ${StrCase}
 ${StrLoc}
+${un.StrLoc}
 
 !define MANUFACTURER "{{manufacturer}}"
 !define PRODUCTNAME "{{product_name}}"
@@ -541,6 +544,9 @@ Section Install
  WriteRegStr HKCU "Software\Classes\Directory\Background\shell\OpenSgg" "Icon" "$INSTDIR\${MAINBINARYNAME}.exe,0"
  WriteRegStr HKCU "Software\Classes\Directory\Background\shell\OpenSgg\command" "" "$\"$INSTDIR\${MAINBINARYNAME}.exe$\" $\"%V$\""
 
+ ; User PATH so `sgg` / `sgg.exe` works from cmd, PowerShell, and agents
+ Call AddInstallDirToPath
+
  ; Create start menu shortcut (GUI)
  !insertmacro MUI_STARTMENU_WRITE_BEGIN Application
  Call CreateStartMenuShortcut
@@ -638,6 +644,9 @@ Section Uninstall
  DeleteRegKey HKCU "Software\Classes\Directory\shell\OpenSgg"
  DeleteRegKey HKCU "Software\Classes\Directory\Background\shell\OpenSgg"
 
+ ; Remove install dir from user PATH
+ Call un.RemoveInstallDirFromPath
+
  ; Remove registry information for add/remove programs
  !if "${INSTALLMODE}" == "both"
  DeleteRegKey SHCTX "${UNINSTKEY}"
@@ -683,4 +692,47 @@ Function CreateStartMenuShortcut
  CreateDirectory "$SMPROGRAMS\$AppStartMenuFolder"
  CreateShortcut "$SMPROGRAMS\$AppStartMenuFolder\${PRODUCTNAME}.lnk" "$INSTDIR\${MAINBINARYNAME}.exe"
  ApplicationID::Set "$SMPROGRAMS\$AppStartMenuFolder\${PRODUCTNAME}.lnk" "${IDENTIFIER}"
+FunctionEnd
+
+; Append $INSTDIR to HKCU Environment Path (idempotent).
+Function AddInstallDirToPath
+ ReadRegStr $0 HKCU "Environment" "Path"
+ ${StrLoc} $1 ";$0;" ";$INSTDIR;" ">"
+ StrCmp $1 "" 0 add_path_done
+ StrCmp $0 "" 0 add_path_append
+ WriteRegExpandStr HKCU "Environment" "Path" "$INSTDIR"
+ Goto add_path_broadcast
+ add_path_append:
+ WriteRegExpandStr HKCU "Environment" "Path" "$0;$INSTDIR"
+ add_path_broadcast:
+ SendMessage ${HWND_BROADCAST} ${WM_WININICHANGE} 0 "STR:Environment" /TIMEOUT=5000
+ add_path_done:
+FunctionEnd
+
+; Remove $INSTDIR from HKCU Environment Path (handles leading / middle / trailing).
+Function un.RemoveInstallDirFromPath
+ ReadRegStr $0 HKCU "Environment" "Path"
+ StrCmp $0 "" un_path_done
+ ; Work on ";path;" so edge entries match the same needle.
+ StrCpy $1 ";$0;"
+ ${un.StrLoc} $2 $1 ";$INSTDIR;" ">"
+ StrCmp $2 "" un_path_done
+ ; $2 = offset of ";$INSTDIR;" inside $1; splice it out, keep one ";".
+ StrCpy $3 $1 $2
+ StrCpy $4 $1 "" $2
+ StrCpy $4 $4 "" 1
+ StrLen $5 $INSTDIR
+ IntOp $5 $5 + 1
+ StrCpy $4 $4 "" $5
+ StrCpy $1 "$3;$4"
+ ; Trim leading / trailing ";"
+ StrCpy $2 $1 1
+ StrCmp $2 ";" 0 +2
+ StrCpy $1 $1 "" 1
+ StrCpy $2 $1 "" -1
+ StrCmp $2 ";" 0 +2
+ StrCpy $1 $1 -1
+ WriteRegExpandStr HKCU "Environment" "Path" "$1"
+ SendMessage ${HWND_BROADCAST} ${WM_WININICHANGE} 0 "STR:Environment" /TIMEOUT=5000
+ un_path_done:
 FunctionEnd

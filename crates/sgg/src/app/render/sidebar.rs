@@ -8,14 +8,15 @@ use gpui_kit::component::spinner::Spinner;
 use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
 use gpui_kit::component::switch::Switch;
 use gpui_kit::component::{
-    ActiveTheme as _, Disableable as _, IconName, Selectable as _, Sizable as _, Size,
+    ActiveTheme as _, Disableable as _, Icon, IconName, Selectable as _, Sizable as _, Size,
     resizable_panel, v_resizable,
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{InteractiveElement as _, *};
-use sgg_core::{BranchInfo, RemoteInfo};
+use sgg_core::{BranchInfo, RemoteInfo, RepoOperation};
 
 use crate::app::busy::BusyKind;
+use crate::app::i18n::UiText;
 use crate::app::ops::RemoteAction;
 use crate::app::progress::{ProgressState, PROGRESS_MAX_HEIGHT, PROGRESS_MIN_HEIGHT};
 use crate::app::remote_url::remote_browse_url;
@@ -104,20 +105,7 @@ pub fn render(
                     .size_full()
                     .invisible(),
                 )
-                .child(
-                    display_btn("selected-remote")
-                        .ghost()
-                        .px_2()
-                        .py_1()
-                        .min_w_0()
-                        .flex_1()
-                        .rounded(cx.theme().radius)
-                        .bg(cx.theme().accent.opacity(0.28))
-                        .font_semibold()
-                        .text_sm()
-                        .label(selected_remote.clone())
-                        .tooltip(selected_remote.clone()),
-                )
+                .child(remote_sync_chip(view, &selected_remote, cx))
                 .child(
                     div()
                         .flex()
@@ -269,6 +257,172 @@ pub fn render(
             ))
         })
         .into_any_element()
+}
+
+fn remote_sync_chip(
+    view: &AppView,
+    selected_remote: &str,
+    cx: &mut Context<AppView>,
+) -> impl IntoElement {
+    let t = view.t();
+    let head = view
+        .snapshot
+        .as_ref()
+        .and_then(|s| s.branches.iter().find(|b| b.is_head && !b.is_remote));
+    let ahead = head.map(|b| b.ahead).unwrap_or(0);
+    let behind = head.map(|b| b.behind).unwrap_or(0);
+    let operation = view
+        .snapshot
+        .as_ref()
+        .map(|s| s.operation)
+        .unwrap_or(RepoOperation::Clean);
+
+    div()
+        .min_w_0()
+        .flex_1()
+        .flex()
+        .items_center()
+        .gap_1()
+        .px_2()
+        .py_1()
+        .rounded(cx.theme().radius)
+        .bg(cx.theme().accent.opacity(0.28))
+        .child(
+            display_btn("selected-remote")
+                .ghost()
+                .px_0()
+                .py_0()
+                .min_w_0()
+                .flex_shrink_1()
+                .font_semibold()
+                .text_sm()
+                .label(selected_remote.to_string())
+                .tooltip(selected_remote.to_string()),
+        )
+        .when(behind > 0, |this| {
+            let tip = t.tip_sync_behind.replace("{n}", &behind.to_string());
+            this.child(sync_count_badge(
+                "sync-behind",
+                AssetIcon::ArrowDown,
+                behind,
+                cx.theme().danger,
+                tip,
+            ))
+        })
+        .when(ahead > 0, |this| {
+            let tip = t.tip_sync_ahead.replace("{n}", &ahead.to_string());
+            this.child(sync_count_badge(
+                "sync-ahead",
+                AssetIcon::ArrowUp,
+                ahead,
+                cx.theme().warning,
+                tip,
+            ))
+        })
+        .when(operation != RepoOperation::Clean, |this| {
+            this.child(operation_badge(operation, t, cx))
+        })
+}
+
+fn sync_count_badge(
+    id: &'static str,
+    icon: AssetIcon,
+    count: usize,
+    color: Hsla,
+    tip: impl Into<SharedString>,
+) -> impl IntoElement {
+    display_btn(id)
+        .ghost()
+        .compact()
+        .small()
+        .flex_shrink_0()
+        .tooltip(tip)
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap_0()
+                .text_color(color)
+                .child(Icon::new(icon).small().text_color(color))
+                .child(
+                    div()
+                        .text_xs()
+                        .font_semibold()
+                        .text_color(color)
+                        .child(count.to_string()),
+                ),
+        )
+}
+
+fn operation_badge(
+    operation: RepoOperation,
+    t: UiText,
+    cx: &App,
+) -> impl IntoElement {
+    let (label, tip, icon, color) = match operation {
+        RepoOperation::Merge => (
+            t.op_merge,
+            t.tip_op_merge,
+            AssetIcon::GitMerge,
+            cx.theme().warning,
+        ),
+        RepoOperation::Rebase => (
+            t.op_rebase,
+            t.tip_op_rebase,
+            AssetIcon::Redo2,
+            cx.theme().magenta,
+        ),
+        RepoOperation::CherryPick => (
+            t.op_cherry_pick,
+            t.tip_op_cherry_pick,
+            AssetIcon::GitPullRequestCreateArrow,
+            cx.theme().accent,
+        ),
+        RepoOperation::Revert => (
+            t.op_revert,
+            t.tip_op_revert,
+            AssetIcon::Undo2,
+            cx.theme().warning,
+        ),
+        RepoOperation::Bisect => (
+            t.op_bisect,
+            t.tip_op_bisect,
+            AssetIcon::Split,
+            cx.theme().accent,
+        ),
+        RepoOperation::Other => (
+            t.op_other,
+            t.tip_op_other,
+            AssetIcon::CircleAlert,
+            cx.theme().danger,
+        ),
+        RepoOperation::Clean => unreachable!(),
+    };
+
+    display_btn("repo-operation")
+        .ghost()
+        .compact()
+        .small()
+        .flex_shrink_0()
+        .tooltip(tip)
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap_1()
+                .px_1()
+                .rounded(cx.theme().radius)
+                .bg(color.opacity(0.22))
+                .text_color(color)
+                .child(Icon::new(icon).small().text_color(color))
+                .child(
+                    div()
+                        .text_xs()
+                        .font_semibold()
+                        .text_color(color)
+                        .child(label),
+                ),
+        )
 }
 
 enum FormOverlayAnchor {
@@ -666,9 +820,16 @@ fn branches_panel(
     let t = view.t();
     let form = view.branch_form.clone();
     let show_remote = view.show_remote_branches;
+    let query = view
+        .branch_search_input
+        .read(cx)
+        .value()
+        .trim()
+        .to_lowercase();
     let visible: Vec<&BranchInfo> = branches
         .iter()
         .filter(|b| show_remote || !b.is_remote)
+        .filter(|b| query.is_empty() || b.name.to_lowercase().contains(&query))
         .collect();
     let entity = cx.entity();
     div()
@@ -733,6 +894,17 @@ fn branches_panel(
                                     }
                                 }),
                         ),
+                ),
+        )
+        .child(
+            div()
+                .px_2()
+                .pt_2()
+                .pb_1()
+                .child(
+                    Input::new(&view.branch_search_input)
+                        .cleanable(true)
+                        .prefix(Icon::new(IconName::Search).small()),
                 ),
         )
         .child(
@@ -828,10 +1000,14 @@ fn branch_row(
     } else {
         format!("  {}", branch.name)
     };
+    let sync = branch_sync_ui(branch, t, cx);
     let tip = if branch.is_remote {
         format!("remotes/{}", branch.name)
     } else {
-        branch.name.clone()
+        match &sync {
+            Some(sync) => format!("{}\n{}", branch.name, sync.tip),
+            None => branch.name.clone(),
+        }
     };
     let can_switch = !branch.is_remote && !branch.is_head;
     let can_rename = !branch.is_remote;
@@ -847,20 +1023,35 @@ fn branch_row(
         .rounded(cx.theme().radius)
         .when(branch.is_head, |this| this.bg(cx.theme().accent.opacity(0.28)))
         .child(
-            list_row_btn(
-                SharedString::from(format!("branch:{}", branch.name)),
-                label,
-            )
-            .flex_1()
-            .min_w_0()
-            .tooltip(tip)
-            // Remote rows stay non-interactive; HEAD uses accent bg instead of disabled dim.
-            .disabled(branch.is_remote)
-            .when(can_switch, |this| {
-                this.on_click(cx.listener(move |this, _, window, cx| {
-                    this.confirm_switch_branch(name_switch.clone(), window, cx);
-                }))
-            }),
+            div()
+                .flex()
+                .flex_1()
+                .min_w_0()
+                .items_center()
+                .gap_1()
+                .child(
+                    list_row_btn(
+                        SharedString::from(format!("branch:{}", branch.name)),
+                        label,
+                    )
+                    .flex_1()
+                    .min_w_0()
+                    .tooltip(tip.clone())
+                    // Remote rows stay non-interactive; HEAD uses accent bg instead of disabled dim.
+                    .disabled(branch.is_remote)
+                    .when(can_switch, |this| {
+                        this.on_click(cx.listener(move |this, _, window, cx| {
+                            this.confirm_switch_branch(name_switch.clone(), window, cx);
+                        }))
+                    }),
+                )
+                .when_some(sync, |this, sync| {
+                    this.child(branch_status_dot(
+                        SharedString::from(format!("branch-sync:{}", name)),
+                        sync.color,
+                        sync.tip,
+                    ))
+                }),
         )
         .child(
             div()
@@ -896,4 +1087,74 @@ fn branch_row(
                 }),
         )
         .into_any_element()
+}
+
+struct BranchSyncUi {
+    color: Hsla,
+    tip: String,
+}
+
+fn branch_sync_ui(branch: &BranchInfo, t: UiText, cx: &App) -> Option<BranchSyncUi> {
+    if branch.is_remote {
+        return None;
+    }
+    let theme = cx.theme();
+    let Some(upstream) = branch.upstream.as_deref() else {
+        return Some(BranchSyncUi {
+            color: theme.muted_foreground,
+            tip: t.tip_branch_no_remote.to_string(),
+        });
+    };
+    let ahead = branch.ahead;
+    let behind = branch.behind;
+    let (color, tip) = match (ahead > 0, behind > 0) {
+        (false, false) => (
+            theme.success,
+            t.tip_branch_in_sync.replace("{upstream}", upstream),
+        ),
+        (true, false) => (
+            theme.warning,
+            t.tip_branch_ahead
+                .replace("{ahead}", &ahead.to_string())
+                .replace("{upstream}", upstream),
+        ),
+        (false, true) => (
+            theme.danger,
+            t.tip_branch_behind
+                .replace("{behind}", &behind.to_string())
+                .replace("{upstream}", upstream),
+        ),
+        (true, true) => (
+            theme.magenta,
+            t.tip_branch_diverged
+                .replace("{ahead}", &ahead.to_string())
+                .replace("{behind}", &behind.to_string())
+                .replace("{upstream}", upstream),
+        ),
+    };
+    Some(BranchSyncUi { color, tip })
+}
+
+/// Soft traffic-light status glow after the branch name.
+fn branch_status_dot(
+    id: impl Into<ElementId>,
+    color: Hsla,
+    tip: impl Into<SharedString>,
+) -> impl IntoElement {
+    display_btn(id)
+        .ghost()
+        .compact()
+        .small()
+        .flex_shrink_0()
+        .tooltip(tip)
+        .child(
+            div()
+                .size(px(10.))
+                .rounded_full()
+                .bg(color.opacity(0.35))
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(div().size(px(6.)).rounded_full().bg(color)),
+        )
 }

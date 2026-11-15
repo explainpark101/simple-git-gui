@@ -1,4 +1,4 @@
-use git2::BranchType;
+use git2::{Branch, BranchType, ErrorCode, Oid};
 
 use crate::error::RepoError;
 use crate::shell::run_git;
@@ -11,10 +11,14 @@ impl RepoState {
         for branch in self.repo.branches(Some(BranchType::Local))? {
             let (branch, _) = branch?;
             let name = branch.name()?.unwrap_or("").to_string();
+            let (upstream, ahead, behind) = self.local_tracking(&branch, &name)?;
             out.push(BranchInfo {
                 name,
                 is_head: branch.is_head(),
                 is_remote: false,
+                upstream,
+                ahead,
+                behind,
             });
         }
         for branch in self.repo.branches(Some(BranchType::Remote))? {
@@ -24,10 +28,75 @@ impl RepoState {
                 name,
                 is_head: false,
                 is_remote: true,
+                upstream: None,
+                ahead: 0,
+                behind: 0,
             });
         }
         out.sort_by(|a, b| a.name.cmp(&b.name));
         Ok(out)
+    }
+
+    /// Resolve upstream ref + ahead/behind vs that tip.
+    /// Prefers configured tracking; falls back to `*/<local-name>` on a remote.
+    fn local_tracking(
+        &self,
+        branch: &Branch<'_>,
+        local_name: &str,
+    ) -> Result<(Option<String>, usize, usize), RepoError> {
+        let local_oid = branch.get().target();
+        let upstream = match branch.upstream() {
+            Ok(up) => {
+                let name = up.name()?.unwrap_or("").to_string();
+                let oid = up.get().target();
+                Some((name, oid))
+            }
+            Err(err) if err.code() == ErrorCode::NotFound => {
+                self.find_remote_ref_for(local_name)?
+            }
+            Err(err) => return Err(err.into()),
+        };
+
+        let Some((up_name, up_oid)) = upstream else {
+            return Ok((None, 0, 0));
+        };
+
+        let (ahead, behind) = match (local_oid, up_oid) {
+            (Some(local), Some(remote)) => self
+                .repo
+                .graph_ahead_behind(local, remote)
+                .unwrap_or((0, 0)),
+            _ => (0, 0),
+        };
+        Ok((Some(up_name), ahead, behind))
+    }
+
+    fn find_remote_ref_for(
+        &self,
+        local_name: &str,
+    ) -> Result<Option<(String, Option<Oid>)>, RepoError> {
+        let mut fallback = None;
+        for branch in self.repo.branches(Some(BranchType::Remote))? {
+            let (branch, _) = branch?;
+            let Some(name) = branch.name()? else {
+                continue;
+            };
+            // `origin/main` → short `main`; `origin/feat/x` → `feat/x`
+            let Some((_, short)) = name.split_once('/') else {
+                continue;
+            };
+            if short != local_name {
+                continue;
+            }
+            let oid = branch.get().target();
+            if name.starts_with("origin/") {
+                return Ok(Some((name.to_string(), oid)));
+            }
+            if fallback.is_none() {
+                fallback = Some((name.to_string(), oid));
+            }
+        }
+        Ok(fallback)
     }
 
     pub fn create_branch(&self, name: &str) -> Result<(), RepoError> {

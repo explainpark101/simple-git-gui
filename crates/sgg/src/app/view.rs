@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use gpui_kit::component::color_picker::{ColorPickerEvent, ColorPickerState};
-use gpui_kit::component::input::{EditorState, InputState, TextareaState};
+use gpui_kit::component::input::{EditorState, InputEvent, InputState, TextareaState};
 use gpui_kit::*;
 
 use sgg_core::{RepoSnapshot, RepoState};
@@ -108,6 +108,7 @@ pub struct AppView {
     pub(super) status_line: SharedString,
     pub(super) commit_input: Entity<TextareaState>,
     pub(super) branch_input: Entity<InputState>,
+    pub(super) branch_search_input: Entity<InputState>,
     pub(super) file_op_input: Entity<InputState>,
     pub(super) remote_name_input: Entity<InputState>,
     pub(super) remote_url_input: Entity<InputState>,
@@ -140,6 +141,7 @@ pub struct AppView {
     pub(super) status_colors: StatusColors,
     pub(super) status_color_pickers: StatusColorPickers,
     _status_color_subs: Vec<Subscription>,
+    _branch_search_sub: Option<Subscription>,
     pub(super) expanded_dirs: HashSet<String>,
     /// Cached Files tree rows; rebuilt on expand/collapse/reload/file ops.
     pub(super) files_tree_nodes: Vec<FsNode>,
@@ -202,6 +204,8 @@ impl AppView {
         });
         let branch_input =
             cx.new(|cx| InputState::new(window, cx).placeholder(t.branch_placeholder));
+        let branch_search_input =
+            cx.new(|cx| InputState::new(window, cx).placeholder(t.branch_search_placeholder));
         let file_op_input =
             cx.new(|cx| InputState::new(window, cx).placeholder(t.file_op_placeholder));
         let remote_name_input =
@@ -251,6 +255,7 @@ impl AppView {
             status_line: initial_status,
             commit_input,
             branch_input,
+            branch_search_input,
             file_op_input,
             remote_name_input,
             remote_url_input,
@@ -278,6 +283,7 @@ impl AppView {
             status_colors,
             status_color_pickers,
             _status_color_subs: Vec::new(),
+            _branch_search_sub: None,
             expanded_dirs: HashSet::new(),
             files_tree_nodes: Vec::new(),
             files_status_index: TreeStatusIndex::default(),
@@ -306,6 +312,7 @@ impl AppView {
         };
         view.apply_theme(cx);
         view.wire_status_color_pickers(window, cx);
+        view.wire_branch_search(cx);
         if view.start_path.is_some() {
             view.reload(cx);
             view.sync_auto_refresh(cx);
@@ -813,6 +820,9 @@ impl AppView {
         self.branch_input.update(cx, |input, cx| {
             input.set_placeholder(branch_ph, window, cx);
         });
+        self.branch_search_input.update(cx, |input, cx| {
+            input.set_placeholder(t.branch_search_placeholder, window, cx);
+        });
         self.preview_input.update(cx, |input, cx| {
             input.set_placeholder(t.preview_placeholder, window, cx);
         });
@@ -822,6 +832,15 @@ impl AppView {
         self.remote_url_input.update(cx, |input, cx| {
             input.set_placeholder(t.remote_url_placeholder, window, cx);
         });
+    }
+
+    fn wire_branch_search(&mut self, cx: &mut Context<Self>) {
+        let input = self.branch_search_input.clone();
+        self._branch_search_sub = Some(cx.subscribe(&input, |_, _, event: &InputEvent, cx| {
+            if matches!(event, InputEvent::Change) {
+                cx.notify();
+            }
+        }));
     }
 
     pub(super) fn toggle_add_remote_form(
