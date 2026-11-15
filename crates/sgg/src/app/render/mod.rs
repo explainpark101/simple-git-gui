@@ -6,6 +6,8 @@ mod sidebar;
 pub(super) mod status_style;
 mod toolbar;
 
+use std::path::Path;
+
 use gpui_kit::assets::IconName as AssetIcon;
 use gpui_kit::base::StyledExt as _;
 use gpui_kit::component::ActiveTheme as _;
@@ -17,7 +19,7 @@ use gpui_kit::*;
 use super::page::AppPage;
 use super::view::AppView;
 use crate::app::busy::BusyKind;
-use crate::app::widgets::{action_btn, with_busy};
+use crate::app::widgets::{action_btn, list_row_btn, with_busy};
 use crate::app::{ClosePreview, HistoryBack, HistoryForward, SavePreview};
 use sgg_core::{BranchInfo, RemoteInfo};
 
@@ -145,6 +147,7 @@ impl Render for AppView {
 
 fn welcome(view: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
     let t = view.t();
+    let recent: Vec<String> = view.recent_repos.iter().take(5).cloned().collect();
     div()
         .flex()
         .flex_col()
@@ -181,4 +184,44 @@ fn welcome(view: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
                 BusyKind::OpenFolder,
             ),
         )
+        .when(!recent.is_empty(), |this| {
+            this.child(
+                div()
+                    .w_full()
+                    .max_w(px(480.))
+                    .mt_4()
+                    .flex()
+                    .flex_col()
+                    .gap_2()
+                    .child(
+                        div()
+                            .text_sm()
+                            .font_semibold()
+                            .text_left()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(t.recent_projects),
+                    )
+                    .children(recent.into_iter().enumerate().map(|(i, path)| {
+                        let label = recent_repo_label(&path);
+                        let open_path = path.clone();
+                        list_row_btn(
+                            SharedString::from(format!("welcome-recent:{i}")),
+                            label,
+                        )
+                        .tooltip(path)
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.open_repo_path(std::path::PathBuf::from(open_path.clone()), cx);
+                        }))
+                        .into_any_element()
+                    })),
+            )
+        })
+}
+
+fn recent_repo_label(path: &str) -> String {
+    Path::new(path)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .map(|name| format!("{name}  —  {path}"))
+        .unwrap_or_else(|| path.to_string())
 }

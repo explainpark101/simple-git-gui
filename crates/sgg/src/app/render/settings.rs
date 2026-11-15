@@ -16,7 +16,7 @@ use crate::app::i18n::{Locale, UiText};
 use crate::app::prefs::{StatusColors, ThemePreference, settings_path};
 use crate::app::render::status_style::display_label;
 use crate::app::view::AppView;
-use crate::app::widgets::{action_btn, display_btn, icon_btn, menu_item, with_busy};
+use crate::app::widgets::{action_btn, display_btn, icon_btn, list_row_btn, menu_item, with_busy};
 
 pub fn render(view: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
     let t = view.t();
@@ -477,9 +477,8 @@ pub fn render(view: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
         .child(
             div()
                 .flex()
-                .items_center()
-                .justify_between()
-                .gap_2()
+                .flex_col()
+                .gap_3()
                 .p_3()
                 .rounded_lg()
                 .border_1()
@@ -487,34 +486,85 @@ pub fn render(view: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
                 .child(
                     div()
                         .flex()
-                        .flex_col()
-                        .gap_1()
-                        .min_w_0()
-                        .child(div().font_semibold().text_left().child(t.repository))
+                        .items_center()
+                        .justify_between()
+                        .gap_2()
                         .child(
                             div()
-                                .text_xs()
-                                .text_left()
-                                .text_color(cx.theme().muted_foreground)
-                                .whitespace_nowrap()
-                                .overflow_hidden()
-                                .text_ellipsis()
-                                .child(format!("{}: {path}", t.current_path)),
+                                .flex()
+                                .flex_col()
+                                .gap_1()
+                                .min_w_0()
+                                .flex_1()
+                                .child(div().font_semibold().text_left().child(t.repository))
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .text_left()
+                                        .text_color(cx.theme().muted_foreground)
+                                        .whitespace_nowrap()
+                                        .overflow_hidden()
+                                        .text_ellipsis()
+                                        .child(format!("{}: {path}", t.current_path)),
+                                ),
+                        )
+                        .child(
+                            with_busy(
+                                action_btn("settings-open-folder", AssetIcon::FolderOpen)
+                                    .primary()
+                                    .small()
+                                    .label(t.open_folder)
+                                    .tooltip(t.tip_open_folder)
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.open_folder(window, cx)
+                                    })),
+                                view.busy,
+                                BusyKind::OpenFolder,
+                            ),
                         ),
                 )
                 .child(
-                    with_busy(
-                        action_btn("settings-open-folder", AssetIcon::FolderOpen)
-                            .primary()
-                            .small()
-                            .label(t.open_folder)
-                            .tooltip(t.tip_open_folder)
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.open_folder(window, cx)
-                            })),
-                        view.busy,
-                        BusyKind::OpenFolder,
-                    ),
+                    div()
+                        .text_sm()
+                        .font_semibold()
+                        .text_left()
+                        .child(t.recent_projects),
+                )
+                .child(
+                    div()
+                        .max_h(px(280.))
+                        .min_h(px(72.))
+                        .w_full()
+                        .min_w_0()
+                        .overflow_y_scrollbar()
+                        .flex()
+                        .flex_col()
+                        .gap_1()
+                        .when(view.recent_repos.is_empty(), |this| {
+                            this.child(
+                                div()
+                                    .text_xs()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .text_left()
+                                    .child(t.recent_projects_empty),
+                            )
+                        })
+                        .children(view.recent_repos.iter().enumerate().map(|(i, repo)| {
+                            let open_path = repo.clone();
+                            let tip = t.tip_open_recent;
+                            list_row_btn(
+                                SharedString::from(format!("settings-recent:{i}")),
+                                repo.clone(),
+                            )
+                            .tooltip(tip)
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.open_repo_path(
+                                    std::path::PathBuf::from(open_path.clone()),
+                                    cx,
+                                );
+                            }))
+                            .into_any_element()
+                        })),
                 ),
         )
                 .child(

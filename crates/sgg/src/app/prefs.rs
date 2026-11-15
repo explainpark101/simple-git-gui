@@ -1,5 +1,5 @@
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -99,6 +99,9 @@ pub struct AppPrefs {
     /// Absolute repo roots that should skip the fetch-on-open prompt.
     #[serde(default)]
     pub fetch_prompt_muted: Vec<String>,
+    /// Recently opened repository roots (most recent first). Unbounded.
+    #[serde(default)]
+    pub recent_repos: Vec<String>,
     /// Custom colors for git status labels in Changes / Files.
     #[serde(default)]
     pub status_colors: StatusColors,
@@ -121,8 +124,35 @@ impl Default for AppPrefs {
             show_remote_branches: true,
             ask_fetch_on_open: true,
             fetch_prompt_muted: Vec::new(),
+            recent_repos: Vec::new(),
             status_colors: StatusColors::default(),
         }
+    }
+}
+
+/// Move `path` to the front of the recent-repos list (deduped). No size cap.
+/// Returns `true` when the list order/content changed.
+pub fn remember_repo(list: &mut Vec<String>, path: &Path) -> bool {
+    let key = display_path(path);
+    if key.is_empty() {
+        return false;
+    }
+    if list.first().is_some_and(|p| repo_path_eq(p, &key)) {
+        return false;
+    }
+    list.retain(|p| !repo_path_eq(p, &key));
+    list.insert(0, key);
+    true
+}
+
+fn repo_path_eq(a: &str, b: &str) -> bool {
+    #[cfg(windows)]
+    {
+        a.eq_ignore_ascii_case(b)
+    }
+    #[cfg(not(windows))]
+    {
+        a == b
     }
 }
 

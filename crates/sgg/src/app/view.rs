@@ -13,7 +13,9 @@ use super::editor::{EditorPreset, ExternalEditor};
 use super::files::{list_tree, FsNode};
 use super::i18n::{Locale, UiText};
 use super::page::{AppPage, NavEntry};
-use super::prefs::{AppPrefs, StatusColors, ThemePreference, absolute_path, display_path};
+use super::prefs::{
+    absolute_path, display_path, remember_repo, AppPrefs, StatusColors, ThemePreference,
+};
 use super::progress::{
     ProgressEntry, ProgressState, PROGRESS_DEFAULT_HEIGHT, PROGRESS_LOG_LIMIT,
 };
@@ -133,6 +135,8 @@ pub struct AppView {
     pub(super) show_remote_branches: bool,
     pub(super) ask_fetch_on_open: bool,
     pub(super) fetch_prompt_muted: Vec<String>,
+    /// Absolute repo roots, most recent first (persisted, unbounded).
+    pub(super) recent_repos: Vec<String>,
     pub(super) status_colors: StatusColors,
     pub(super) status_color_pickers: StatusColorPickers,
     _status_color_subs: Vec<Subscription>,
@@ -270,6 +274,7 @@ impl AppView {
             show_remote_branches: prefs.show_remote_branches,
             ask_fetch_on_open: prefs.ask_fetch_on_open,
             fetch_prompt_muted: prefs.fetch_prompt_muted,
+            recent_repos: prefs.recent_repos,
             status_colors,
             status_color_pickers,
             _status_color_subs: Vec::new(),
@@ -482,6 +487,9 @@ impl AppView {
                 self.snapshot_fp = loaded.fingerprint;
                 self.status_line = loaded.status_line.into();
                 self.error = None;
+                if remember_repo(&mut self.recent_repos, &loaded.snap.root) {
+                    self.persist_prefs(cx);
+                }
                 self.snapshot = Some(loaded.snap);
                 self.rebuild_changes_sections();
                 self.rebuild_files_status_index();
@@ -752,6 +760,16 @@ impl AppView {
     pub(super) fn set_show_remote_branches(&mut self, enabled: bool, cx: &mut Context<Self>) {
         self.show_remote_branches = enabled;
         self.persist_prefs(cx);
+        cx.notify();
+    }
+
+    /// Open a repository from a remembered path (welcome / settings).
+    pub(super) fn open_repo_path(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+        self.fetch_prompted_root = None;
+        self.start_path = Some(absolute_path(path));
+        self.page = AppPage::Git;
+        self.reload(cx);
+        self.sync_auto_refresh(cx);
         cx.notify();
     }
 
@@ -1059,6 +1077,7 @@ impl AppView {
             show_remote_branches: self.show_remote_branches,
             ask_fetch_on_open: self.ask_fetch_on_open,
             fetch_prompt_muted: self.fetch_prompt_muted.clone(),
+            recent_repos: self.recent_repos.clone(),
             status_colors: self.status_colors.clone(),
         };
         if let Err(err) = prefs.save() {
