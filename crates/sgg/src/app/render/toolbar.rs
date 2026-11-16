@@ -55,6 +55,19 @@ pub fn render(view: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
                         .on_click(cx.listener(|this, _, _, cx| this.set_page(AppPage::Git, cx))),
                 )
                 .child(
+                    btn("tab-history")
+                        .ghost()
+                        .small()
+                        .label(t.tab_history)
+                        .selected(view.page == AppPage::History)
+                        .tooltip(t.tip_tab_history)
+                        .disabled(!view.has_repo())
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.set_page(AppPage::History, cx);
+                            this.reload_history(window, cx);
+                        })),
+                )
+                .child(
                     btn("tab-files")
                         .ghost()
                         .small()

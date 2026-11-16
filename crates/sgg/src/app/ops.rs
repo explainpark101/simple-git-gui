@@ -5,6 +5,7 @@ use std::time::Duration;
 use gpui_kit::component::WindowExt as _;
 use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::dialog::{DialogFooter, DialogHeader, DialogTitle};
+use gpui_kit::component::diff::{DiffFile, DiffMode};
 use gpui_kit::*;
 
 use super::busy::BusyKind;
@@ -1346,6 +1347,9 @@ impl AppView {
                 });
                 self.preview_path = Some(rel_path.to_string());
                 self.error = None;
+                self.clear_blame_state();
+                self.refresh_inline_blame(cx);
+                self.refresh_preview_diff_gutter(cx);
             }
             Err(err) => {
                 self.set_error(err.into(), cx);
@@ -1353,7 +1357,446 @@ impl AppView {
         }
     }
 
+    pub(super) fn reload_history(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.has_repo() {
+            self.clear_history_state();
+            cx.notify();
+            return;
+        }
+        self.run_busy(BusyKind::HistoryLoad, window, cx, |this, _, cx| {
+            let root = this.repo_root();
+            let tips = this.history_log_tips();
+            // Empty tips + nothing excluded → no branch list yet; use --all.
+            // Empty tips with exclusions → user hid every branch; show nothing.
+            let rev = if tips.is_empty() && this.history_graph_excluded.is_empty() {
+                sgg_core::HistoryRevSpec::All
+            } else {
+                sgg_core::HistoryRevSpec::Tips(&tips)
+            };
+            match sgg_core::list_history(&root, rev) {
+                Ok(commits) => {
+                    this.history_commits = commits;
+                    this.history_head_oid = sgg_core::rev_parse(&root, "HEAD").ok();
+                    this.rebuild_history_graph();
+                    this.error = None;
+                    if let Some(sel) = this.history_selected.clone() {
+                        let keep_wip = sgg_core::is_uncommitted_oid(&sel)
+                            && this.history_has_uncommitted();
+                        let keep_commit = this.history_commits.iter().any(|c| c.full_oid == sel);
+                        if keep_wip || keep_commit {
+                            match sgg_core::show_commit(&root, &sel) {
+                                Ok(detail) => this.history_detail = Some(detail),
+                                Err(err) => {
+                                    this.history_detail = None;
+                                    this.set_error(err.to_string().into(), cx);
+                                    return;
+                                }
+                            }
+                        } else {
+                            this.history_selected = None;
+                            this.history_detail = None;
+                        }
+                    }
+                    this.set_ok_status(this.t().tab_history);
+                }
+                Err(err) => this.set_error(err.to_string().into(), cx),
+            }
+        });
+    }
+
+    /// Tips for `git log`: single `history_rev`, else visible branches from the snapshot.
+    /// Empty means fall back to `--all` in [`Self::reload_history`].
+    fn history_log_tips(&self) -> Vec<String> {
+        if let Some(rev) = self.history_rev.as_ref() {
+            return vec![rev.clone()];
+        }
+        let Some(snapshot) = self.snapshot.as_ref() else {
+            return Vec::new();
+        };
+        snapshot
+            .branches
+            .iter()
+            .filter(|b| !self.history_graph_excluded.contains(&b.name))
+            .map(|b| b.name.clone())
+            .collect()
+    }
+
+    pub(super) fn set_history_graph_branch_visible(
+        &mut self,
+        name: String,
+        visible: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        // Leave single-revision mode when the user customizes the graph filter.
+        self.history_rev = None;
+        if visible {
+            self.history_graph_excluded.remove(&name);
+        } else {
+            self.history_graph_excluded.insert(name);
+        }
+        self.reload_history(window, cx);
+    }
+
+    pub(super) fn select_history_commit(
+        &mut self,
+        oid: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.history_selected.as_deref() == Some(oid.as_str()) && self.history_detail.is_some()
+        {
+            return;
+        }
+        self.history_selected = Some(oid.clone());
+        self.run_busy(BusyKind::HistoryLoad, window, cx, move |this, _, cx| {
+            let root = this.repo_root();
+            match sgg_core::show_commit(&root, &oid) {
+                Ok(detail) => {
+                    this.history_detail = Some(detail);
+                    this.error = None;
+                    this.set_ok_status(oid);
+                }
+                Err(err) => {
+                    this.history_detail = None;
+                    this.set_error(err.to_string().into(), cx);
+                }
+            }
+        });
+    }
+
+    pub(super) fn confirm_reset(
+        &mut self,
+        oid: String,
+        mode: sgg_core::ResetMode,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if sgg_core::is_uncommitted_oid(&oid) {
+            return;
+        }
+        let t = self.t();
+        let short = oid.chars().take(7).collect::<String>();
+        let (title, description, busy, danger) = match mode {
+            sgg_core::ResetMode::Soft => (
+                t.confirm_reset_soft,
+                t.desc_reset_soft.replace("{oid}", &short),
+                BusyKind::ResetSoft,
+                false,
+            ),
+            sgg_core::ResetMode::Mixed => (
+                t.confirm_reset_mixed,
+                t.desc_reset_mixed.replace("{oid}", &short),
+                BusyKind::ResetMixed,
+                false,
+            ),
+            sgg_core::ResetMode::Hard => (
+                t.confirm_reset_hard,
+                t.desc_reset_hard.replace("{oid}", &short),
+                BusyKind::ResetHard,
+                true,
+            ),
+        };
+        let ok = match mode {
+            sgg_core::ResetMode::Soft => t.reset_soft,
+            sgg_core::ResetMode::Mixed => t.reset_mixed,
+            sgg_core::ResetMode::Hard => t.reset_hard,
+        };
+        let cancel = t.branch_cancel;
+        let view = cx.entity();
+        open_confirm(
+            window,
+            cx,
+            title,
+            description,
+            ok,
+            cancel,
+            danger,
+            move |_, window, cx| {
+                let oid = oid.clone();
+                view.update(cx, |this, cx| {
+                    this.run_busy(busy, window, cx, move |this, window, cx| {
+                        this.reset_to_now(&oid, mode, window, cx);
+                    });
+                });
+                true
+            },
+        );
+    }
+
+    pub(super) fn reset_to_now(
+        &mut self,
+        oid: &str,
+        mode: sgg_core::ResetMode,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let root = self.repo_root();
+        match sgg_core::reset_to(&root, oid, mode) {
+            Ok(_) => {
+                self.error = None;
+                let short: String = oid.chars().take(7).collect();
+                self.set_ok_status(format!("Reset ({}) to {short}", mode.as_git_arg()));
+                self.reload(cx);
+                self.reload_history(window, cx);
+            }
+            Err(err) => self.set_error(err.to_string().into(), cx),
+        }
+    }
+
+    pub(super) fn open_branch_history(
+        &mut self,
+        branch: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.history_rev = Some(branch);
+        self.history_selected = None;
+        self.history_detail = None;
+        self.close_history_file_preview(window, cx);
+        self.set_page(super::page::AppPage::History, cx);
+        self.reload_history(window, cx);
+    }
+
+    pub(super) fn open_history_file(
+        &mut self,
+        oid: String,
+        path: String,
+        mode: super::view::HistoryFileViewMode,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let diff_layout = self
+            .history_file_preview
+            .as_ref()
+            .map(|p| p.diff_layout)
+            .unwrap_or_default();
+        self.history_file_preview = Some(super::view::HistoryFilePreview {
+            oid: oid.clone(),
+            path: path.clone(),
+            mode,
+            diff_layout,
+        });
+        self.preview_path = Some(path);
+        self.clear_blame_state();
+        self.clear_preview_diff_gutter(cx);
+        self.load_history_file_into_preview(window, cx);
+    }
+
+    pub(super) fn set_history_file_view_mode(
+        &mut self,
+        mode: super::view::HistoryFileViewMode,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(preview) = self.history_file_preview.as_mut() else {
+            return;
+        };
+        if preview.mode == mode {
+            return;
+        }
+        preview.mode = mode;
+        self.load_history_file_into_preview(window, cx);
+    }
+
+    pub(super) fn set_history_diff_layout(
+        &mut self,
+        layout: super::view::HistoryDiffLayout,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(preview) = self.history_file_preview.as_mut() else {
+            return;
+        };
+        if preview.mode != super::view::HistoryFileViewMode::Diff {
+            return;
+        }
+        if preview.diff_layout == layout {
+            return;
+        }
+        preview.diff_layout = layout;
+        // Unified uses Diff; Split uses dual Editors — reload content for the layout.
+        self.load_history_file_into_preview(window, cx);
+    }
+
+    pub(super) fn close_history_file_preview(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.history_file_preview.is_none() {
+            return;
+        }
+        self.history_file_preview = None;
+        self.preview_path = None;
+        self.clear_blame_state();
+        self.clear_preview_diff_gutter(cx);
+        self.preview_input.update(cx, |input, cx| {
+            input.set_line_number(true, window, cx);
+            input.set_value("", window, cx);
+        });
+        self.preview_input_old.update(cx, |input, cx| {
+            input.set_line_number(true, window, cx);
+            input.set_value("", window, cx);
+        });
+        self.history_diff.update(cx, |state, cx| {
+            state.set_files([], cx);
+        });
+        self.history_aligned_split = None;
+        cx.notify();
+    }
+
+    fn load_history_file_into_preview(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(preview) = self.history_file_preview.clone() else {
+            return;
+        };
+        let root = self.repo_root();
+        const MAX: usize = 1_048_576;
+        let truncate = |text: String| -> String {
+            if text.len() > MAX {
+                format!(
+                    "{}\n\n… truncated ({} KiB).",
+                    &text[..MAX],
+                    text.len() / 1024
+                )
+            } else {
+                text
+            }
+        };
+
+        match preview.mode {
+            super::view::HistoryFileViewMode::FileAtCommit => {
+                match sgg_core::show_file_at_revision(&root, &preview.oid, &preview.path) {
+                    Ok(content) => {
+                        let text = truncate(content);
+                        self.preview_input.update(cx, |input, cx| {
+                            input.set_line_number(true, window, cx);
+                            input.set_value(&text, window, cx);
+                        });
+                        self.preview_input_old.update(cx, |input, cx| {
+                            input.set_value("", window, cx);
+                        });
+                        self.history_diff.update(cx, |state, cx| {
+                            state.set_files([], cx);
+                        });
+                        self.history_aligned_split = None;
+                        self.clear_preview_diff_gutter(cx);
+                        self.error = None;
+                        cx.notify();
+                    }
+                    Err(err) => self.set_error(err.to_string().into(), cx),
+                }
+            }
+            super::view::HistoryFileViewMode::Diff => {
+                match sgg_core::diff_file_at_commit(&root, &preview.oid, &preview.path) {
+                    Ok(content) => match preview.diff_layout {
+                        super::view::HistoryDiffLayout::Unified => {
+                            let files = if content.trim().is_empty() {
+                                vec![DiffFile::unchanged(
+                                    preview.path.as_str(),
+                                    "(no diff for this path in the commit)\n",
+                                )]
+                            } else {
+                                let patch = if content.len() > MAX {
+                                    truncate(content)
+                                } else {
+                                    content
+                                };
+                                match DiffFile::parse(&patch) {
+                                    Ok(files) if !files.is_empty() => files,
+                                    Ok(_) => vec![DiffFile::unchanged(
+                                        preview.path.as_str(),
+                                        "(no diff for this path in the commit)\n",
+                                    )],
+                                    Err(_) => {
+                                        let fallback = truncate(patch);
+                                        vec![DiffFile::unchanged(
+                                            preview.path.as_str(),
+                                            &fallback,
+                                        )]
+                                    }
+                                }
+                            };
+                            self.history_diff.update(cx, |state, cx| {
+                                state.set_context_lines(None, cx);
+                                state.set_files(files, cx);
+                                state.set_mode(DiffMode::Unified, cx);
+                            });
+                            self.preview_input.update(cx, |input, cx| {
+                                input.set_line_number(true, window, cx);
+                                input.set_value("", window, cx);
+                            });
+                            self.preview_input_old.update(cx, |input, cx| {
+                                input.set_line_number(true, window, cx);
+                                input.set_value("", window, cx);
+                            });
+                            self.history_aligned_split = None;
+                            self.clear_preview_diff_gutter(cx);
+                            self.error = None;
+                            cx.notify();
+                        }
+                        super::view::HistoryDiffLayout::Split => {
+                            let patch = if content.len() > MAX {
+                                truncate(content.clone())
+                            } else {
+                                content.clone()
+                            };
+                            let aligned = sgg_core::align_split_from_unified(&patch);
+                            let (old_text, new_text) = if let Some(ref aligned) = aligned {
+                                (aligned.plain_side(true), aligned.plain_side(false))
+                            } else if content.trim().is_empty() {
+                                (
+                                    "(no diff for this path in the commit)\n".into(),
+                                    "(no diff for this path in the commit)\n".into(),
+                                )
+                            } else {
+                                match sgg_core::split_file_at_commit(
+                                    &root,
+                                    &preview.oid,
+                                    &preview.path,
+                                ) {
+                                    Ok((old, new)) => (truncate(old), truncate(new)),
+                                    Err(_) => (truncate(patch.clone()), truncate(patch)),
+                                }
+                            };
+                            self.history_aligned_split = aligned;
+                            self.history_diff.update(cx, |state, cx| {
+                                state.set_files([], cx);
+                            });
+                            // Hide built-in sequential numbers; custom gutter shows
+                            // source lines (blank for padding) outside the text.
+                            self.preview_input_old.update(cx, |input, cx| {
+                                input.set_line_number(false, window, cx);
+                                input.set_value(&old_text, window, cx);
+                            });
+                            self.preview_input.update(cx, |input, cx| {
+                                input.set_line_number(false, window, cx);
+                                input.set_value(&new_text, window, cx);
+                            });
+                            self.diff_scroll_new = None;
+                            self.diff_scroll_old = None;
+                            self.diff_scroll_pending_new = None;
+                            self.diff_scroll_pending_old = None;
+                            self.error = None;
+                            self.refresh_history_diff_decorations(cx);
+                            cx.notify();
+                        }
+                    },
+                    Err(err) => self.set_error(err.to_string().into(), cx),
+                }
+            }
+        }
+    }
+
     pub(super) fn save_preview(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.history_file_preview.is_some() {
+            self.set_error("History preview is read-only".into(), cx);
+            return;
+        }
         let Some(rel) = self.preview_path.clone() else {
             self.set_error("No file open in preview".into(), cx);
             return;
@@ -1368,6 +1811,7 @@ impl AppView {
                 Ok(()) => {
                     this.set_ok_status(format!("Saved {rel}"));
                     this.reload(cx);
+                    this.refresh_preview_diff_gutter(cx);
                 }
                 Err(err) => this.set_error(format!("Failed to save {rel}: {err}").into(), cx),
             }

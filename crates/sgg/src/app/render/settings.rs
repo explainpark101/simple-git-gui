@@ -117,6 +117,9 @@ pub fn render(view: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
                         ),
                 )
                 .child(status_colors_section(view, t, cx))
+                .child(ui_font_section(view, t, cx))
+                .child(inline_blame_section(view, t, cx))
+                .child(diff_line_background_section(view, t, cx))
                 .child(terminal_shell_section(view, t, cx))
                 .child(terminal_font_section(view, t, cx))
                 .child(
@@ -579,6 +582,161 @@ pub fn render(view: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
                 .text_color(cx.theme().muted_foreground)
                 .child(format!("{}: {settings_file}", t.settings_file)),
         ),
+        )
+}
+
+fn inline_blame_section(
+    view: &AppView,
+    t: UiText,
+    cx: &mut Context<AppView>,
+) -> impl IntoElement {
+    div()
+        .flex()
+        .flex_col()
+        .gap_3()
+        .p_4()
+        .rounded_lg()
+        .border_1()
+        .border_color(cx.theme().border)
+        .child(div().font_semibold().text_left().child(t.inline_blame))
+        .child(
+            div()
+                .text_xs()
+                .text_left()
+                .text_color(cx.theme().muted_foreground)
+                .child(t.tip_inline_blame),
+        )
+        .child(
+            Switch::new("settings-inline-blame")
+                .label(t.inline_blame)
+                .checked(view.show_inline_blame)
+                .tooltip(t.tip_inline_blame)
+                .on_click(cx.listener(|this, checked, _, cx| {
+                    this.set_show_inline_blame(*checked, cx);
+                })),
+        )
+}
+
+fn diff_line_background_section(
+    view: &AppView,
+    t: UiText,
+    cx: &mut Context<AppView>,
+) -> impl IntoElement {
+    div()
+        .flex()
+        .flex_col()
+        .gap_3()
+        .p_4()
+        .rounded_lg()
+        .border_1()
+        .border_color(cx.theme().border)
+        .child(div().font_semibold().text_left().child(t.diff_line_background))
+        .child(
+            div()
+                .text_xs()
+                .text_left()
+                .text_color(cx.theme().muted_foreground)
+                .child(t.tip_diff_line_background),
+        )
+        .child(
+            Switch::new("settings-diff-line-bg")
+                .label(t.diff_line_background)
+                .checked(view.show_diff_line_background)
+                .tooltip(t.tip_diff_line_background)
+                .on_click(cx.listener(|this, checked, _, cx| {
+                    this.set_show_diff_line_background(*checked, cx);
+                })),
+        )
+}
+
+fn ui_font_section(
+    view: &AppView,
+    t: UiText,
+    cx: &mut Context<AppView>,
+) -> impl IntoElement {
+    let presets = [
+        ("Default", ""),
+        ("Segoe UI", "Segoe UI"),
+        ("Malgun Gothic", "Malgun Gothic"),
+        ("Noto Sans", "Noto Sans"),
+        ("Arial", "Arial"),
+    ];
+
+    div()
+        .flex()
+        .flex_col()
+        .gap_3()
+        .p_4()
+        .rounded_lg()
+        .border_1()
+        .border_color(cx.theme().border)
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .justify_between()
+                .gap_2()
+                .child(div().font_semibold().text_left().child(t.ui_font))
+                .child(
+                    display_btn("ui-font-reset")
+                        .ghost()
+                        .small()
+                        .icon(AssetIcon::RotateCcw)
+                        .label(t.reset_status_colors)
+                        .tooltip(t.tip_reset_ui_font)
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.reset_ui_font(window, cx);
+                        })),
+                ),
+        )
+        .child(
+            div()
+                .text_xs()
+                .text_left()
+                .text_color(cx.theme().muted_foreground)
+                .child(t.ui_font_help),
+        )
+        .child(
+            div()
+                .flex()
+                .flex_wrap()
+                .gap_2()
+                .children(presets.into_iter().map(|(label, family)| {
+                    let family = family.to_string();
+                    let selected = view.ui_font_family == family
+                        || (label == "Default" && view.ui_font_family.is_empty());
+                    display_btn(SharedString::from(format!("ui-font-preset:{label}")))
+                        .outline()
+                        .small()
+                        .label(label.to_string())
+                        .selected(selected)
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.set_ui_font_family(family.clone(), window, cx);
+                        }))
+                        .into_any_element()
+                })),
+        )
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap_2()
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .child(Input::new(&view.ui_font_input)),
+                )
+                .child(
+                    action_btn("apply-ui-font", AssetIcon::Save)
+                        .outline()
+                        .small()
+                        .label(t.save)
+                        .tooltip(t.tip_apply_ui_font)
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.apply_ui_font_from_input(window, cx);
+                        })),
+                ),
         )
 }
 

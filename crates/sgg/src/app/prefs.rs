@@ -118,6 +118,15 @@ pub struct AppPrefs {
     /// Shell used for new terminal tabs (Zed `terminal.shell`).
     #[serde(default)]
     pub terminal_shell: TerminalShellPrefs,
+    /// Show git blame next to the preview caret line.
+    #[serde(default = "default_true")]
+    pub show_inline_blame: bool,
+    /// Tint changed preview lines with a translucent SCM color (VS Code style).
+    #[serde(default = "default_true")]
+    pub show_diff_line_background: bool,
+    /// UI (sans) font family. Empty uses the theme default.
+    #[serde(default)]
+    pub ui_font_family: String,
 }
 
 fn default_true() -> bool {
@@ -175,6 +184,9 @@ impl Default for AppPrefs {
             terminal_font_size: DEFAULT_TERMINAL_FONT_SIZE,
             terminal_line_height: DEFAULT_TERMINAL_LINE_HEIGHT,
             terminal_shell: TerminalShellPrefs::default(),
+            show_inline_blame: true,
+            show_diff_line_background: true,
+            ui_font_family: String::new(),
         }
     }
 }

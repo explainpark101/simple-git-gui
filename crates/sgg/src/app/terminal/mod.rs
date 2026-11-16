@@ -32,6 +32,8 @@ pub struct TerminalDock {
     /// Bumps when sessions change so the UI can refresh titles/tabs.
     pub generation: u64,
     height: f32,
+    /// Last applied PTY grid size (skip redundant resizes during layout).
+    pub(crate) last_grid: (u16, u16),
 }
 
 pub const TERMINAL_DEFAULT_HEIGHT: f32 = 220.0;
@@ -50,6 +52,7 @@ impl Default for TerminalDock {
             cursor: CursorState::default(),
             generation: 0,
             height: TERMINAL_DEFAULT_HEIGHT,
+            last_grid: (0, 0),
         }
     }
 }
@@ -150,9 +153,24 @@ impl TerminalDock {
     }
 
     pub fn resize_active(&mut self, cols: u16, rows: u16) {
-        if let Some(session) = self.active_session_mut() {
-            session.resize(cols, rows);
+        let _ = self.resize_all(cols, rows);
+    }
+
+    /// Resize every session's PTY to match the dock. Returns whether any changed.
+    pub fn resize_all(&mut self, cols: u16, rows: u16) -> bool {
+        if self.last_grid == (cols, rows) && !self.sessions.is_empty() {
+            return false;
         }
+        let mut changed = false;
+        for session in &mut self.sessions {
+            if session.resize(cols, rows) {
+                changed = true;
+            }
+        }
+        if changed || self.last_grid != (cols, rows) {
+            self.last_grid = (cols, rows);
+        }
+        changed
     }
 
     pub fn take_dirty(&self) -> bool {

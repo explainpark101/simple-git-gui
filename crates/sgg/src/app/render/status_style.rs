@@ -33,6 +33,20 @@ pub fn status_letter(status: &str) -> &'static str {
     }
 }
 
+/// Map `git diff-tree --name-status` codes (`A`, `M`, `D`, `R100`, …) to
+/// [`StatusColors`] / theme keys used by [`status_color`].
+pub fn history_name_status_key(status: &str) -> &'static str {
+    match status.chars().next().unwrap_or(' ') {
+        'A' => "added",
+        'M' | 'T' => "modified",
+        'D' => "deleted",
+        'R' => "renamed",
+        'C' => "added",
+        'U' => "conflict",
+        _ => "modified",
+    }
+}
+
 pub fn theme_status_color(status: &str, cx: &App) -> Hsla {
     let theme = cx.theme();
     match status {

@@ -1,5 +1,7 @@
 mod changes;
 mod files_page;
+mod git_graph;
+mod history;
 mod preview_pane;
 mod settings;
 mod sidebar;
@@ -147,6 +149,7 @@ impl Render for AppView {
                                 .child(resizable_panel().child(work))
                                 .into_any_element()
                         }
+                        AppPage::History => history::render(self, cx).into_any_element(),
                         AppPage::Files => files_page::render(self, cx).into_any_element(),
                         AppPage::Settings => settings::render(self, cx).into_any_element(),
                     }

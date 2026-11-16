@@ -347,11 +347,12 @@ impl TerminalSession {
         let _ = writer.flush();
     }
 
-    pub fn resize(&mut self, cols: u16, rows: u16) {
+    /// Resize the PTY + VTE grid. Returns `true` when the size actually changed.
+    pub fn resize(&mut self, cols: u16, rows: u16) -> bool {
         let cols = cols.max(2);
         let rows = rows.max(1);
         if cols == self.cols && rows == self.rows {
-            return;
+            return false;
         }
         self.cols = cols;
         self.rows = rows;
@@ -376,6 +377,7 @@ impl TerminalSession {
             snap.lines = lines;
             snap.cursor = cursor;
         }
+        true
     }
 }
 

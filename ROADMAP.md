@@ -24,12 +24,15 @@ This document tracks planned work beyond the current MVP.
 - Shortcuts: `Ctrl+`` / `Ctrl+~` toggle, `Ctrl+Shift+`` / `Ctrl+Shift+~` new tab
 - Later: libghostty-vt when Zig is available in the build toolchain; richer ANSI colors / scrollback UI
 
-### History
+### History — shipped in v1.4.0
 
-- Commit graph / linear history list
+- Linear history list (newest first)
 - Select commit to show message, author, date, file list
-- Diff against parent
 - Soft/hard/mixed reset (with confirmations)
+- Inline blame at the preview caret line (Settings toggle)
+- Configurable UI (sans) font in Settings
+- Commit graph gutter in the History list (Zed-style lane layout)
+- Later: diff against parent
 
 ### More git operations
 

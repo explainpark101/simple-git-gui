@@ -1010,6 +1010,59 @@ fn branches_panel(
         .into_any_element()
 }
 
+fn branch_context_menu(
+    menu: gpui_kit::component::menu::PopupMenu,
+    entity: &Entity<AppView>,
+    name: &str,
+    can_rename: bool,
+    can_delete: bool,
+    rename_label: &'static str,
+    delete_label: &'static str,
+    history_label: &'static str,
+) -> gpui_kit::component::menu::PopupMenu {
+    let name_hist = name.to_string();
+    let entity_hist = entity.clone();
+    let mut menu = menu.item(menu_item_with_icon(
+        history_label,
+        AssetIcon::GitCommitVertical,
+        move |_, window, cx| {
+            entity_hist.update(cx, |this, cx| {
+                this.open_branch_history(name_hist.clone(), window, cx);
+            });
+        },
+    ));
+
+    if can_rename {
+        let name_ren = name.to_string();
+        let entity_ren = entity.clone();
+        menu = menu.item(menu_item_with_icon(
+            rename_label,
+            AssetIcon::Pencil,
+            move |_, window, cx| {
+                entity_ren.update(cx, |this, cx| {
+                    this.start_rename_branch(name_ren.clone(), window, cx);
+                });
+            },
+        ));
+    }
+
+    if can_delete {
+        let name_del = name.to_string();
+        let entity_del = entity.clone();
+        menu = menu.item(menu_item_with_icon(
+            delete_label,
+            AssetIcon::Trash,
+            move |_, window, cx| {
+                entity_del.update(cx, |this, cx| {
+                    this.confirm_delete_branch(name_del.clone(), window, cx);
+                });
+            },
+        ));
+    }
+
+    menu
+}
+
 fn branch_form_panel(
     view: &AppView,
     form: &BranchForm,
@@ -1081,6 +1134,7 @@ fn branch_row(
     let name_switch = name.clone();
     let name_rename = name.clone();
     let name_delete = name.clone();
+    let name_history = name.clone();
     let label = if branch.is_remote {
         format!("remotes/{}", branch.name)
     } else {
@@ -1103,6 +1157,7 @@ fn branch_row(
     } else {
         cx.theme().success
     };
+    let entity = cx.entity();
 
     div()
         .id(SharedString::from(format!("branch-row:{}", branch.name)))
@@ -1113,6 +1168,18 @@ fn branch_row(
         .gap_1()
         .rounded(cx.theme().radius)
         .when(branch.is_head, |this| this.bg(cx.theme().accent.opacity(0.28)))
+        .context_menu(move |menu, _, _| {
+            branch_context_menu(
+                menu,
+                &entity,
+                &name_history,
+                can_rename,
+                can_delete,
+                t.rename_branch,
+                t.delete_branch,
+                t.open_branch_history,
+            )
+        })
         .child(
             div()
                 .flex()

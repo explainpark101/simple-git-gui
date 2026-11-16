@@ -50,6 +50,10 @@ impl BusyKind {
             Self::AddRemote => t.add_remote,
             Self::EditRemote => t.edit_remote,
             Self::DeleteRemote => t.delete_remote,
+            Self::HistoryLoad => t.tab_history,
+            Self::ResetSoft => t.reset_soft,
+            Self::ResetMixed => t.reset_mixed,
+            Self::ResetHard => t.reset_hard,
         }
     }
 }

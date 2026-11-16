@@ -3,10 +3,19 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use gpui_kit::component::color_picker::{ColorPickerEvent, ColorPickerState};
-use gpui_kit::component::input::{EditorState, InputEvent, InputState, TextareaState};
+use gpui_kit::component::diff::{DiffMode, DiffState};
+use gpui_kit::component::input::{
+    EditorState, GutterDecoration, GutterDecorationCollection, InputEvent, InputState,
+    OverviewRulerDecoration, OverviewRulerDecorationCollection, OverviewRulerLane,
+    RangeDecoration, RangeDecorationCollection, RangeDecorationStyle, TextareaState,
+};
 use gpui_kit::*;
 
-use sgg_core::{RepoSnapshot, RepoState};
+use sgg_core::{
+    line_start_offset, lines_byte_range, list_file_line_changes, AlignedSplitView, BlameEntry,
+    HistoryCommit, HistoryDetail, HistoryGraph, LineChange, LineChangeKind, RepoSnapshot,
+    RepoState,
+};
 
 use super::busy::BusyKind;
 use super::editor::{EditorPreset, ExternalEditor};
@@ -63,6 +72,30 @@ pub(super) enum BranchForm {
     },
 }
 
+/// How a History-tab file is shown in the preview pane.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(super) enum HistoryFileViewMode {
+    #[default]
+    Diff,
+    FileAtCommit,
+}
+
+/// Diff presentation when [`HistoryFileViewMode::Diff`] is active.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(super) enum HistoryDiffLayout {
+    #[default]
+    Unified,
+    Split,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct HistoryFilePreview {
+    pub oid: String,
+    pub path: String,
+    pub mode: HistoryFileViewMode,
+    pub diff_layout: HistoryDiffLayout,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub(super) enum FileOpForm {
     #[default]
@@ -117,8 +150,63 @@ pub struct AppView {
     pub(super) remote_url_input: Entity<InputState>,
     pub(super) custom_editor_input: Entity<InputState>,
     pub(super) terminal_font_input: Entity<InputState>,
+    pub(super) ui_font_input: Entity<InputState>,
     pub(super) preview_input: Entity<EditorState>,
+    /// Left pane for History split-diff (old file / parent blob).
+    pub(super) preview_input_old: Entity<EditorState>,
+    /// History Diff viewer (unified / split with empty counterpart cells).
+    pub(super) history_diff: Entity<DiffState>,
+    /// Aligned old|new rows for History Split Diff (plain text + gutter metadata).
+    pub(super) history_aligned_split: Option<AlignedSplitView>,
+    /// Sync Split Diff scroll by shared context / aligned display rows.
+    pub(super) history_diff_scroll_sync: bool,
+    _diff_scroll_sync_subs: Vec<Subscription>,
+    pub(super) diff_scroll_sync_lock: bool,
+    pub(super) diff_scroll_new: Option<(f32, f32)>,
+    pub(super) diff_scroll_old: Option<(f32, f32)>,
+    pub(super) diff_scroll_pending_new: Option<(f32, f32)>,
+    pub(super) diff_scroll_pending_old: Option<(f32, f32)>,
+    /// VS Code-style SCM bars beside the preview gutter (line numbers).
+    preview_diff_gutter: GutterDecorationCollection,
+    preview_diff_ruler: OverviewRulerDecorationCollection,
+    /// Translucent whole-line fills matching SCM gutter colors.
+    preview_diff_line_bg: RangeDecorationCollection,
+    preview_diff_gutter_old: GutterDecorationCollection,
+    preview_diff_line_bg_old: RangeDecorationCollection,
     pub(super) terminal_font_family: String,
+    /// Empty = theme default sans font.
+    pub(super) ui_font_family: String,
+    pub(super) show_inline_blame: bool,
+    pub(super) show_diff_line_background: bool,
+    /// Commit history list (History tab).
+    pub(super) history_commits: Vec<HistoryCommit>,
+    /// Lane layout for the History list graph gutter (Zed-style).
+    pub(super) history_graph: HistoryGraph,
+    /// Full oid of `HEAD` (parent of the uncommitted WIP graph row).
+    pub(super) history_head_oid: Option<String>,
+    pub(super) history_selected: Option<String>,
+    pub(super) history_detail: Option<HistoryDetail>,
+    /// Optional revision tip for History (`None` = all selected branches).
+    pub(super) history_rev: Option<String>,
+    /// Branch names hidden from the History graph. Empty = all branches (default).
+    pub(super) history_graph_excluded: HashSet<String>,
+    /// Search box in the History graph branch-filter panel.
+    pub(super) history_branch_filter_input: Entity<InputState>,
+    _history_branch_filter_sub: Option<Subscription>,
+    /// Cog panel open: pick which branches appear in the graph.
+    pub(super) history_branch_filter_open: bool,
+    /// History file opened in the preview pane (diff or blob at commit).
+    pub(super) history_file_preview: Option<HistoryFilePreview>,
+    /// Commit detail changed-files: folder tree vs flat list (session).
+    pub(super) history_files_as_tree: bool,
+    /// Dir keys collapsed in History changed-files tree mode.
+    pub(super) collapsed_history_dirs: HashSet<String>,
+    /// Blame cache for the current preview file (0-based lines).
+    pub(super) blame_path: Option<String>,
+    pub(super) blame_lines: Vec<Option<BlameEntry>>,
+    blame_cursor_line: Option<usize>,
+    /// Last editor scroll Y used to keep inline blame glued to the caret row.
+    blame_scroll_y: Option<f32>,
     pub(super) terminal_font_size: f32,
     pub(super) terminal_line_height: f32,
     pub(super) terminal_shell: TerminalShellPrefs,
@@ -155,6 +243,8 @@ pub struct AppView {
     _status_color_subs: Vec<Subscription>,
     _branch_search_sub: Option<Subscription>,
     _commit_input_sub: Option<Subscription>,
+    _preview_blame_sub: Option<Subscription>,
+    _window_bounds_sub: Option<Subscription>,
     pub(super) expanded_dirs: HashSet<String>,
     /// Cached Files tree rows; rebuilt on expand/collapse/reload/file ops.
     pub(super) files_tree_nodes: Vec<FsNode>,
@@ -228,6 +318,9 @@ impl AppView {
             cx.new(|cx| InputState::new(window, cx).placeholder(t.branch_placeholder));
         let branch_search_input =
             cx.new(|cx| InputState::new(window, cx).placeholder(t.branch_search_placeholder));
+        let history_branch_filter_input = cx.new(|cx| {
+            InputState::new(window, cx).placeholder(t.history_branch_filter_placeholder)
+        });
         let file_op_input =
             cx.new(|cx| InputState::new(window, cx).placeholder(t.file_op_placeholder));
         let remote_name_input =
@@ -240,6 +333,9 @@ impl AppView {
         let terminal_font_input = cx.new(|cx| {
             InputState::new(window, cx).placeholder(DEFAULT_TERMINAL_FONT_FAMILY)
         });
+        let ui_font_input = cx.new(|cx| {
+            InputState::new(window, cx).placeholder(".SystemUIFont")
+        });
         let terminal_shell_input = cx.new(|cx| {
             InputState::new(window, cx)
                 .placeholder(r#"e.g. "C:\Program Files\Git\bin\bash.exe" --login"#)
@@ -248,11 +344,42 @@ impl AppView {
         // gpui-base display_map on buffer lines only (visible-range paint), which
         // avoids wrap-map thrash on large files. Syntax stays plaintext — tree-sitter
         // is not enabled in this crate's gpui-kit features.
+        // Reserve a 3px SCM gutter strip (empty collection keeps the width stable).
         let preview_input = cx.new(|cx| {
             EditorState::new(window, cx)
                 .placeholder(t.preview_placeholder)
                 .language("plaintext")
                 .soft_wrap(false)
+                .gutter_decorations_width(px(3.))
+        });
+        let preview_input_old = cx.new(|cx| {
+            EditorState::new(window, cx)
+                .placeholder(t.preview_placeholder)
+                .language("plaintext")
+                .soft_wrap(false)
+                .gutter_decorations_width(px(3.))
+        });
+        // History Diff uses gpui-kit Diff (split pairs empty cells opposite
+        // pure adds/deletes; line numbers stay on the source side only).
+        let history_diff = cx.new(|cx| {
+            DiffState::new([], cx)
+                .with_context_lines(None)
+                .with_mode(DiffMode::Split)
+        });
+        let preview_diff_gutter = preview_input.update(cx, |state, cx| {
+            state.create_gutter_decorations_collection(Vec::new(), cx)
+        });
+        let preview_diff_ruler = preview_input.update(cx, |state, cx| {
+            state.create_overview_ruler_decorations_collection(Vec::new(), cx)
+        });
+        let preview_diff_line_bg = preview_input.update(cx, |state, cx| {
+            state.create_range_decorations_collection(Vec::new(), cx)
+        });
+        let preview_diff_gutter_old = preview_input_old.update(cx, |state, cx| {
+            state.create_gutter_decorations_collection(Vec::new(), cx)
+        });
+        let preview_diff_line_bg_old = preview_input_old.update(cx, |state, cx| {
+            state.create_range_decorations_collection(Vec::new(), cx)
         });
 
         custom_editor_input.update(cx, |input, cx| {
@@ -260,6 +387,9 @@ impl AppView {
         });
         terminal_font_input.update(cx, |input, cx| {
             input.set_value(&prefs.terminal_font_family, window, cx);
+        });
+        ui_font_input.update(cx, |input, cx| {
+            input.set_value(&prefs.ui_font_family, window, cx);
         });
         terminal_shell_input.update(cx, |input, cx| {
             input.set_value(&prefs.terminal_shell.custom_command, window, cx);
@@ -296,8 +426,44 @@ impl AppView {
             remote_url_input,
             custom_editor_input,
             terminal_font_input,
+            ui_font_input,
             preview_input,
+            preview_input_old,
+            history_diff,
+            history_aligned_split: None,
+            history_diff_scroll_sync: true,
+            _diff_scroll_sync_subs: Vec::new(),
+            diff_scroll_sync_lock: false,
+            diff_scroll_new: None,
+            diff_scroll_old: None,
+            diff_scroll_pending_new: None,
+            diff_scroll_pending_old: None,
+            preview_diff_gutter,
+            preview_diff_ruler,
+            preview_diff_line_bg,
+            preview_diff_gutter_old,
+            preview_diff_line_bg_old,
             terminal_font_family: prefs.terminal_font_family.clone(),
+            ui_font_family: prefs.ui_font_family.clone(),
+            show_inline_blame: prefs.show_inline_blame,
+            show_diff_line_background: prefs.show_diff_line_background,
+            history_commits: Vec::new(),
+            history_graph: HistoryGraph::default(),
+            history_head_oid: None,
+            history_selected: None,
+            history_detail: None,
+            history_rev: None,
+            history_graph_excluded: HashSet::new(),
+            history_branch_filter_input,
+            _history_branch_filter_sub: None,
+            history_branch_filter_open: false,
+            history_file_preview: None,
+            history_files_as_tree: false,
+            collapsed_history_dirs: HashSet::new(),
+            blame_path: None,
+            blame_lines: Vec::new(),
+            blame_cursor_line: None,
+            blame_scroll_y: None,
             terminal_font_size: prefs.terminal_font_size,
             terminal_line_height: prefs.terminal_line_height,
             terminal_shell: prefs.terminal_shell.clone(),
@@ -328,6 +494,8 @@ impl AppView {
             _status_color_subs: Vec::new(),
             _branch_search_sub: None,
             _commit_input_sub: None,
+            _preview_blame_sub: None,
+            _window_bounds_sub: None,
             expanded_dirs: HashSet::new(),
             files_tree_nodes: Vec::new(),
             files_status_index: TreeStatusIndex::default(),
@@ -363,7 +531,11 @@ impl AppView {
         view.apply_theme(cx);
         view.wire_status_color_pickers(window, cx);
         view.wire_branch_search(cx);
+        view.wire_history_branch_filter(cx);
         view.wire_commit_input(window, cx);
+        view.wire_preview_blame(cx);
+        view.wire_diff_scroll_sync(cx);
+        view.wire_window_bounds(window, cx);
         view.start_terminal_poll(cx);
         if view.start_path.is_some() {
             view.reload(cx);
@@ -500,6 +672,8 @@ impl AppView {
             self.changes_sections.clear();
             self.changes_flat_rows.clear();
             self.files_status_index = TreeStatusIndex::default();
+            self.clear_history_state();
+            self.clear_blame_state();
             self.error = None;
             self.status_line = self.t().no_folder_open.into();
             cx.notify();
@@ -554,6 +728,26 @@ impl AppView {
                 self.rebuild_files_status_index();
                 if build_files_tree {
                     self.files_tree_nodes = loaded.files_tree;
+                }
+                self.refresh_preview_diff_gutter(cx);
+                // WIP row appears/disappears with the dirty working tree.
+                if self.page == AppPage::History {
+                    self.rebuild_history_graph();
+                    if self
+                        .history_selected
+                        .as_deref()
+                        .is_some_and(sgg_core::is_uncommitted_oid)
+                    {
+                        if self.history_has_uncommitted() {
+                            let root = self.repo_root();
+                            if let Ok(detail) = sgg_core::show_uncommitted(&root) {
+                                self.history_detail = Some(detail);
+                            }
+                        } else {
+                            self.history_selected = None;
+                            self.history_detail = None;
+                        }
+                    }
                 }
             }
             Err(LoadRepoError::Snapshot(err)) => {
@@ -730,6 +924,10 @@ impl AppView {
     }
 
     pub(super) fn close_preview(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.history_file_preview.is_some() {
+            self.close_history_file_preview(window, cx);
+            return;
+        }
         if self.page == AppPage::Files && !self.preview_tabs.is_empty() {
             self.close_preview_tab(self.preview_tab_index, window, cx);
             return;
@@ -738,6 +936,8 @@ impl AppView {
             return;
         }
         self.preview_path = None;
+        self.clear_blame_state();
+        self.clear_preview_diff_gutter(cx);
         self.push_nav_entry(self.current_nav_entry());
         cx.notify();
     }
@@ -772,6 +972,9 @@ impl AppView {
         });
         self.preview_path = Some(path.clone());
         self.ensure_parents_expanded(&path);
+        self.clear_blame_state();
+        self.refresh_inline_blame(cx);
+        self.refresh_preview_diff_gutter(cx);
         self.push_nav_entry(self.current_nav_entry());
         cx.notify();
     }
@@ -790,6 +993,8 @@ impl AppView {
         if self.preview_tabs.is_empty() {
             self.preview_tab_index = 0;
             self.preview_path = None;
+            self.clear_blame_state();
+            self.clear_preview_diff_gutter(cx);
             self.preview_input.update(cx, |input, cx| {
                 input.set_value("", window, cx);
             });
@@ -805,6 +1010,9 @@ impl AppView {
             input.set_value(&content, window, cx);
         });
         self.preview_path = Some(path);
+        self.clear_blame_state();
+        self.refresh_inline_blame(cx);
+        self.refresh_preview_diff_gutter(cx);
         self.push_nav_entry(self.current_nav_entry());
         cx.notify();
     }
@@ -875,6 +1083,9 @@ impl AppView {
         self.branch_search_input.update(cx, |input, cx| {
             input.set_placeholder(t.branch_search_placeholder, window, cx);
         });
+        self.history_branch_filter_input.update(cx, |input, cx| {
+            input.set_placeholder(t.history_branch_filter_placeholder, window, cx);
+        });
         self.preview_input.update(cx, |input, cx| {
             input.set_placeholder(t.preview_placeholder, window, cx);
         });
@@ -895,6 +1106,16 @@ impl AppView {
         }));
     }
 
+    fn wire_history_branch_filter(&mut self, cx: &mut Context<Self>) {
+        let input = self.history_branch_filter_input.clone();
+        self._history_branch_filter_sub =
+            Some(cx.subscribe(&input, |_, _, event: &InputEvent, cx| {
+                if matches!(event, InputEvent::Change) {
+                    cx.notify();
+                }
+            }));
+    }
+
     fn wire_commit_input(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let input = self.commit_input.clone();
         // Ctrl/Cmd+Enter (secondary) commits; plain Enter inserts a newline in the textarea.
@@ -910,6 +1131,563 @@ impl AppView {
                 }
             },
         ));
+    }
+
+    fn wire_window_bounds(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self._window_bounds_sub = Some(cx.observe_window_bounds(window, |this, window, cx| {
+            if !this.terminal.visible {
+                return;
+            }
+            let width: f32 = window.bounds().size.width.into();
+            if this.terminal.maybe_resize_from_px(
+                width,
+                this.terminal.height(),
+                this.terminal_font_size,
+                this.terminal_line_height,
+            ) {
+                this.terminal.refresh_lines();
+                cx.notify();
+            }
+        }));
+    }
+
+    fn wire_preview_blame(&mut self, cx: &mut Context<Self>) {
+        let input = self.preview_input.clone();
+        self._preview_blame_sub = Some(cx.observe(&input, |this, input, cx| {
+            if !this.show_inline_blame || this.preview_path.is_none() {
+                return;
+            }
+            let editor = input.read(cx);
+            let line = editor.cursor_position().line as usize;
+            // Re-render when the caret line or scroll moves so blame stays on-row.
+            let scroll_y = f32::from(editor.scroll_offset().y);
+            let prev_scroll = this.blame_scroll_y;
+            let line_changed = this.blame_cursor_line != Some(line);
+            let scroll_changed = prev_scroll.is_none_or(|y| (y - scroll_y).abs() > 0.5);
+            if line_changed || scroll_changed {
+                this.blame_cursor_line = Some(line);
+                this.blame_scroll_y = Some(scroll_y);
+                cx.notify();
+            }
+        }));
+    }
+
+    fn wire_diff_scroll_sync(&mut self, cx: &mut Context<Self>) {
+        let new_ed = self.preview_input.clone();
+        let old_ed = self.preview_input_old.clone();
+        self._diff_scroll_sync_subs = vec![
+            cx.observe(&new_ed, |this, _, cx| {
+                this.mirror_split_diff_scroll(true, cx);
+                cx.notify(); // refresh custom line-number gutters
+            }),
+            cx.observe(&old_ed, |this, _, cx| {
+                this.mirror_split_diff_scroll(false, cx);
+                cx.notify();
+            }),
+        ];
+    }
+
+    fn scroll_xy_close(a: (f32, f32), b: (f32, f32)) -> bool {
+        (a.0 - b.0).abs() < 0.5 && (a.1 - b.1).abs() < 0.5
+    }
+
+    /// Sync Split Diff panes by aligned display rows (empty cells keep
+    /// non-diff context at the same scroll position).
+    fn mirror_split_diff_scroll(&mut self, from_new: bool, cx: &mut Context<Self>) {
+        if !self.history_diff_scroll_sync || self.diff_scroll_sync_lock {
+            return;
+        }
+        let Some(preview) = self.history_file_preview.as_ref() else {
+            return;
+        };
+        if preview.mode != HistoryFileViewMode::Diff
+            || preview.diff_layout != HistoryDiffLayout::Split
+        {
+            return;
+        }
+
+        let offset = if from_new {
+            self.preview_input.read(cx).scroll_offset()
+        } else {
+            self.preview_input_old.read(cx).scroll_offset()
+        };
+        let xy = (f32::from(offset.x), f32::from(offset.y));
+
+        let pending = if from_new {
+            self.diff_scroll_pending_new
+        } else {
+            self.diff_scroll_pending_old
+        };
+        if let Some(pending_xy) = pending {
+            if Self::scroll_xy_close(xy, pending_xy) {
+                if from_new {
+                    self.diff_scroll_pending_new = None;
+                    self.diff_scroll_new = Some(xy);
+                } else {
+                    self.diff_scroll_pending_old = None;
+                    self.diff_scroll_old = Some(xy);
+                }
+                return;
+            }
+            let other_xy = if from_new {
+                let o = self.preview_input_old.read(cx).scroll_offset();
+                (f32::from(o.x), f32::from(o.y))
+            } else {
+                let o = self.preview_input.read(cx).scroll_offset();
+                (f32::from(o.x), f32::from(o.y))
+            };
+            if Self::scroll_xy_close(other_xy, pending_xy) {
+                return;
+            }
+            if from_new {
+                self.diff_scroll_pending_new = None;
+            } else {
+                self.diff_scroll_pending_old = None;
+            }
+        }
+
+        let prev = if from_new {
+            self.diff_scroll_new
+        } else {
+            self.diff_scroll_old
+        };
+        if prev.is_some_and(|p| Self::scroll_xy_close(xy, p)) {
+            return;
+        }
+
+        // Aligned empty cells keep shared context on the same display row, so
+        // syncing by display-row tracks non-diff content across panes.
+        let target_xy = if self.history_aligned_split.is_some() {
+            let src_lh = if from_new {
+                self.preview_input.read(cx).line_height()
+            } else {
+                self.preview_input_old.read(cx).line_height()
+            }
+            .map(f32::from)
+            .unwrap_or(20.);
+            let exact_row = if src_lh > 0.5 {
+                ((-xy.1) / src_lh).max(0.)
+            } else {
+                0.
+            };
+            let peer_lh = if from_new {
+                self.preview_input_old.read(cx).line_height()
+            } else {
+                self.preview_input.read(cx).line_height()
+            }
+            .map(f32::from)
+            .unwrap_or(src_lh);
+            (xy.0, -(exact_row * peer_lh))
+        } else {
+            xy
+        };
+
+        let current_peer = if from_new {
+            let o = self.preview_input_old.read(cx).scroll_offset();
+            (f32::from(o.x), f32::from(o.y))
+        } else {
+            let o = self.preview_input.read(cx).scroll_offset();
+            (f32::from(o.x), f32::from(o.y))
+        };
+
+        if from_new {
+            self.diff_scroll_new = Some(xy);
+        } else {
+            self.diff_scroll_old = Some(xy);
+        }
+        if Self::scroll_xy_close(current_peer, target_xy) {
+            if from_new {
+                self.diff_scroll_old = Some(target_xy);
+            } else {
+                self.diff_scroll_new = Some(target_xy);
+            }
+            return;
+        }
+
+        let peer_offset = point(px(target_xy.0), px(target_xy.1));
+        self.diff_scroll_sync_lock = true;
+        if from_new {
+            self.diff_scroll_pending_old = Some(target_xy);
+            self.diff_scroll_old = Some(target_xy);
+            self.preview_input_old.update(cx, |editor, cx| {
+                editor.set_scroll_offset(peer_offset, cx);
+            });
+        } else {
+            self.diff_scroll_pending_new = Some(target_xy);
+            self.diff_scroll_new = Some(target_xy);
+            self.preview_input.update(cx, |editor, cx| {
+                editor.set_scroll_offset(peer_offset, cx);
+            });
+        }
+        self.diff_scroll_sync_lock = false;
+    }
+
+    pub(super) fn set_history_diff_scroll_sync(&mut self, enabled: bool, cx: &mut Context<Self>) {
+        self.history_diff_scroll_sync = enabled;
+        if enabled {
+            let offset = self.preview_input.read(cx).scroll_offset();
+            let xy = (f32::from(offset.x), f32::from(offset.y));
+            self.diff_scroll_sync_lock = true;
+            self.diff_scroll_pending_old = Some(xy);
+            self.diff_scroll_new = Some(xy);
+            self.diff_scroll_old = Some(xy);
+            self.preview_input_old.update(cx, |editor, cx| {
+                editor.set_scroll_offset(offset, cx);
+            });
+            self.diff_scroll_sync_lock = false;
+        } else {
+            self.diff_scroll_pending_new = None;
+            self.diff_scroll_pending_old = None;
+        }
+        cx.notify();
+    }
+
+    pub(super) fn set_show_inline_blame(&mut self, enabled: bool, cx: &mut Context<Self>) {
+        self.show_inline_blame = enabled;
+        if enabled {
+            self.refresh_inline_blame(cx);
+        } else {
+            self.blame_path = None;
+            self.blame_lines.clear();
+            self.blame_cursor_line = None;
+            self.blame_scroll_y = None;
+        }
+        self.persist_prefs(cx);
+        cx.notify();
+    }
+
+    pub(super) fn set_show_diff_line_background(
+        &mut self,
+        enabled: bool,
+        cx: &mut Context<Self>,
+    ) {
+        self.show_diff_line_background = enabled;
+        self.refresh_preview_diff_gutter(cx);
+        self.persist_prefs(cx);
+        cx.notify();
+    }
+
+    pub(super) fn set_ui_font_family(
+        &mut self,
+        family: impl Into<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let family = family.into().trim().to_string();
+        self.ui_font_family = family.clone();
+        self.ui_font_input.update(cx, |input, cx| {
+            input.set_value(&family, window, cx);
+        });
+        self.apply_theme(cx);
+        self.persist_prefs(cx);
+        cx.notify();
+    }
+
+    pub(super) fn apply_ui_font_from_input(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let family = self.ui_font_input.read(cx).value().to_string();
+        self.set_ui_font_family(family, window, cx);
+    }
+
+    pub(super) fn reset_ui_font(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.set_ui_font_family(String::new(), window, cx);
+    }
+
+    pub(super) fn clear_history_state(&mut self) {
+        self.history_commits.clear();
+        self.history_graph = HistoryGraph::default();
+        self.history_head_oid = None;
+        self.history_selected = None;
+        self.history_detail = None;
+        self.history_rev = None;
+        self.history_graph_excluded.clear();
+        self.history_branch_filter_open = false;
+        self.history_file_preview = None;
+    }
+
+    /// Working tree / index has local changes → show the gray WIP tip on History.
+    pub(super) fn history_has_uncommitted(&self) -> bool {
+        self.snapshot
+            .as_ref()
+            .is_some_and(|s| !s.changes.is_empty())
+    }
+
+    /// Whether `branch` is included in the History graph (default: yes).
+    pub(super) fn history_graph_branch_visible(&self, branch: &str) -> bool {
+        !self.history_graph_excluded.contains(branch)
+    }
+
+    pub(super) fn toggle_history_branch_filter(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.history_branch_filter_open = !self.history_branch_filter_open;
+        if self.history_branch_filter_open {
+            self.history_branch_filter_input.update(cx, |input, cx| {
+                input.focus(window, cx);
+            });
+        }
+        cx.notify();
+    }
+
+    pub(super) fn is_history_preview(&self) -> bool {
+        self.history_file_preview.is_some()
+    }
+
+    pub(super) fn rebuild_history_graph(&mut self) {
+        use sgg_core::{
+            build_history_graph, GraphCommitInput, GRAPH_ACCENT_COUNT, UNCOMMITTED_OID,
+        };
+
+        let mut inputs: Vec<GraphCommitInput> = Vec::with_capacity(self.history_commits.len() + 1);
+        // Tip of the graph: gray uncommitted node parented at HEAD when dirty.
+        if self.history_has_uncommitted() {
+            let parents = self
+                .history_head_oid
+                .clone()
+                .into_iter()
+                .collect::<Vec<_>>();
+            inputs.push(GraphCommitInput {
+                oid: UNCOMMITTED_OID.to_string(),
+                parents,
+            });
+        }
+        inputs.extend(self.history_commits.iter().map(|c| GraphCommitInput {
+            oid: c.full_oid.clone(),
+            parents: c.parents.clone(),
+        }));
+        self.history_graph = build_history_graph(&inputs, GRAPH_ACCENT_COUNT);
+    }
+
+    pub(super) fn clear_blame_state(&mut self) {
+        self.blame_path = None;
+        self.blame_lines.clear();
+        self.blame_cursor_line = None;
+        self.blame_scroll_y = None;
+    }
+
+    pub(super) fn clear_preview_diff_gutter(&mut self, cx: &mut Context<Self>) {
+        self.preview_diff_gutter.clear(cx);
+        self.preview_diff_ruler.clear(cx);
+        self.preview_diff_line_bg.clear(cx);
+        self.preview_diff_gutter_old.clear(cx);
+        self.preview_diff_line_bg_old.clear(cx);
+    }
+
+    /// VS Code-style SCM bars: added / modified lines + deletion pills in the gutter.
+    pub(super) fn refresh_preview_diff_gutter(&mut self, cx: &mut Context<Self>) {
+        if self.history_file_preview.is_some() {
+            self.refresh_history_diff_decorations(cx);
+            return;
+        }
+        let Some(path) = self.preview_path.clone() else {
+            self.clear_preview_diff_gutter(cx);
+            return;
+        };
+        if !self.has_repo() {
+            self.clear_preview_diff_gutter(cx);
+            return;
+        }
+
+        let root = self.repo_root();
+        let text = self.preview_input.read(cx).value().to_string();
+        let changes = match list_file_line_changes(&root, &path) {
+            Ok(c) => c,
+            Err(_) => {
+                self.clear_preview_diff_gutter(cx);
+                return;
+            }
+        };
+
+        let added = self.effective_status_color("added", cx);
+        let modified = self.effective_status_color("modified", cx);
+        let deleted = self.effective_status_color("deleted", cx);
+        let line_bg = self.show_diff_line_background;
+        // Soft tint over the full line (gutter bar keeps full-strength color).
+        const LINE_BG_OPACITY: f32 = 0.18;
+
+        let mut gutter = Vec::with_capacity(changes.len());
+        let mut ruler = Vec::with_capacity(changes.len());
+        let mut fills = Vec::new();
+        for change in changes {
+            match change {
+                LineChange::Lines { kind, start, end } if end > start => {
+                    let range = lines_byte_range(&text, start, end);
+                    if range.start >= range.end && !text.is_empty() {
+                        continue;
+                    }
+                    let color = match kind {
+                        LineChangeKind::Added => added,
+                        LineChangeKind::Modified => modified,
+                        LineChangeKind::Deleted => deleted,
+                    };
+                    gutter.push(GutterDecoration::new(range.clone()).with_color(color));
+                    ruler.push(
+                        OverviewRulerDecoration::new(range.clone())
+                            .with_lane(OverviewRulerLane::Left)
+                            .with_color(color.opacity(0.7)),
+                    );
+                    if line_bg && matches!(kind, LineChangeKind::Added | LineChangeKind::Modified)
+                    {
+                        fills.push(
+                            RangeDecoration::new(range)
+                                .with_style(RangeDecorationStyle::Fill)
+                                .with_color(color.opacity(LINE_BG_OPACITY)),
+                        );
+                    }
+                }
+                LineChange::DeletedBefore { before } => {
+                    let offset = line_start_offset(&text, before);
+                    let range = offset..offset;
+                    gutter.push(GutterDecoration::new(range.clone()).with_color(deleted));
+                    ruler.push(
+                        OverviewRulerDecoration::new(range)
+                            .with_lane(OverviewRulerLane::Left)
+                            .with_color(deleted.opacity(0.7)),
+                    );
+                }
+                LineChange::Lines { .. } => {}
+            }
+        }
+
+        self.preview_diff_gutter.set(gutter, cx);
+        self.preview_diff_ruler.set(ruler, cx);
+        self.preview_diff_line_bg.set(fills, cx);
+    }
+
+    /// Gutter + fills for History Split Diff (aligned dual editors).
+    pub(super) fn refresh_history_diff_decorations(&mut self, cx: &mut Context<Self>) {
+        let Some(preview) = self.history_file_preview.clone() else {
+            self.clear_preview_diff_gutter(cx);
+            return;
+        };
+        if preview.mode != HistoryFileViewMode::Diff
+            || preview.diff_layout != HistoryDiffLayout::Split
+        {
+            self.clear_preview_diff_gutter(cx);
+            return;
+        }
+
+        let root = self.repo_root();
+        let patch = sgg_core::diff_file_at_commit(&root, &preview.oid, &preview.path)
+            .unwrap_or_default();
+        let Some(aligned) = sgg_core::align_split_from_unified(&patch) else {
+            self.clear_preview_diff_gutter(cx);
+            return;
+        };
+
+        let old_text = self.preview_input_old.read(cx).value().to_string();
+        let new_text = self.preview_input.read(cx).value().to_string();
+        let added = self.effective_status_color("added", cx);
+        let modified = self.effective_status_color("modified", cx);
+        let deleted = self.effective_status_color("deleted", cx);
+        const LINE_BG_OPACITY: f32 = 0.18;
+        let line_bg = self.show_diff_line_background;
+
+        let mut gutter_old = Vec::new();
+        let mut fills_old = Vec::new();
+        for (kind, start, end) in aligned.old_marks() {
+            if end <= start {
+                continue;
+            }
+            let range = lines_byte_range(&old_text, start, end);
+            let color = match kind {
+                LineChangeKind::Deleted => deleted,
+                LineChangeKind::Modified => modified,
+                LineChangeKind::Added => added,
+            };
+            gutter_old.push(GutterDecoration::new(range.clone()).with_color(color));
+            if line_bg {
+                fills_old.push(
+                    RangeDecoration::new(range)
+                        .with_style(RangeDecorationStyle::Fill)
+                        .with_color(color.opacity(LINE_BG_OPACITY)),
+                );
+            }
+        }
+
+        let mut gutter_new = Vec::new();
+        let mut fills_new = Vec::new();
+        let mut ruler = Vec::new();
+        for (kind, start, end) in aligned.new_marks() {
+            if end <= start {
+                continue;
+            }
+            let range = lines_byte_range(&new_text, start, end);
+            let color = match kind {
+                LineChangeKind::Added => added,
+                LineChangeKind::Modified => modified,
+                LineChangeKind::Deleted => deleted,
+            };
+            gutter_new.push(GutterDecoration::new(range.clone()).with_color(color));
+            ruler.push(
+                OverviewRulerDecoration::new(range.clone())
+                    .with_lane(OverviewRulerLane::Left)
+                    .with_color(color.opacity(0.7)),
+            );
+            if line_bg {
+                fills_new.push(
+                    RangeDecoration::new(range)
+                        .with_style(RangeDecorationStyle::Fill)
+                        .with_color(color.opacity(LINE_BG_OPACITY)),
+                );
+            }
+        }
+
+        self.preview_diff_gutter_old.set(gutter_old, cx);
+        self.preview_diff_line_bg_old.set(fills_old, cx);
+        self.preview_diff_gutter.set(gutter_new, cx);
+        self.preview_diff_line_bg.set(fills_new, cx);
+        self.preview_diff_ruler.set(ruler, cx);
+    }
+
+    pub(super) fn refresh_inline_blame(&mut self, cx: &mut Context<Self>) {
+        if !self.show_inline_blame {
+            self.clear_blame_state();
+            return;
+        }
+        let Some(path) = self.preview_path.clone() else {
+            self.clear_blame_state();
+            return;
+        };
+        if self.blame_path.as_deref() == Some(path.as_str()) && !self.blame_lines.is_empty() {
+            return;
+        }
+        let root = self.repo_root();
+        self.blame_path = Some(path.clone());
+        self.blame_lines.clear();
+        self.blame_cursor_line = None;
+        cx.spawn(async move |this, cx| {
+            let blamed_path = path.clone();
+            let result = cx
+                .background_spawn(async move { sgg_core::blame_file(&root, &path) })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                if this.preview_path.as_deref() != Some(blamed_path.as_str()) {
+                    return;
+                }
+                match result {
+                    Ok(lines) => {
+                        this.blame_lines = lines;
+                        this.blame_path = Some(blamed_path);
+                        this.blame_cursor_line = Some(
+                            this.preview_input.read(cx).cursor_position().line as usize,
+                        );
+                        cx.notify();
+                    }
+                    Err(_) => {
+                        this.blame_lines.clear();
+                        this.blame_path = Some(blamed_path);
+                        cx.notify();
+                    }
+                }
+            });
+        })
+        .detach();
     }
 
     pub(super) fn set_branch_search_compact(&mut self, compact: bool, cx: &mut Context<Self>) {
@@ -1127,6 +1905,20 @@ impl AppView {
             ThemePreference::System => ThemeMode::from(cx.window_appearance()),
         };
         Theme::change(mode, None, cx);
+        self.apply_ui_font_to_theme(cx);
+    }
+
+    pub(super) fn apply_ui_font_to_theme(&self, cx: &mut App) {
+        use gpui_kit::component::Theme;
+
+        let family = self.ui_font_family.trim();
+        if family.is_empty() {
+            return;
+        }
+        let family = SharedString::from(family.to_string());
+        Theme::update(cx, |theme| {
+            theme.font_family = family;
+        });
     }
 
     pub(super) fn sync_custom_command_from_input(&mut self, cx: &App) {
@@ -1138,6 +1930,18 @@ impl AppView {
         self.changes_as_tree = enabled;
         self.rebuild_changes_flat_rows();
         self.persist_prefs(cx);
+        cx.notify();
+    }
+
+    pub(super) fn set_history_files_as_tree(&mut self, enabled: bool, cx: &mut Context<Self>) {
+        self.history_files_as_tree = enabled;
+        cx.notify();
+    }
+
+    pub(super) fn toggle_history_file_dir(&mut self, key: String, cx: &mut Context<Self>) {
+        if !self.collapsed_history_dirs.remove(&key) {
+            self.collapsed_history_dirs.insert(key);
+        }
         cx.notify();
     }
 
@@ -1199,6 +2003,9 @@ impl AppView {
                 self.sync_terminal_shell_from_input(cx);
                 self.terminal_shell.clone()
             },
+            show_inline_blame: self.show_inline_blame,
+            show_diff_line_background: self.show_diff_line_background,
+            ui_font_family: self.ui_font_family.clone(),
         };
         if let Err(err) = prefs.save() {
             self.error = Some(format!("Failed to save settings: {err:#}").into());
@@ -1224,6 +2031,7 @@ impl AppView {
                         this.status_colors
                             .set(&status, Some(hsla_to_hex(*color)));
                         this.persist_prefs(cx);
+                        this.refresh_preview_diff_gutter(cx);
                         cx.notify();
                     }
                 },
@@ -1444,11 +2252,33 @@ impl AppView {
 
     pub(super) fn resize_terminal_to_window(&mut self, window: &Window) {
         let width: f32 = window.bounds().size.width.into();
-        self.terminal.maybe_resize_from_px(
+        let _ = self.terminal.maybe_resize_from_px(
             width,
+            self.terminal.height(),
             self.terminal_font_size,
             self.terminal_line_height,
         );
+    }
+
+    /// Sync PTY cols/rows from the measured terminal dock bounds (window/pane resize).
+    pub(super) fn sync_terminal_grid_from_bounds(
+        &mut self,
+        width_px: f32,
+        height_px: f32,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.terminal.visible {
+            return;
+        }
+        if self.terminal.maybe_resize_from_px(
+            width_px,
+            height_px,
+            self.terminal_font_size,
+            self.terminal_line_height,
+        ) {
+            self.terminal.refresh_lines();
+            cx.notify();
+        }
     }
 
     pub(super) fn set_terminal_height(

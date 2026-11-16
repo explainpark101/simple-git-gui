@@ -2,6 +2,7 @@
 pub enum AppPage {
     #[default]
     Git,
+    History,
     Files,
     Settings,
 }

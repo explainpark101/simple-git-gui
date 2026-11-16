@@ -27,4 +27,8 @@ pub enum BusyKind {
     AddRemote,
     EditRemote,
     DeleteRemote,
+    HistoryLoad,
+    ResetSoft,
+    ResetMixed,
+    ResetHard,
 }

@@ -1,0 +1,55 @@
+---
+description: sgg split panes must be resizable; list text must not overlap
+globs: crates/sgg/src/app/render/**/*.rs
+alwaysApply: true
+---
+
+# Pane layout and list typography
+
+## Split panes → always resizable
+
+Whenever the UI is split into side-by-side (or stacked) panes that share space, wrap them in `h_resizable` / `v_resizable` with `resizable_panel()` children so the user gets a drag handle. Do **not** hard-code fixed widths with only `border_r_1` / `border_b_1` as the divider.
+
+```rust
+// BAD — fixed split, no handle
+div().flex().child(list.w(px(360.))).child(detail.flex_1())
+
+// GOOD — draggable handle (same pattern as Git / Files)
+h_resizable("history-panes")
+    .child(resizable_panel().size(px(360.)).size_range(list_min..px(640.)).child(list))
+    .child(resizable_panel().child(detail))
+```
+
+Set a sensible `size` + `size_range` so the handle stays usable. History list min width must keep the "History" / locale title on one line (header chrome + title advance; never below the git-graph gutter).
+
+For three regions (list | detail | file), nest like `git-work`: outer `list | right`, inner `detail | preview`. A flat 3-panel group lets the right handle cascade into the list once the middle panel hits `size_range` min.
+
+## List / stacked text → no glyph overlap
+
+In multi-line list rows (title + meta, labels + captions):
+
+- Put each text line in its **own** child `div`
+- Use enough vertical gap (`gap_2` or more) between lines
+- Prefer explicit `line_height(relative(1.35))` (or similar) on text rows
+- Use `overflow_hidden` + `text_ellipsis` + `whitespace_nowrap` on single-line titles so they clip instead of colliding with neighbors
+- Avoid collapsing padding (`py_0`) on dense rows; keep at least `py_1`
+
+```rust
+// BAD — tight stack, text can collide
+div().flex().flex_col().gap_1()
+    .child(div().text_sm().child(subject))
+    .child(div().text_xs().child(meta))
+
+// GOOD — clear separation + ellipsis
+div().flex().flex_col().gap_2().min_w_0()
+    .child(
+        div()
+            .text_sm()
+            .line_height(relative(1.35))
+            .overflow_hidden()
+            .text_ellipsis()
+            .whitespace_nowrap()
+            .child(subject),
+    )
+    .child(div().text_xs().line_height(relative(1.35)).child(meta))
+```

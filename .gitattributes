@@ -1,0 +1,5 @@
+# Shell / CI scripts must stay LF so bash (Linux/WSL/macOS) can source them.
+*.sh text eol=lf
+*.bash text eol=lf
+.github/workflows/* text eol=lf
+packaging/**/*.sh text eol=lf

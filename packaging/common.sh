@@ -17,12 +17,16 @@ sgg_version() {
       /^\[workspace\.package\]/ { in_pkg=1; next }
       /^\[/ { in_pkg=0 }
       in_pkg && /^version[[:space:]]*=/ {
-        gsub(/"/, "", $3)
+        gsub(/["\r]/, "", $3)
         print $3
         exit
       }
     ' "$ROOT/Cargo.toml"
   )"
+  # Cargo.toml may use CRLF on Windows checkouts; strip CR/whitespace.
+  v="${v//$'\r'/}"
+  v="${v#"${v%%[![:space:]]*}"}"
+  v="${v%"${v##*[![:space:]]}"}"
   if [[ -z "${v:-}" ]]; then
     echo "error: could not read workspace.package.version from Cargo.toml" >&2
     exit 1

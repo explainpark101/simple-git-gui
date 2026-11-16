@@ -40,12 +40,16 @@ jobs:
               /^\[workspace\.package\]/ { in_pkg=1; next }
               /^\[/ { in_pkg=0 }
               in_pkg && /^version[[:space:]]*=/ {
-                gsub(/"/, "", $3)
+                gsub(/["\r]/, "", $3)
                 print $3
                 exit
               }
             ' Cargo.toml
           )"
+          # Cargo.toml may be checked out with CRLF; strip leftover CR/whitespace.
+          VERSION="${VERSION//$'\r'/}"
+          VERSION="${VERSION#"${VERSION%%[![:space:]]*}"}"
+          VERSION="${VERSION%"${VERSION##*[![:space:]]}"}"
           if [[ -z "${VERSION}" ]]; then
             echo "error: workspace.package.version not found in Cargo.toml" >&2
             exit 1

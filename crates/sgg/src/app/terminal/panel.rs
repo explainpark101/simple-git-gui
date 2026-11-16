@@ -38,9 +38,11 @@ pub fn render(view: &AppView, cx: &mut Context<AppView>) -> AnyElement {
     let bg = terminal_bg_hsla();
     let pad_x = 8.0;
     let pad_y = 4.0;
+    let entity = cx.entity();
 
     div()
         .id("terminal-dock")
+        .relative()
         .size_full()
         .min_h_0()
         .flex()
@@ -48,6 +50,38 @@ pub fn render(view: &AppView, cx: &mut Context<AppView>) -> AnyElement {
         .border_t_1()
         .border_color(cx.theme().border)
         .bg(cx.theme().background)
+        .child(
+            // Measure the dock so PTY cols/rows track window and splitter size.
+            canvas(
+                {
+                    let entity = entity.clone();
+                    move |bounds, _, cx| {
+                        let width_px: f32 = bounds.size.width.into();
+                        let height_px: f32 = bounds.size.height.into();
+                        let same = entity.read_with(cx, |this, _| {
+                            let cell_w = terminal_cell_width(this.terminal_font_size);
+                            let line_h = terminal_line_px(
+                                this.terminal_font_size,
+                                this.terminal_line_height,
+                            );
+                            let (cols, rows) =
+                                estimate_grid(width_px, height_px, cell_w, line_h);
+                            this.terminal.last_grid == (cols, rows)
+                        });
+                        if same {
+                            return;
+                        }
+                        let _ = entity.update(cx, |this, cx| {
+                            this.sync_terminal_grid_from_bounds(width_px, height_px, cx);
+                        });
+                    }
+                },
+                |_, _, _, _| {},
+            )
+            .absolute()
+            .size_full()
+            .invisible(),
+        )
         .on_mouse_down(
             MouseButton::Middle,
             cx.listener(|this, _, window, cx| {
@@ -402,18 +436,30 @@ fn estimate_grid(width_px: f32, height_px: f32, cell_w: f32, line_h: f32) -> (u1
     let header_px = 28.0;
     let pad_x = 16.0;
     let pad_y = 8.0;
-    let cols = (((width_px - pad_x) / cell_w.max(1.0)).floor() as u16).clamp(40, 240);
-    let rows = (((height_px - header_px - pad_y) / line_h.max(1.0)).floor() as u16).clamp(4, 80);
+    // Follow the host window/pane width — allow narrow docks below the old 40-col floor.
+    let cols = (((width_px - pad_x) / cell_w.max(1.0)).floor() as u16).clamp(20, 500);
+    let rows = (((height_px - header_px - pad_y) / line_h.max(1.0)).floor() as u16).clamp(4, 120);
     (cols, rows)
 }
 
 impl TerminalDock {
-    /// Apply an estimated size based on last known window width and font metrics.
-    pub fn maybe_resize_from_px(&mut self, width_px: f32, font_size: f32, line_height: f32) {
+    /// Apply an estimated PTY grid from the dock's pixel size. Returns `true` if resized.
+    pub fn maybe_resize_from_px(
+        &mut self,
+        width_px: f32,
+        height_px: f32,
+        font_size: f32,
+        line_height: f32,
+    ) -> bool {
         let cell_w = terminal_cell_width(font_size);
         let line_h = terminal_line_px(font_size, line_height);
-        let (cols, rows) = estimate_grid(width_px, self.height(), cell_w, line_h);
-        self.resize_active(cols, rows);
+        let height_px = if height_px > 1.0 {
+            height_px
+        } else {
+            self.height()
+        };
+        let (cols, rows) = estimate_grid(width_px, height_px, cell_w, line_h);
+        self.resize_all(cols, rows)
     }
 }
 
