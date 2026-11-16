@@ -80,7 +80,17 @@ pub(super) enum HistoryFileViewMode {
     FileAtCommit,
 }
 
-/// Diff presentation when [`HistoryFileViewMode::Diff`] is active.
+/// How a Git Changes preview is shown.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(super) enum ChangesFileViewMode {
+    /// Editable working-tree file with SCM gutter markers.
+    #[default]
+    File,
+    /// Uncommitted patch (Unified / Split like History).
+    Diff,
+}
+
+/// Diff presentation when Diff mode is active (History or Changes).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub(super) enum HistoryDiffLayout {
     #[default]
@@ -160,12 +170,12 @@ pub struct AppView {
     pub(super) history_aligned_split: Option<AlignedSplitView>,
     /// Sync Split Diff scroll by shared context / aligned display rows.
     pub(super) history_diff_scroll_sync: bool,
-    _diff_scroll_sync_subs: Vec<Subscription>,
-    pub(super) diff_scroll_sync_lock: bool,
-    pub(super) diff_scroll_new: Option<(f32, f32)>,
-    pub(super) diff_scroll_old: Option<(f32, f32)>,
-    pub(super) diff_scroll_pending_new: Option<(f32, f32)>,
-    pub(super) diff_scroll_pending_old: Option<(f32, f32)>,
+    /// Outer scroll for the old Split Diff pane (gutter + editor move together).
+    pub(super) history_split_scroll_old: ScrollHandle,
+    /// Outer scroll for the new Split Diff pane.
+    pub(super) history_split_scroll_new: ScrollHandle,
+    /// Shared handle when scroll-sync is on (both panes track this).
+    pub(super) history_split_scroll_shared: ScrollHandle,
     /// VS Code-style SCM bars beside the preview gutter (line numbers).
     preview_diff_gutter: GutterDecorationCollection,
     preview_diff_ruler: OverviewRulerDecorationCollection,
@@ -197,12 +207,18 @@ pub struct AppView {
     pub(super) history_branch_filter_open: bool,
     /// History file opened in the preview pane (diff or blob at commit).
     pub(super) history_file_preview: Option<HistoryFilePreview>,
+    /// Git Changes preview: working-tree file vs Diff.
+    pub(super) changes_file_view_mode: ChangesFileViewMode,
+    /// Unified / Split when [`ChangesFileViewMode::Diff`] is active.
+    pub(super) changes_diff_layout: HistoryDiffLayout,
     /// Commit detail changed-files: folder tree vs flat list (session).
     pub(super) history_files_as_tree: bool,
     /// Dir keys collapsed in History changed-files tree mode.
     pub(super) collapsed_history_dirs: HashSet<String>,
     /// Blame cache for the current preview file (0-based lines).
     pub(super) blame_path: Option<String>,
+    /// Revision used for [`Self::blame_lines`] (`None` = working tree).
+    blame_rev: Option<String>,
     pub(super) blame_lines: Vec<Option<BlameEntry>>,
     blame_cursor_line: Option<usize>,
     /// Last editor scroll Y used to keep inline blame glued to the caret row.
@@ -244,6 +260,8 @@ pub struct AppView {
     _branch_search_sub: Option<Subscription>,
     _commit_input_sub: Option<Subscription>,
     _preview_blame_sub: Option<Subscription>,
+    /// Re-render when Unified Diff line selection changes (blame strip).
+    _preview_diff_blame_sub: Option<Subscription>,
     _window_bounds_sub: Option<Subscription>,
     pub(super) expanded_dirs: HashSet<String>,
     /// Cached Files tree rows; rebuilt on expand/collapse/reload/file ops.
@@ -432,12 +450,9 @@ impl AppView {
             history_diff,
             history_aligned_split: None,
             history_diff_scroll_sync: true,
-            _diff_scroll_sync_subs: Vec::new(),
-            diff_scroll_sync_lock: false,
-            diff_scroll_new: None,
-            diff_scroll_old: None,
-            diff_scroll_pending_new: None,
-            diff_scroll_pending_old: None,
+            history_split_scroll_old: ScrollHandle::new(),
+            history_split_scroll_new: ScrollHandle::new(),
+            history_split_scroll_shared: ScrollHandle::new(),
             preview_diff_gutter,
             preview_diff_ruler,
             preview_diff_line_bg,
@@ -458,9 +473,12 @@ impl AppView {
             _history_branch_filter_sub: None,
             history_branch_filter_open: false,
             history_file_preview: None,
+            changes_file_view_mode: ChangesFileViewMode::default(),
+            changes_diff_layout: HistoryDiffLayout::default(),
             history_files_as_tree: false,
             collapsed_history_dirs: HashSet::new(),
             blame_path: None,
+            blame_rev: None,
             blame_lines: Vec::new(),
             blame_cursor_line: None,
             blame_scroll_y: None,
@@ -495,6 +513,7 @@ impl AppView {
             _branch_search_sub: None,
             _commit_input_sub: None,
             _preview_blame_sub: None,
+            _preview_diff_blame_sub: None,
             _window_bounds_sub: None,
             expanded_dirs: HashSet::new(),
             files_tree_nodes: Vec::new(),
@@ -534,7 +553,6 @@ impl AppView {
         view.wire_history_branch_filter(cx);
         view.wire_commit_input(window, cx);
         view.wire_preview_blame(cx);
-        view.wire_diff_scroll_sync(cx);
         view.wire_window_bounds(window, cx);
         view.start_terminal_poll(cx);
         if view.start_path.is_some() {
@@ -936,6 +954,10 @@ impl AppView {
             return;
         }
         self.preview_path = None;
+        self.history_aligned_split = None;
+        self.history_diff.update(cx, |state, cx| {
+            state.set_files([], cx);
+        });
         self.clear_blame_state();
         self.clear_preview_diff_gutter(cx);
         self.push_nav_entry(self.current_nav_entry());
@@ -1170,176 +1192,55 @@ impl AppView {
                 cx.notify();
             }
         }));
-    }
-
-    fn wire_diff_scroll_sync(&mut self, cx: &mut Context<Self>) {
-        let new_ed = self.preview_input.clone();
-        let old_ed = self.preview_input_old.clone();
-        self._diff_scroll_sync_subs = vec![
-            cx.observe(&new_ed, |this, _, cx| {
-                this.mirror_split_diff_scroll(true, cx);
-                cx.notify(); // refresh custom line-number gutters
-            }),
-            cx.observe(&old_ed, |this, _, cx| {
-                this.mirror_split_diff_scroll(false, cx);
-                cx.notify();
-            }),
-        ];
-    }
-
-    fn scroll_xy_close(a: (f32, f32), b: (f32, f32)) -> bool {
-        (a.0 - b.0).abs() < 0.5 && (a.1 - b.1).abs() < 0.5
-    }
-
-    /// Sync Split Diff panes by aligned display rows (empty cells keep
-    /// non-diff context at the same scroll position).
-    fn mirror_split_diff_scroll(&mut self, from_new: bool, cx: &mut Context<Self>) {
-        if !self.history_diff_scroll_sync || self.diff_scroll_sync_lock {
-            return;
-        }
-        let Some(preview) = self.history_file_preview.as_ref() else {
-            return;
-        };
-        if preview.mode != HistoryFileViewMode::Diff
-            || preview.diff_layout != HistoryDiffLayout::Split
-        {
-            return;
-        }
-
-        let offset = if from_new {
-            self.preview_input.read(cx).scroll_offset()
-        } else {
-            self.preview_input_old.read(cx).scroll_offset()
-        };
-        let xy = (f32::from(offset.x), f32::from(offset.y));
-
-        let pending = if from_new {
-            self.diff_scroll_pending_new
-        } else {
-            self.diff_scroll_pending_old
-        };
-        if let Some(pending_xy) = pending {
-            if Self::scroll_xy_close(xy, pending_xy) {
-                if from_new {
-                    self.diff_scroll_pending_new = None;
-                    self.diff_scroll_new = Some(xy);
-                } else {
-                    self.diff_scroll_pending_old = None;
-                    self.diff_scroll_old = Some(xy);
-                }
+        let diff = self.history_diff.clone();
+        self._preview_diff_blame_sub = Some(cx.observe(&diff, |this, _, cx| {
+            if !this.show_inline_blame || this.preview_path.is_none() {
                 return;
             }
-            let other_xy = if from_new {
-                let o = self.preview_input_old.read(cx).scroll_offset();
-                (f32::from(o.x), f32::from(o.y))
-            } else {
-                let o = self.preview_input.read(cx).scroll_offset();
-                (f32::from(o.x), f32::from(o.y))
-            };
-            if Self::scroll_xy_close(other_xy, pending_xy) {
+            if this.preview_diff_layout() != Some(HistoryDiffLayout::Unified) {
                 return;
             }
-            if from_new {
-                self.diff_scroll_pending_new = None;
-            } else {
-                self.diff_scroll_pending_old = None;
-            }
-        }
-
-        let prev = if from_new {
-            self.diff_scroll_new
-        } else {
-            self.diff_scroll_old
-        };
-        if prev.is_some_and(|p| Self::scroll_xy_close(xy, p)) {
-            return;
-        }
-
-        // Aligned empty cells keep shared context on the same display row, so
-        // syncing by display-row tracks non-diff content across panes.
-        let target_xy = if self.history_aligned_split.is_some() {
-            let src_lh = if from_new {
-                self.preview_input.read(cx).line_height()
-            } else {
-                self.preview_input_old.read(cx).line_height()
-            }
-            .map(f32::from)
-            .unwrap_or(20.);
-            let exact_row = if src_lh > 0.5 {
-                ((-xy.1) / src_lh).max(0.)
-            } else {
-                0.
-            };
-            let peer_lh = if from_new {
-                self.preview_input_old.read(cx).line_height()
-            } else {
-                self.preview_input.read(cx).line_height()
-            }
-            .map(f32::from)
-            .unwrap_or(src_lh);
-            (xy.0, -(exact_row * peer_lh))
-        } else {
-            xy
-        };
-
-        let current_peer = if from_new {
-            let o = self.preview_input_old.read(cx).scroll_offset();
-            (f32::from(o.x), f32::from(o.y))
-        } else {
-            let o = self.preview_input.read(cx).scroll_offset();
-            (f32::from(o.x), f32::from(o.y))
-        };
-
-        if from_new {
-            self.diff_scroll_new = Some(xy);
-        } else {
-            self.diff_scroll_old = Some(xy);
-        }
-        if Self::scroll_xy_close(current_peer, target_xy) {
-            if from_new {
-                self.diff_scroll_old = Some(target_xy);
-            } else {
-                self.diff_scroll_new = Some(target_xy);
-            }
-            return;
-        }
-
-        let peer_offset = point(px(target_xy.0), px(target_xy.1));
-        self.diff_scroll_sync_lock = true;
-        if from_new {
-            self.diff_scroll_pending_old = Some(target_xy);
-            self.diff_scroll_old = Some(target_xy);
-            self.preview_input_old.update(cx, |editor, cx| {
-                editor.set_scroll_offset(peer_offset, cx);
-            });
-        } else {
-            self.diff_scroll_pending_new = Some(target_xy);
-            self.diff_scroll_new = Some(target_xy);
-            self.preview_input.update(cx, |editor, cx| {
-                editor.set_scroll_offset(peer_offset, cx);
-            });
-        }
-        self.diff_scroll_sync_lock = false;
+            cx.notify();
+        }));
     }
 
+    /// Revision for blame of the open preview (`None` = working tree).
+    pub(super) fn blame_revision(&self) -> Option<String> {
+        let hp = self.history_file_preview.as_ref()?;
+        if sgg_core::is_uncommitted_oid(&hp.oid) {
+            None
+        } else {
+            Some(hp.oid.clone())
+        }
+    }
+
+    /// Toggle Split Diff scroll sync. When on, both panes share one ScrollHandle
+    /// so gutters and text stay locked with zero lag between sides.
     pub(super) fn set_history_diff_scroll_sync(&mut self, enabled: bool, cx: &mut Context<Self>) {
-        self.history_diff_scroll_sync = enabled;
-        if enabled {
-            let offset = self.preview_input.read(cx).scroll_offset();
-            let xy = (f32::from(offset.x), f32::from(offset.y));
-            self.diff_scroll_sync_lock = true;
-            self.diff_scroll_pending_old = Some(xy);
-            self.diff_scroll_new = Some(xy);
-            self.diff_scroll_old = Some(xy);
-            self.preview_input_old.update(cx, |editor, cx| {
-                editor.set_scroll_offset(offset, cx);
-            });
-            self.diff_scroll_sync_lock = false;
-        } else {
-            self.diff_scroll_pending_new = None;
-            self.diff_scroll_pending_old = None;
+        if self.history_diff_scroll_sync == enabled {
+            return;
         }
+        if enabled {
+            let offset = self.history_split_scroll_new.offset();
+            self.history_split_scroll_shared.set_offset(offset);
+        } else {
+            let offset = self.history_split_scroll_shared.offset();
+            self.history_split_scroll_old.set_offset(offset);
+            self.history_split_scroll_new.set_offset(offset);
+        }
+        self.history_diff_scroll_sync = enabled;
         cx.notify();
+    }
+
+    /// Scroll handle for one Split Diff pane (shared when sync is on).
+    pub(super) fn history_split_scroll_handle(&self, old_side: bool) -> &ScrollHandle {
+        if self.history_diff_scroll_sync {
+            &self.history_split_scroll_shared
+        } else if old_side {
+            &self.history_split_scroll_old
+        } else {
+            &self.history_split_scroll_new
+        }
     }
 
     pub(super) fn set_show_inline_blame(&mut self, enabled: bool, cx: &mut Context<Self>) {
@@ -1347,10 +1248,7 @@ impl AppView {
         if enabled {
             self.refresh_inline_blame(cx);
         } else {
-            self.blame_path = None;
-            self.blame_lines.clear();
-            self.blame_cursor_line = None;
-            self.blame_scroll_y = None;
+            self.clear_blame_state();
         }
         self.persist_prefs(cx);
         cx.notify();
@@ -1465,6 +1363,7 @@ impl AppView {
 
     pub(super) fn clear_blame_state(&mut self) {
         self.blame_path = None;
+        self.blame_rev = None;
         self.blame_lines.clear();
         self.blame_cursor_line = None;
         self.blame_scroll_y = None;
@@ -1478,9 +1377,50 @@ impl AppView {
         self.preview_diff_line_bg_old.clear(cx);
     }
 
+    /// Active Split Diff target `(oid, path)`, if the preview is showing one.
+    pub(super) fn split_diff_target(&self) -> Option<(String, String)> {
+        if let Some(preview) = &self.history_file_preview {
+            if preview.mode == HistoryFileViewMode::Diff
+                && preview.diff_layout == HistoryDiffLayout::Split
+            {
+                return Some((preview.oid.clone(), preview.path.clone()));
+            }
+            return None;
+        }
+        if self.page == AppPage::Git
+            && self.changes_file_view_mode == ChangesFileViewMode::Diff
+            && self.changes_diff_layout == HistoryDiffLayout::Split
+        {
+            return self
+                .preview_path
+                .clone()
+                .map(|path| (sgg_core::UNCOMMITTED_OID.to_string(), path));
+        }
+        None
+    }
+
+    /// Whether the preview body should render Unified / Split Diff (not the file editor).
+    pub(super) fn preview_diff_layout(&self) -> Option<HistoryDiffLayout> {
+        if let Some(preview) = &self.history_file_preview {
+            return if preview.mode == HistoryFileViewMode::Diff {
+                Some(preview.diff_layout)
+            } else {
+                None
+            };
+        }
+        if self.page == AppPage::Git && self.changes_file_view_mode == ChangesFileViewMode::Diff {
+            return Some(self.changes_diff_layout);
+        }
+        None
+    }
+
     /// VS Code-style SCM bars: added / modified lines + deletion pills in the gutter.
     pub(super) fn refresh_preview_diff_gutter(&mut self, cx: &mut Context<Self>) {
         if self.history_file_preview.is_some() {
+            self.refresh_history_diff_decorations(cx);
+            return;
+        }
+        if self.page == AppPage::Git && self.changes_file_view_mode == ChangesFileViewMode::Diff {
             self.refresh_history_diff_decorations(cx);
             return;
         }
@@ -1559,22 +1499,15 @@ impl AppView {
         self.preview_diff_line_bg.set(fills, cx);
     }
 
-    /// Gutter + fills for History Split Diff (aligned dual editors).
+    /// Gutter + fills for Split Diff (aligned dual editors: History or Changes).
     pub(super) fn refresh_history_diff_decorations(&mut self, cx: &mut Context<Self>) {
-        let Some(preview) = self.history_file_preview.clone() else {
+        let Some((oid, path)) = self.split_diff_target() else {
             self.clear_preview_diff_gutter(cx);
             return;
         };
-        if preview.mode != HistoryFileViewMode::Diff
-            || preview.diff_layout != HistoryDiffLayout::Split
-        {
-            self.clear_preview_diff_gutter(cx);
-            return;
-        }
 
         let root = self.repo_root();
-        let patch = sgg_core::diff_file_at_commit(&root, &preview.oid, &preview.path)
-            .unwrap_or_default();
+        let patch = sgg_core::diff_file_at_commit(&root, &oid, &path).unwrap_or_default();
         let Some(aligned) = sgg_core::align_split_from_unified(&patch) else {
             self.clear_preview_diff_gutter(cx);
             return;
@@ -1654,26 +1587,39 @@ impl AppView {
             self.clear_blame_state();
             return;
         };
-        if self.blame_path.as_deref() == Some(path.as_str()) && !self.blame_lines.is_empty() {
+        let rev = self.blame_revision();
+        if self.blame_path.as_deref() == Some(path.as_str())
+            && self.blame_rev == rev
+            && !self.blame_lines.is_empty()
+        {
             return;
         }
         let root = self.repo_root();
         self.blame_path = Some(path.clone());
+        self.blame_rev = rev.clone();
         self.blame_lines.clear();
         self.blame_cursor_line = None;
         cx.spawn(async move |this, cx| {
             let blamed_path = path.clone();
+            let blamed_rev = rev.clone();
+            let rev_for_git = blamed_rev.clone();
             let result = cx
-                .background_spawn(async move { sgg_core::blame_file(&root, &path) })
+                .background_spawn(async move {
+                    sgg_core::blame_file_at(&root, rev_for_git.as_deref(), &path)
+                })
                 .await;
             let _ = this.update(cx, |this, cx| {
                 if this.preview_path.as_deref() != Some(blamed_path.as_str()) {
+                    return;
+                }
+                if this.blame_rev != blamed_rev {
                     return;
                 }
                 match result {
                     Ok(lines) => {
                         this.blame_lines = lines;
                         this.blame_path = Some(blamed_path);
+                        this.blame_rev = blamed_rev;
                         this.blame_cursor_line = Some(
                             this.preview_input.read(cx).cursor_position().line as usize,
                         );
@@ -1682,6 +1628,7 @@ impl AppView {
                     Err(_) => {
                         this.blame_lines.clear();
                         this.blame_path = Some(blamed_path);
+                        this.blame_rev = blamed_rev;
                         cx.notify();
                     }
                 }

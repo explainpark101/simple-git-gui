@@ -24,7 +24,7 @@ pub use graph::{
     GraphCommitInput, HistoryGraph, GRAPH_ACCENT_COUNT, UNCOMMITTED_OID,
 };
 pub use history::{
-    blame_file, diff_file_at_commit, list_history, reset_to, rev_parse, show_commit,
+    blame_file, blame_file_at, diff_file_at_commit, list_history, reset_to, rev_parse, show_commit,
     show_file_at_revision, show_uncommitted, split_file_at_commit, BlameEntry, HistoryCommit,
     HistoryDetail, HistoryFileChange, HistoryRevSpec, ResetMode,
 };

@@ -423,8 +423,28 @@ pub fn split_file_at_commit(
 }
 
 /// Blame every line of `rel_path` (repo-relative). Index is 0-based line number.
+///
+/// `revision` is a commit oid / rev; `None` or the uncommitted sentinel blames
+/// the working tree (default `git blame -- path`).
 pub fn blame_file(repo: &Path, rel_path: &str) -> Result<Vec<Option<BlameEntry>>, GitCliError> {
-    let raw = run_git(repo, &["blame", "--line-porcelain", "--", rel_path])?;
+    blame_file_at(repo, None, rel_path)
+}
+
+/// Blame `rel_path` as of `revision` (working tree when `None` / uncommitted).
+pub fn blame_file_at(
+    repo: &Path,
+    revision: Option<&str>,
+    rel_path: &str,
+) -> Result<Vec<Option<BlameEntry>>, GitCliError> {
+    let mut args: Vec<&str> = vec!["blame", "--line-porcelain"];
+    if let Some(rev) = revision {
+        if !is_uncommitted_oid(rev) {
+            args.push(rev);
+        }
+    }
+    args.push("--");
+    args.push(rel_path);
+    let raw = run_git(repo, &args)?;
     Ok(parse_blame_porcelain(&raw))
 }
 

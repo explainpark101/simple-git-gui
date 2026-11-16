@@ -988,12 +988,51 @@ impl AppView {
         }
 
         // Git page: single preview pane (no tab strip).
-        if self.preview_path.as_deref() == Some(rel_path.as_str()) {
+        // Same path in File mode: keep scroll/caret. Diff mode reloads so a
+        // re-click after stage/unstage picks up a fresh patch.
+        if self.preview_path.as_deref() == Some(rel_path.as_str())
+            && self.changes_file_view_mode == super::view::ChangesFileViewMode::File
+        {
             return;
         }
-        self.load_preview_into(&rel_path, window, cx);
+        self.load_git_preview(&rel_path, window, cx);
         self.push_nav_entry(self.current_nav_entry());
         self.set_ok_status(format!("Preview {rel_path}"));
+        cx.notify();
+    }
+
+    pub(super) fn set_changes_file_view_mode(
+        &mut self,
+        mode: super::view::ChangesFileViewMode,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.changes_file_view_mode == mode {
+            return;
+        }
+        self.changes_file_view_mode = mode;
+        if let Some(path) = self.preview_path.clone() {
+            self.load_git_preview(&path, window, cx);
+        }
+        cx.notify();
+    }
+
+    pub(super) fn set_changes_diff_layout(
+        &mut self,
+        layout: super::view::HistoryDiffLayout,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.changes_file_view_mode != super::view::ChangesFileViewMode::Diff {
+            return;
+        }
+        if self.changes_diff_layout == layout {
+            return;
+        }
+        self.changes_diff_layout = layout;
+        if let Some(path) = self.preview_path.clone() {
+            self.load_git_preview(&path, window, cx);
+        }
         cx.notify();
     }
 
@@ -1339,21 +1378,163 @@ impl AppView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let full = self.repo_root().join(rel_path);
-        match read_preview_text(rel_path, &full) {
-            Ok(content) => {
-                self.preview_input.update(cx, |input, cx| {
-                    input.set_value(&content, window, cx);
-                });
+        self.load_git_preview(rel_path, window, cx);
+    }
+
+    /// Load Git Changes preview for `rel_path` (working-tree file or Diff).
+    fn load_git_preview(
+        &mut self,
+        rel_path: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match self.changes_file_view_mode {
+            super::view::ChangesFileViewMode::File => {
+                let full = self.repo_root().join(rel_path);
+                match read_preview_text(rel_path, &full) {
+                    Ok(content) => {
+                        self.preview_input.update(cx, |input, cx| {
+                            input.set_line_number(true, window, cx);
+                            input.set_value(&content, window, cx);
+                        });
+                        self.preview_input_old.update(cx, |input, cx| {
+                            input.set_line_number(true, window, cx);
+                            input.set_value("", window, cx);
+                        });
+                        self.history_diff.update(cx, |state, cx| {
+                            state.set_files([], cx);
+                        });
+                        self.history_aligned_split = None;
+                        self.preview_path = Some(rel_path.to_string());
+                        self.error = None;
+                        self.clear_blame_state();
+                        self.refresh_inline_blame(cx);
+                        self.refresh_preview_diff_gutter(cx);
+                    }
+                    Err(err) => self.set_error(err.into(), cx),
+                }
+            }
+            super::view::ChangesFileViewMode::Diff => {
                 self.preview_path = Some(rel_path.to_string());
-                self.error = None;
-                self.clear_blame_state();
+                self.load_changes_diff_into_preview(rel_path, window, cx);
                 self.refresh_inline_blame(cx);
-                self.refresh_preview_diff_gutter(cx);
             }
-            Err(err) => {
-                self.set_error(err.into(), cx);
+        }
+    }
+
+    fn load_changes_diff_into_preview(
+        &mut self,
+        rel_path: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let root = self.repo_root();
+        const MAX: usize = 1_048_576;
+        let truncate = |text: String| -> String {
+            if text.len() > MAX {
+                format!(
+                    "{}\n\n… truncated ({} KiB).",
+                    &text[..MAX],
+                    text.len() / 1024
+                )
+            } else {
+                text
             }
+        };
+        match sgg_core::diff_file_at_commit(&root, sgg_core::UNCOMMITTED_OID, rel_path) {
+            Ok(content) => match self.changes_diff_layout {
+                super::view::HistoryDiffLayout::Unified => {
+                    let files = if content.trim().is_empty() {
+                        vec![DiffFile::unchanged(
+                            rel_path,
+                            "(no uncommitted diff for this path)\n",
+                        )]
+                    } else {
+                        let patch = if content.len() > MAX {
+                            truncate(content)
+                        } else {
+                            content
+                        };
+                        match DiffFile::parse(&patch) {
+                            Ok(files) if !files.is_empty() => files,
+                            Ok(_) => vec![DiffFile::unchanged(
+                                rel_path,
+                                "(no uncommitted diff for this path)\n",
+                            )],
+                            Err(_) => {
+                                let fallback = truncate(patch);
+                                vec![DiffFile::unchanged(rel_path, &fallback)]
+                            }
+                        }
+                    };
+                    self.history_diff.update(cx, |state, cx| {
+                        state.set_context_lines(None, cx);
+                        state.set_files(files, cx);
+                        state.set_mode(DiffMode::Unified, cx);
+                    });
+                    self.preview_input.update(cx, |input, cx| {
+                        input.set_line_number(true, window, cx);
+                        input.set_value("", window, cx);
+                    });
+                    self.preview_input_old.update(cx, |input, cx| {
+                        input.set_line_number(true, window, cx);
+                        input.set_value("", window, cx);
+                    });
+                    self.history_aligned_split = None;
+                    self.clear_preview_diff_gutter(cx);
+                    self.error = None;
+                    cx.notify();
+                }
+                super::view::HistoryDiffLayout::Split => {
+                    let patch = if content.len() > MAX {
+                        truncate(content.clone())
+                    } else {
+                        content.clone()
+                    };
+                    let aligned = sgg_core::align_split_from_unified(&patch);
+                    let (old_text, new_text) = if let Some(ref aligned) = aligned {
+                        (aligned.plain_side(true), aligned.plain_side(false))
+                    } else if content.trim().is_empty() {
+                        (
+                            "(no uncommitted diff for this path)\n".into(),
+                            "(no uncommitted diff for this path)\n".into(),
+                        )
+                    } else {
+                        match sgg_core::split_file_at_commit(
+                            &root,
+                            sgg_core::UNCOMMITTED_OID,
+                            rel_path,
+                        ) {
+                            Ok((old, new)) => (truncate(old), truncate(new)),
+                            Err(_) => (truncate(patch.clone()), truncate(patch)),
+                        }
+                    };
+                    self.history_aligned_split = aligned;
+                    self.history_diff.update(cx, |state, cx| {
+                        state.set_files([], cx);
+                    });
+                    self.preview_input_old.update(cx, |input, cx| {
+                        input.set_line_number(false, window, cx);
+                        input.set_value(&old_text, window, cx);
+                        input.set_scroll_offset(point(px(0.), px(0.)), cx);
+                    });
+                    self.preview_input.update(cx, |input, cx| {
+                        input.set_line_number(false, window, cx);
+                        input.set_value(&new_text, window, cx);
+                        input.set_scroll_offset(point(px(0.), px(0.)), cx);
+                    });
+                    self.history_split_scroll_old
+                        .set_offset(point(px(0.), px(0.)));
+                    self.history_split_scroll_new
+                        .set_offset(point(px(0.), px(0.)));
+                    self.history_split_scroll_shared
+                        .set_offset(point(px(0.), px(0.)));
+                    self.error = None;
+                    self.refresh_history_diff_decorations(cx);
+                    cx.notify();
+                }
+            },
+            Err(err) => self.set_error(err.to_string().into(), cx),
         }
     }
 
@@ -1463,6 +1644,18 @@ impl AppView {
                 }
             }
         });
+    }
+
+    /// Close a History file preview and show the commit detail for `oid`.
+    pub(super) fn show_history_commit(
+        &mut self,
+        oid: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.close_history_file_preview(window, cx);
+        self.select_history_commit(oid, window, cx);
+        cx.notify();
     }
 
     pub(super) fn confirm_reset(
@@ -1578,9 +1771,9 @@ impl AppView {
             diff_layout,
         });
         self.preview_path = Some(path);
-        self.clear_blame_state();
         self.clear_preview_diff_gutter(cx);
         self.load_history_file_into_preview(window, cx);
+        self.refresh_inline_blame(cx);
     }
 
     pub(super) fn set_history_file_view_mode(
@@ -1597,6 +1790,7 @@ impl AppView {
         }
         preview.mode = mode;
         self.load_history_file_into_preview(window, cx);
+        self.refresh_inline_blame(cx);
     }
 
     pub(super) fn set_history_diff_layout(
@@ -1617,6 +1811,7 @@ impl AppView {
         preview.diff_layout = layout;
         // Unified uses Diff; Split uses dual Editors — reload content for the layout.
         self.load_history_file_into_preview(window, cx);
+        self.refresh_inline_blame(cx);
     }
 
     pub(super) fn close_history_file_preview(
@@ -1772,15 +1967,21 @@ impl AppView {
                             self.preview_input_old.update(cx, |input, cx| {
                                 input.set_line_number(false, window, cx);
                                 input.set_value(&old_text, window, cx);
+                                // Outer pane scroll owns vertical motion; keep
+                                // the editor's internal offset at origin.
+                                input.set_scroll_offset(point(px(0.), px(0.)), cx);
                             });
                             self.preview_input.update(cx, |input, cx| {
                                 input.set_line_number(false, window, cx);
                                 input.set_value(&new_text, window, cx);
+                                input.set_scroll_offset(point(px(0.), px(0.)), cx);
                             });
-                            self.diff_scroll_new = None;
-                            self.diff_scroll_old = None;
-                            self.diff_scroll_pending_new = None;
-                            self.diff_scroll_pending_old = None;
+                            self.history_split_scroll_old
+                                .set_offset(point(px(0.), px(0.)));
+                            self.history_split_scroll_new
+                                .set_offset(point(px(0.), px(0.)));
+                            self.history_split_scroll_shared
+                                .set_offset(point(px(0.), px(0.)));
                             self.error = None;
                             self.refresh_history_diff_decorations(cx);
                             cx.notify();
@@ -1795,6 +1996,12 @@ impl AppView {
     pub(super) fn save_preview(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.history_file_preview.is_some() {
             self.set_error("History preview is read-only".into(), cx);
+            return;
+        }
+        if self.page == super::page::AppPage::Git
+            && self.changes_file_view_mode == super::view::ChangesFileViewMode::Diff
+        {
+            self.set_error("Diff preview is read-only".into(), cx);
             return;
         }
         let Some(rel) = self.preview_path.clone() else {
