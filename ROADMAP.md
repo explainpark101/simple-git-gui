@@ -300,3 +300,4 @@ Centralize prompt templates (Zed: [`commit_message_prompt.txt`](https://github.c
 ### Future
 
 - Embed / reuse the editor stack used by [Zed](https://zed.dev) (Zed’s editor component) for in-app file editing and preview, replacing or extending the current basic text preview
+- Add feature: If there is no `.git` folder available, ask the user to initiate git on selected folder
