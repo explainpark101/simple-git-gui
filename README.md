@@ -30,12 +30,16 @@ bash build-dmg.sh
 
 Artifacts land in `dist/`:
 
-- `simple-git-gui.app` — drag to **Applications**, or
-- `simple-git-gui_<version>_aarch64.dmg` (Apple Silicon) — open the DMG and drag the app to **Applications**.
+- `simple-git-gui.app`
+- `simple-git-gui_<version>_aarch64.dmg` (Apple Silicon) — open the DMG, then either:
+  - double-click **Install sgg.command** (copies to Applications, puts `sgg` on `PATH`, registers Finder Services), or
+  - drag the `.app` to **Applications** and launch once (auto-registers `sgg` on `PATH`).
 
 First launch may require **System Settings → Privacy & Security → Open Anyway** because the bundle is **ad-hoc signed** (no Apple Developer ID / notarization yet).
 
-Optional Finder integration after install:
+`sgg` is symlinked to `/usr/local/bin/sgg` when writable, otherwise `~/.local/bin/sgg` (with a PATH snippet in `~/.zprofile`). Open a **new** terminal tab after install.
+
+Optional re-register (PATH + Finder Services):
 
 ```bash
 /Applications/simple-git-gui.app/Contents/MacOS/sgg install-shell
@@ -57,14 +61,14 @@ sgg install-shell
 sgg uninstall-shell
 ```
 
-The Windows NSIS installer (`./build-exe.sh`) adds the install directory to the **user** `PATH`, so `sgg` is available in new terminals after setup. Uninstall removes that entry.
+The Windows NSIS installer (`./build-exe.sh`) adds the install directory to the **user** `PATH`, so `sgg` is available in new terminals after setup. Uninstall removes that entry. On macOS, DMG install / first `.app` launch (or `install-shell`) registers a `sgg` symlink on `PATH` the same way.
 
 ### Shell integration
 
 | OS | What `install-shell` does |
 | --- | --- |
 | Windows | HKCU Explorer context menu on folders / folder background: **여기서 sgg 열기** |
-| macOS | Finder Service **Open with sgg** under `~/Library/Services` (right-click folder → Services) |
+| macOS | `sgg` on `PATH` (symlink) + Finder Service **Open with sgg** under `~/Library/Services` |
 | Linux | Nautilus script, `inode/directory` desktop entry, and file-manager action |
 
 After installing on macOS, you may need to enable the service once under **System Settings → Keyboard → Keyboard Shortcuts → Services**.

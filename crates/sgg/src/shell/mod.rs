@@ -31,6 +31,12 @@ pub fn install() -> Result<()> {
     Ok(())
 }
 
+/// macOS: ensure `sgg` is on PATH when the GUI runs from a `.app` (DMG install).
+#[cfg(target_os = "macos")]
+pub fn ensure_cli_path_from_bundle() -> Result<()> {
+    macos::ensure_cli_path_from_bundle()
+}
+
 pub fn uninstall() -> Result<()> {
     #[cfg(windows)]
     {

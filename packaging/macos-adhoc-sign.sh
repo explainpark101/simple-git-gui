@@ -1,17 +1,13 @@
 #!/usr/bin/env bash
-# Ad-hoc codesign the macOS .app before DMG packaging.
+# Ad-hoc codesign macOS .app bundles in ./dist.
 #
-# Invoked as cargo-packager `before-each-package-command`. Only acts when
-# packaging the `dmg` format on Darwin. Uses `codesign --sign -` WITHOUT
+# Used by build-dmg.sh after cargo-packager creates the .app (and again before
+# the final DMG is assembled). Uses `codesign --sign -` WITHOUT
 # `--options runtime` — packager's built-in signing-identity="-" enables
 # Hardened Runtime, which rejects ad-hoc bundles without notarization.
 set -euo pipefail
 
 if [[ "$(uname -s 2>/dev/null || echo unknown)" != "Darwin" ]]; then
-  exit 0
-fi
-
-if [[ "${CARGO_PACKAGER_FORMAT:-}" != "dmg" ]]; then
   exit 0
 fi
 
@@ -23,7 +19,7 @@ apps=("${DIST}"/*.app)
 shopt -u nullglob
 
 if [[ ${#apps[@]} -eq 0 ]]; then
-  echo "error: macos-adhoc-sign: no .app found in ${DIST} (expected after app format)" >&2
+  echo "error: macos-adhoc-sign: no .app found in ${DIST}" >&2
   ls -lah "${DIST}" 2>/dev/null || true
   exit 1
 fi

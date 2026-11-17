@@ -158,10 +158,11 @@ jobs:
 
       - name: Build package
         run: |
+          # Scripts may be 100644 on some checkouts; always invoke via bash.
           chmod +x \
             build.sh run.sh build-exe.sh build-dmg.sh build-appimage.sh \
             packaging/common.sh packaging/macos-adhoc-sign.sh || true
-          ${{ matrix.script }}
+          bash "${{ matrix.script }}"
 
       - name: Also keep portable release binary in dist
         run: |

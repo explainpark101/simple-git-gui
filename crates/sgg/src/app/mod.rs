@@ -40,6 +40,14 @@ gpui_kit::actions!(
 
 pub fn run(start: Option<PathBuf>) {
     let start = start.map(absolute_path);
+    // DMG / Applications install: register `sgg` on PATH (symlink) when launched
+    // from a .app bundle. Failures are non-fatal so the GUI still opens.
+    #[cfg(target_os = "macos")]
+    {
+        if let Err(err) = crate::shell::ensure_cli_path_from_bundle() {
+            eprintln!("sgg: could not register CLI on PATH: {err:#}");
+        }
+    }
     // Full Lucide catalog (Pencil, Trash, FolderInput, …). Default `Assets`
     // only embeds the ~100 component icons, so many AssetIcon variants render blank.
     application()

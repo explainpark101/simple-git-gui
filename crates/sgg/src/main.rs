@@ -19,7 +19,7 @@ fn main() {
                 eprintln!("install-shell failed: {err:#}");
                 std::process::exit(1);
             }
-            println!("Shell integration installed.");
+            println!("Shell integration installed (PATH + file-manager).");
         }
         Some(Commands::UninstallShell) => {
             attach_parent_console_for_cli();
@@ -27,7 +27,7 @@ fn main() {
                 eprintln!("uninstall-shell failed: {err:#}");
                 std::process::exit(1);
             }
-            println!("Shell integration removed.");
+            println!("Shell integration removed (PATH + file-manager).");
         }
         None => {
             // No PATH → empty start (pick a folder in-app). `sgg <path>` / shell
