@@ -20,6 +20,27 @@ cargo build --release -p sgg
 
 Binary: `target/release/sgg` (or `sgg.exe` on Windows).
 
+### macOS installable package (`.app` + `.dmg`)
+
+On macOS, from the repo root:
+
+```bash
+bash build-dmg.sh
+```
+
+Artifacts land in `dist/`:
+
+- `simple-git-gui.app` — drag to **Applications**, or
+- `simple-git-gui_<version>_aarch64.dmg` (Apple Silicon) — open the DMG and drag the app to **Applications**.
+
+First launch may require **System Settings → Privacy & Security → Open Anyway** because the bundle is **ad-hoc signed** (no Apple Developer ID / notarization yet).
+
+Optional Finder integration after install:
+
+```bash
+/Applications/simple-git-gui.app/Contents/MacOS/sgg install-shell
+```
+
 ## Usage
 
 ```bash

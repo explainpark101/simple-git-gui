@@ -42,7 +42,7 @@ publisher = "simple-git-gui"
 before-packaging-command = "cargo build --release -p sgg"
 # Sign the .app with ad-hoc identity before the DMG step (see script header).
 # Do NOT set macos.signing-identity = "-" — packager adds --options runtime.
-before-each-package-command = "../../packaging/macos-adhoc-sign.sh"
+before-each-package-command = "bash ../../packaging/macos-adhoc-sign.sh"
 binaries-dir = "../../target/release"
 out-dir = "../../dist"
 # macOS ICNS packing rejects a bare 1024×1024 PNG (density 1 → no IconType).
