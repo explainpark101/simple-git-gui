@@ -41,8 +41,10 @@ git push origin main
    - Windows: `*-setup.exe` (NSIS), `sgg.exe`
    - macOS: `*.dmg` (서명된 `.app` + `Install sgg.command`; PATH에 `sgg` 등록)
    - Linux: `*.AppImage`, `sgg`
-   - `latest.json` — 버전 + 플랫폼별 다운로드 URL (앱/CLI 자동 업데이트용).
+   - `latest.json` — 버전 + **실제로 업로드된** 플랫폼별 다운로드 URL (앱/CLI 자동 업데이트용).
+     `packaging/generate-latest-json.sh`가 release 자산 폴더를 스캔해 생성합니다.
      고정 URL: `…/releases/latest/download/latest.json`
+     (매니페스트가 없으면 앱이 GitHub Releases API로 폴백합니다.)
 
 ### macOS 서명 / 공증 (Gatekeeper)
 

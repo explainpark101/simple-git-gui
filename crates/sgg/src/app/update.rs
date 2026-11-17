@@ -2,7 +2,11 @@
 //!
 //! Stable fetch URL (always the newest release asset named `latest.json`):
 //! `https://github.com/<repo>/releases/latest/download/latest.json`
+//!
+//! If that asset is missing, falls back to the GitHub Releases API and maps
+//! known asset filenames to the same download keys.
 
+use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::{copy, Write};
 use std::path::{Path, PathBuf};
@@ -18,6 +22,10 @@ pub fn latest_json_url() -> String {
     format!("https://github.com/{GITHUB_REPO}/releases/latest/download/latest.json")
 }
 
+fn releases_latest_api_url() -> String {
+    format!("https://api.github.com/repos/{GITHUB_REPO}/releases/latest")
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct LatestInfo {
     pub version: String,
@@ -26,7 +34,7 @@ pub struct LatestInfo {
     pub notes: Option<String>,
     #[serde(default)]
     pub published_at: Option<String>,
-    pub downloads: std::collections::HashMap<String, DownloadAsset>,
+    pub downloads: HashMap<String, DownloadAsset>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -126,24 +134,129 @@ fn parse_semver(raw: &str) -> (u64, u64, u64) {
     (major, minor, patch)
 }
 
-pub fn fetch_latest() -> Result<LatestInfo> {
-    let agent = ureq::AgentBuilder::new()
+fn http_agent() -> ureq::Agent {
+    ureq::AgentBuilder::new()
         .timeout_connect(Duration::from_secs(10))
         .timeout_read(Duration::from_secs(30))
         .user_agent(&format!("simple-git-gui/{}", current_version()))
-        .build();
+        .build()
+}
+
+fn http_download_agent() -> ureq::Agent {
+    ureq::AgentBuilder::new()
+        .timeout_connect(Duration::from_secs(15))
+        .timeout_read(Duration::from_secs(600))
+        .user_agent(&format!("simple-git-gui/{}", current_version()))
+        .build()
+}
+
+pub fn fetch_latest() -> Result<LatestInfo> {
+    match fetch_latest_json() {
+        Ok(info) => Ok(info),
+        Err(json_err) => match fetch_latest_from_github_api() {
+            Ok(info) => Ok(info),
+            Err(api_err) => Err(json_err).context(format!("GitHub API fallback also failed: {api_err:#}")),
+        },
+    }
+}
+
+fn fetch_latest_json() -> Result<LatestInfo> {
     let url = latest_json_url();
-    let response = agent
+    let response = http_agent()
         .get(&url)
         .call()
         .with_context(|| format!("GET {url}"))?;
-    let info: LatestInfo = response
-        .into_json()
-        .context("parse latest.json")?;
+    let info: LatestInfo = response.into_json().context("parse latest.json")?;
     if info.version.trim().is_empty() {
         bail!("latest.json missing version");
     }
     Ok(info)
+}
+
+#[derive(Debug, Deserialize)]
+struct GhRelease {
+    tag_name: String,
+    #[serde(default)]
+    body: Option<String>,
+    #[serde(default)]
+    published_at: Option<String>,
+    #[serde(default)]
+    html_url: Option<String>,
+    #[serde(default)]
+    assets: Vec<GhAsset>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GhAsset {
+    name: String,
+    browser_download_url: String,
+}
+
+fn fetch_latest_from_github_api() -> Result<LatestInfo> {
+    let url = releases_latest_api_url();
+    let response = http_agent()
+        .get(&url)
+        .set("Accept", "application/vnd.github+json")
+        .call()
+        .with_context(|| format!("GET {url}"))?;
+    let release: GhRelease = response.into_json().context("parse GitHub release JSON")?;
+    let version = release
+        .tag_name
+        .trim()
+        .trim_start_matches('v')
+        .to_string();
+    if version.is_empty() {
+        bail!("GitHub release missing tag_name");
+    }
+    let mut downloads = HashMap::new();
+    for asset in release.assets {
+        if let Some(key) = download_key_for_asset_name(&asset.name, &version) {
+            downloads.insert(
+                key.to_string(),
+                DownloadAsset {
+                    name: asset.name,
+                    url: asset.browser_download_url,
+                },
+            );
+        }
+    }
+    if downloads.is_empty() {
+        bail!("GitHub release has no recognized installer assets");
+    }
+    Ok(LatestInfo {
+        version,
+        tag: release.tag_name,
+        notes: release.html_url.or(release.body),
+        published_at: release.published_at,
+        downloads,
+    })
+}
+
+fn download_key_for_asset_name(name: &str, version: &str) -> Option<&'static str> {
+    let macos_aarch64 = format!("simple-git-gui_{version}_aarch64.dmg");
+    let macos_x64 = format!("simple-git-gui_{version}_x64.dmg");
+    let win_x64 = format!("sgg_{version}_x64-setup.exe");
+    let win_arm64 = format!("sgg_{version}_arm64-setup.exe");
+    let linux = format!("sgg_{version}_x86_64.AppImage");
+    if name == macos_aarch64 {
+        Some("macos-aarch64")
+    } else if name == macos_x64 {
+        Some("macos-x64")
+    } else if name == win_x64 {
+        Some("windows-x64")
+    } else if name == win_arm64 {
+        Some("windows-arm64")
+    } else if name == linux {
+        Some("linux-x64")
+    } else if name == "sgg_portable.exe" {
+        Some("windows-x64-portable")
+    } else if name == "sgg_portable_arm64.exe" {
+        Some("windows-arm64-portable")
+    } else if name == "linux_sgg_portable" {
+        Some("linux-x64-portable")
+    } else {
+        None
+    }
 }
 
 pub fn download_file(url: &str, dest: &Path) -> Result<()> {
@@ -151,12 +264,7 @@ pub fn download_file(url: &str, dest: &Path) -> Result<()> {
         fs::create_dir_all(parent)
             .with_context(|| format!("create {}", parent.display()))?;
     }
-    let agent = ureq::AgentBuilder::new()
-        .timeout_connect(Duration::from_secs(15))
-        .timeout_read(Duration::from_secs(600))
-        .user_agent(&format!("simple-git-gui/{}", current_version()))
-        .build();
-    let response = agent
+    let response = http_download_agent()
         .get(url)
         .call()
         .with_context(|| format!("GET {url}"))?;
@@ -201,8 +309,12 @@ pub fn open_downloaded(path: &Path) -> Result<()> {
     }
     #[cfg(target_os = "windows")]
     {
+        use std::os::windows::process::CommandExt;
+        // CREATE_NO_WINDOW — avoid a brief console flash when launching the installer.
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
         Command::new("cmd")
             .args(["/C", "start", "", &path.to_string_lossy()])
+            .creation_flags(CREATE_NO_WINDOW)
             .spawn()
             .with_context(|| format!("start {}", path.display()))?;
         return Ok(());
@@ -257,5 +369,18 @@ mod tests {
         assert!(!is_newer("1.4.0", "1.4.1"));
         assert!(is_newer("2.0.0", "1.9.9"));
         assert!(is_newer("v1.4.2", "1.4.1"));
+    }
+
+    #[test]
+    fn maps_asset_names() {
+        assert_eq!(
+            download_key_for_asset_name("sgg_1.4.2_x64-setup.exe", "1.4.2"),
+            Some("windows-x64")
+        );
+        assert_eq!(
+            download_key_for_asset_name("simple-git-gui_1.4.2_aarch64.dmg", "1.4.2"),
+            Some("macos-aarch64")
+        );
+        assert_eq!(download_key_for_asset_name("latest.json", "1.4.2"), None);
     }
 }

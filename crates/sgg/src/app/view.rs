@@ -250,6 +250,8 @@ pub struct AppView {
     pub(super) changes_as_tree: bool,
     pub(super) auto_refresh: bool,
     pub(super) auto_check_updates: bool,
+    /// Version dismissed via "Later" (silent launch checks skip re-prompting it).
+    pub(super) skipped_update_version: String,
     /// Latest release from `latest.json` when newer than this build.
     pub(super) update_available: Option<super::update::LatestInfo>,
     update_task: Option<Task<()>>,
@@ -508,6 +510,7 @@ impl AppView {
             changes_as_tree: prefs.changes_as_tree,
             auto_refresh: prefs.auto_refresh,
             auto_check_updates: prefs.auto_check_updates,
+            skipped_update_version: prefs.skipped_update_version,
             update_available: None,
             update_task: None,
             show_remote_branches: prefs.show_remote_branches,
@@ -1943,7 +1946,11 @@ impl AppView {
                             let current = super::update::current_version();
                             if super::update::is_newer(&info.version, current) {
                                 this.update_available = Some(info.clone());
-                                this.prompt_update_available(info, window, cx);
+                                let skipped = !this.skipped_update_version.is_empty()
+                                    && this.skipped_update_version == info.version;
+                                if !silent || !skipped {
+                                    this.prompt_update_available(info, window, cx);
+                                }
                             } else {
                                 this.update_available = None;
                                 if !silent {
@@ -1996,20 +2003,26 @@ impl AppView {
         let ok = t.download_update;
         let cancel = t.later;
         let view = cx.entity();
-        super::dialogs::open_busy_confirm(
+        let skip_version = info.version.clone();
+        super::dialogs::open_update_confirm(
             window,
             cx,
             view,
-            BusyKind::DownloadUpdate,
             title,
             desc,
             ok,
             cancel,
-            gpui_kit::assets::IconName::CloudDownload,
+            skip_version,
             move |this, _window, cx| {
                 this.download_available_update(cx);
             },
         );
+    }
+
+    pub(super) fn skip_update_version(&mut self, version: String, cx: &mut Context<Self>) {
+        self.skipped_update_version = version;
+        self.persist_prefs(cx);
+        cx.notify();
     }
 
     pub(super) fn download_available_update(&mut self, cx: &mut Context<Self>) {
@@ -2033,6 +2046,8 @@ impl AppView {
                 this.busy = None;
                 match result {
                     Ok(path) => {
+                        this.skipped_update_version.clear();
+                        this.persist_prefs(cx);
                         let msg = this
                             .t()
                             .update_downloaded
@@ -2107,6 +2122,7 @@ impl AppView {
             changes_as_tree: self.changes_as_tree,
             auto_refresh: self.auto_refresh,
             auto_check_updates: self.auto_check_updates,
+            skipped_update_version: self.skipped_update_version.clone(),
             show_remote_branches: self.show_remote_branches,
             ask_fetch_on_open: self.ask_fetch_on_open,
             fetch_prompt_muted: self.fetch_prompt_muted.clone(),

@@ -283,6 +283,14 @@ Centralize prompt templates (Zed: [`commit_message_prompt.txt`](https://github.c
 - Headless-friendly error messages when path is not a git repo
 - Document install paths so shells and agents can invoke the same binary as the GUI
 
+### Auto-update — shipping in v1.4.2
+
+- GitHub Release asset `latest.json` (stable URL: `…/releases/latest/download/latest.json`)
+- Settings → Updates: check on launch (toggle), manual check, download + open installer
+- CLI: `sgg check-update` / `sgg update`
+- Fallback to GitHub Releases API when `latest.json` is missing
+- “Later” remembers the dismissed version so silent launch checks do not re-prompt
+
 ### Packaging
 
 - Smaller release binary (`LTO`, strip, size-oriented profile)

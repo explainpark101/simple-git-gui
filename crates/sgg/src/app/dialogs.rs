@@ -103,6 +103,42 @@ pub fn open_busy_confirm(
     });
 }
 
+/// Update-available confirm: OK downloads; Later persists `skipped_update_version`.
+pub fn open_update_confirm(
+    window: &mut Window,
+    cx: &mut App,
+    app: Entity<AppView>,
+    title: impl Into<SharedString>,
+    description: impl Into<SharedString>,
+    ok_text: impl Into<SharedString>,
+    later_text: impl Into<SharedString>,
+    skip_version: String,
+    work: impl Fn(&mut AppView, &mut Window, &mut Context<AppView>) + 'static,
+) {
+    let title = title.into();
+    let description = description.into();
+    let ok = BusyConfirmOk::mount(
+        cx,
+        app.clone(),
+        BusyKind::DownloadUpdate,
+        ok_text.into(),
+        AssetIcon::CloudDownload,
+        Rc::new(work),
+    );
+    let later = UpdatePromptLater::mount(cx, app, later_text.into(), skip_version);
+
+    window.open_alert_dialog(cx, move |alert, _, _| {
+        alert
+            .title(title.clone())
+            .description(description.clone())
+            .footer(
+                DialogFooter::new()
+                    .child(later.clone())
+                    .child(ok.clone()),
+            )
+    });
+}
+
 pub(super) struct BusyConfirmOk {
     app: Entity<AppView>,
     kind: BusyKind,
@@ -193,6 +229,48 @@ impl Render for BusyConfirmCancel {
                 if !loading {
                     window.close_dialog(cx);
                 }
+            })
+    }
+}
+
+/// "Later" on the update dialog — remember this version so silent checks stay quiet.
+pub(super) struct UpdatePromptLater {
+    app: Entity<AppView>,
+    label: SharedString,
+    version: String,
+}
+
+impl UpdatePromptLater {
+    pub(super) fn mount(
+        cx: &mut App,
+        app: Entity<AppView>,
+        label: SharedString,
+        version: String,
+    ) -> Entity<Self> {
+        cx.new(|cx| {
+            cx.observe(&app, |_, _, cx| cx.notify()).detach();
+            Self { app, label, version }
+        })
+    }
+}
+
+impl Render for UpdatePromptLater {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let loading = self.app.read(cx).busy == Some(BusyKind::DownloadUpdate);
+        let app = self.app.clone();
+        let version = self.version.clone();
+        btn("update-prompt-later")
+            .outline()
+            .label(self.label.clone())
+            .disabled(loading)
+            .on_click(move |_, window, cx| {
+                if loading {
+                    return;
+                }
+                app.update(cx, |this, cx| {
+                    this.skip_update_version(version.clone(), cx);
+                });
+                window.close_dialog(cx);
             })
     }
 }

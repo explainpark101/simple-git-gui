@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Write release-assets/latest.json for GitHub Releases (auto-update manifest).
+# Only includes download keys for files that actually exist in the out dir.
 #
 # Usage:
 #   VERSION=1.4.2 TAG=v1.4.2 REPO=explainpark101/simple-git-gui \
@@ -17,7 +18,52 @@ PUBLISHED_AT="${PUBLISHED_AT:-$(date -u +"%Y-%m-%dT%H:%M:%SZ")}"
 mkdir -p "${OUT_DIR}"
 OUT="${OUT_DIR}/latest.json"
 
-# Asset names must match cargo-packager / build-*.sh / CI portable copies.
+# Resolve a known asset filename to its latest.json download key (empty if unknown).
+key_for_name() {
+  case "$1" in
+    "simple-git-gui_${VERSION}_aarch64.dmg") echo "macos-aarch64" ;;
+    "simple-git-gui_${VERSION}_x64.dmg") echo "macos-x64" ;;
+    "sgg_${VERSION}_x64-setup.exe") echo "windows-x64" ;;
+    "sgg_${VERSION}_arm64-setup.exe") echo "windows-arm64" ;;
+    "sgg_${VERSION}_x86_64.AppImage") echo "linux-x64" ;;
+    "sgg_portable.exe") echo "windows-x64-portable" ;;
+    "sgg_portable_arm64.exe") echo "windows-arm64-portable" ;;
+    "linux_sgg_portable") echo "linux-x64-portable" ;;
+    *) echo "" ;;
+  esac
+}
+
+entries=""
+count=0
+# Portable directory listing (no mapfile / assoc arrays — works on bash 3 + Git Bash).
+# shellcheck disable=SC2045
+for path in "${OUT_DIR}"/*; do
+  [[ -e "${path}" ]] || continue
+  [[ -f "${path}" ]] || continue
+  name="$(basename "${path}")"
+  [[ "${name}" == "latest.json" ]] && continue
+  key="$(key_for_name "${name}")"
+  if [[ -z "${key}" ]]; then
+    echo "note: skipping unrecognized asset: ${name}" >&2
+    continue
+  fi
+  entry="$(printf '    "%s": { "name": "%s", "url": "%s/%s" }' \
+    "${key}" "${name}" "${BASE}" "${name}")"
+  if [[ -n "${entries}" ]]; then
+    entries="${entries},
+${entry}"
+  else
+    entries="${entry}"
+  fi
+  count=$((count + 1))
+done
+
+if [[ "${count}" -eq 0 ]]; then
+  echo "error: no recognized release assets in ${OUT_DIR}" >&2
+  ls -lah "${OUT_DIR}" >&2 || true
+  exit 1
+fi
+
 cat > "${OUT}" <<EOF
 {
   "version": "${VERSION}",
@@ -26,41 +72,10 @@ cat > "${OUT}" <<EOF
   "notes": "https://github.com/${REPO}/releases/tag/${TAG}",
   "published_at": "${PUBLISHED_AT}",
   "downloads": {
-    "macos-aarch64": {
-      "name": "simple-git-gui_${VERSION}_aarch64.dmg",
-      "url": "${BASE}/simple-git-gui_${VERSION}_aarch64.dmg"
-    },
-    "macos-x64": {
-      "name": "simple-git-gui_${VERSION}_x64.dmg",
-      "url": "${BASE}/simple-git-gui_${VERSION}_x64.dmg"
-    },
-    "windows-x64": {
-      "name": "sgg_${VERSION}_x64-setup.exe",
-      "url": "${BASE}/sgg_${VERSION}_x64-setup.exe"
-    },
-    "windows-arm64": {
-      "name": "sgg_${VERSION}_arm64-setup.exe",
-      "url": "${BASE}/sgg_${VERSION}_arm64-setup.exe"
-    },
-    "linux-x64": {
-      "name": "sgg_${VERSION}_x86_64.AppImage",
-      "url": "${BASE}/sgg_${VERSION}_x86_64.AppImage"
-    },
-    "windows-x64-portable": {
-      "name": "sgg_portable.exe",
-      "url": "${BASE}/sgg_portable.exe"
-    },
-    "windows-arm64-portable": {
-      "name": "sgg_portable_arm64.exe",
-      "url": "${BASE}/sgg_portable_arm64.exe"
-    },
-    "linux-x64-portable": {
-      "name": "linux_sgg_portable",
-      "url": "${BASE}/linux_sgg_portable"
-    }
+${entries}
   }
 }
 EOF
 
-echo "==> wrote ${OUT}"
+echo "==> wrote ${OUT} (${count} assets)"
 cat "${OUT}"
