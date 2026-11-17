@@ -287,7 +287,7 @@ Centralize prompt templates (Zed: [`commit_message_prompt.txt`](https://github.c
 
 - Smaller release binary (`LTO`, strip, size-oriented profile)
 - Windows installer (optional context-menu registration)
-- macOS `.app` bundle + notarization notes
+- macOS `.app` / `.dmg` + optional Developer ID notarization (CI secrets)
 - Linux AppImage / `.deb`
 
 ### Polish

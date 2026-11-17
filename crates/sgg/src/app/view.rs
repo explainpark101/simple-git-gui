@@ -249,6 +249,10 @@ pub struct AppView {
     pub(super) locale: Locale,
     pub(super) changes_as_tree: bool,
     pub(super) auto_refresh: bool,
+    pub(super) auto_check_updates: bool,
+    /// Latest release from `latest.json` when newer than this build.
+    pub(super) update_available: Option<super::update::LatestInfo>,
+    update_task: Option<Task<()>>,
     pub(super) show_remote_branches: bool,
     pub(super) ask_fetch_on_open: bool,
     pub(super) fetch_prompt_muted: Vec<String>,
@@ -503,6 +507,9 @@ impl AppView {
             locale: prefs.locale,
             changes_as_tree: prefs.changes_as_tree,
             auto_refresh: prefs.auto_refresh,
+            auto_check_updates: prefs.auto_check_updates,
+            update_available: None,
+            update_task: None,
             show_remote_branches: prefs.show_remote_branches,
             ask_fetch_on_open: prefs.ask_fetch_on_open,
             fetch_prompt_muted: prefs.fetch_prompt_muted,
@@ -565,6 +572,11 @@ impl AppView {
             });
         } else {
             view.sync_auto_refresh(cx);
+        }
+        if view.auto_check_updates {
+            cx.defer_in(window, |this, window, cx| {
+                this.check_for_updates(true, window, cx);
+            });
         }
         window.focus(&focus_handle, cx);
         view
@@ -1892,6 +1904,162 @@ impl AppView {
         cx.notify();
     }
 
+    pub(super) fn set_auto_check_updates(&mut self, enabled: bool, cx: &mut Context<Self>) {
+        self.auto_check_updates = enabled;
+        self.persist_prefs(cx);
+        cx.notify();
+    }
+
+    /// Fetch GitHub `latest.json`. When `silent`, only prompt if a newer release exists.
+    pub(super) fn check_for_updates(
+        &mut self,
+        silent: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.update_task.is_some()
+            || self.busy == Some(BusyKind::CheckUpdate)
+            || self.busy == Some(BusyKind::DownloadUpdate)
+        {
+            return;
+        }
+        if !silent {
+            self.busy = Some(BusyKind::CheckUpdate);
+            self.begin_progress(BusyKind::CheckUpdate);
+            cx.notify();
+        }
+        self.update_task = Some(cx.spawn_in(window, async move |this, cx| {
+            let result = cx
+                .background_spawn(async move { super::update::fetch_latest() })
+                .await;
+            let _ = cx.update(|window, cx| {
+                this.update(cx, |this, cx| {
+                    this.update_task = None;
+                    if !silent {
+                        this.busy = None;
+                    }
+                    match result {
+                        Ok(info) => {
+                            let current = super::update::current_version();
+                            if super::update::is_newer(&info.version, current) {
+                                this.update_available = Some(info.clone());
+                                this.prompt_update_available(info, window, cx);
+                            } else {
+                                this.update_available = None;
+                                if !silent {
+                                    let msg = this
+                                        .t()
+                                        .update_up_to_date
+                                        .replace("{version}", current);
+                                    this.set_ok_status(msg);
+                                }
+                            }
+                        }
+                        Err(err) => {
+                            this.update_available = None;
+                            if !silent {
+                                let msg = this
+                                    .t()
+                                    .update_check_failed
+                                    .replace("{error}", &format!("{err:#}"));
+                                this.set_error(msg.into(), cx);
+                            }
+                        }
+                    }
+                    if !silent
+                        && this
+                            .progress_log
+                            .last()
+                            .is_some_and(|e| e.state == super::progress::ProgressState::Running)
+                    {
+                        let done = this.status_line.clone();
+                        this.finish_progress(this.error.is_none(), done);
+                    }
+                    cx.notify();
+                })
+            });
+        }));
+    }
+
+    fn prompt_update_available(
+        &mut self,
+        info: super::update::LatestInfo,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let t = self.t();
+        let title = t.update_available;
+        let desc = t
+            .update_available_desc
+            .replace("{latest}", &info.version)
+            .replace("{current}", super::update::current_version());
+        let ok = t.download_update;
+        let cancel = t.later;
+        let view = cx.entity();
+        super::dialogs::open_busy_confirm(
+            window,
+            cx,
+            view,
+            BusyKind::DownloadUpdate,
+            title,
+            desc,
+            ok,
+            cancel,
+            gpui_kit::assets::IconName::CloudDownload,
+            move |this, _window, cx| {
+                this.download_available_update(cx);
+            },
+        );
+    }
+
+    pub(super) fn download_available_update(&mut self, cx: &mut Context<Self>) {
+        let Some(info) = self.update_available.clone() else {
+            self.set_error(self.t().update_no_asset.into(), cx);
+            return;
+        };
+        if info.asset_for_this_platform().is_none() {
+            self.set_error(self.t().update_no_asset.into(), cx);
+            return;
+        }
+        self.busy = Some(BusyKind::DownloadUpdate);
+        self.begin_progress(BusyKind::DownloadUpdate);
+        cx.notify();
+        self.update_task = Some(cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_spawn(async move { super::update::download_and_open_latest(&info) })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                this.update_task = None;
+                this.busy = None;
+                match result {
+                    Ok(path) => {
+                        let msg = this
+                            .t()
+                            .update_downloaded
+                            .replace("{path}", &path.display().to_string());
+                        this.set_ok_status(msg);
+                    }
+                    Err(err) => {
+                        let msg = this
+                            .t()
+                            .update_check_failed
+                            .replace("{error}", &format!("{err:#}"));
+                        this.set_error(msg.into(), cx);
+                    }
+                }
+                if this
+                    .progress_log
+                    .last()
+                    .is_some_and(|e| e.state == super::progress::ProgressState::Running)
+                {
+                    let done = this.status_line.clone();
+                    this.finish_progress(this.error.is_none(), done);
+                }
+                cx.notify();
+            });
+        }));
+    }
+
     pub(super) fn set_auto_refresh(&mut self, enabled: bool, cx: &mut Context<Self>) {
         self.auto_refresh = enabled;
         self.persist_prefs(cx);
@@ -1938,6 +2106,7 @@ impl AppView {
             group_by_status: self.group_by_status,
             changes_as_tree: self.changes_as_tree,
             auto_refresh: self.auto_refresh,
+            auto_check_updates: self.auto_check_updates,
             show_remote_branches: self.show_remote_branches,
             ask_fetch_on_open: self.ask_fetch_on_open,
             fetch_prompt_muted: self.fetch_prompt_muted.clone(),

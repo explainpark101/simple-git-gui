@@ -14,14 +14,27 @@ dialog() {
   /usr/bin/osascript -e "display dialog \"${msg}\" buttons {\"OK\"} default button 1 with icon ${icon}" >/dev/null || true
 }
 
+clear_quarantine() {
+  local path="$1"
+  if [[ -e "${path}" ]]; then
+    /usr/bin/xattr -cr "${path}" 2>/dev/null || true
+  fi
+}
+
 if [[ ! -d "${APP_SRC}" ]]; then
   dialog "simple-git-gui.app was not found next to this installer." stop
   exit 1
 fi
 
+# Browser-downloaded DMGs set com.apple.quarantine; strip it so Gatekeeper
+# does not block the installed copy after the user opens this installer.
+clear_quarantine "${APP_SRC}"
+clear_quarantine "${DIR}/Install sgg.command"
+
 echo "==> Installing to ${APP_DST}"
 rm -rf "${APP_DST}"
 cp -R "${APP_SRC}" "${APP_DST}"
+clear_quarantine "${APP_DST}"
 
 if [[ ! -x "${BIN}" ]]; then
   dialog "Installed the app, but could not find ${BIN}" stop

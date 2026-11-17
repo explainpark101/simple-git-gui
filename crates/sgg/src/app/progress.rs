@@ -54,6 +54,8 @@ impl BusyKind {
             Self::ResetSoft => t.reset_soft,
             Self::ResetMixed => t.reset_mixed,
             Self::ResetHard => t.reset_hard,
+            Self::CheckUpdate => t.check_for_updates,
+            Self::DownloadUpdate => t.download_update,
         }
     }
 }

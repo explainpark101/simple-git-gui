@@ -4,9 +4,10 @@
 # cargo-packager's before-each-package-command runs on every OS via cmd/sh, so
 # macOS signing must NOT live there (it breaks Windows NSIS CI). Instead:
 #   1) pack app + dmg
-#   2) ad-hoc codesign the .app
+#   2) codesign the .app (Developer ID if available, else ad-hoc)
 #   3) rebuild the DMG from the signed .app + Install helper (hdiutil)
-#   4) ad-hoc codesign the DMG
+#   4) codesign the DMG
+#   5) notarize + staple when Apple credentials are present
 #
 # DMG contents:
 #   - simple-git-gui.app
@@ -21,7 +22,7 @@ source "$ROOT/packaging/common.sh"
 require_host macos
 run_packager app,dmg
 
-bash "$ROOT/packaging/macos-adhoc-sign.sh"
+bash "$ROOT/packaging/macos-sign.sh"
 
 VERSION="$(sgg_version)"
 case "$(uname -m)" in
@@ -68,12 +69,17 @@ hdiutil create \
   -format UDZO \
   "${DMG_PATH}"
 
-echo "==> ad-hoc codesign ${DMG_PATH}"
-codesign --force --sign - --timestamp=none "${DMG_PATH}"
-codesign --verify --verbose=2 "${DMG_PATH}" || true
+bash "$ROOT/packaging/macos-sign.sh" --dmg "${DMG_PATH}"
+bash "$ROOT/packaging/macos-notarize.sh" "${DMG_PATH}"
 
 echo "==> macOS package(s) in $DIST"
 ls -lh "$DIST"/*.dmg 2>/dev/null || ls -lh "$DIST"
 echo "note: open the DMG and double-click 'Install sgg.command' (or drag .app then launch once)."
 echo "note: that registers the sgg CLI on PATH; Finder Services via install-shell."
-echo "note: .app/.dmg use ad-hoc codesign (no Apple Developer ID / notarization)."
+if [[ -f "${DIST}/.macos-signing-identity" ]]; then
+  echo "note: .app/.dmg signed with Developer ID (notarize if credentials were set)."
+else
+  echo "note: .app/.dmg use ad-hoc codesign — browser downloads trigger Gatekeeper."
+  echo "note: clear quarantine: xattr -cr ~/Downloads/${DMG_NAME}"
+  echo "note: or install without quarantine: bash packaging/macos/install-from-github.sh"
+fi
