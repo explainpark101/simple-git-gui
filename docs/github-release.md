@@ -39,8 +39,12 @@ git push origin main
 1. GitHub **Actions**에서 `Release` 워크플로가 초록인지 확인
 2. GitHub **Releases**에서 `vX.Y.Z`와 자산 확인
    - Windows: `*-setup.exe` (NSIS), `sgg.exe`
-   - macOS: `*.dmg`
+   - macOS: `*.dmg` (`.app`은 DMG 포함 전에 ad-hoc `codesign --sign -`로 서명)
    - Linux: `*.AppImage`, `sgg`
+
+macOS 참고: Apple Developer ID / 공증은 아직 없습니다. ad-hoc 서명만으로
+Apple Silicon에서 실행은 되지만, 다운로드 후 Gatekeeper 경고가 날 수 있어
+첫 실행은 **우클릭 → 열기**가 필요할 수 있습니다.
 
 ## 이 프로젝트 설정
 

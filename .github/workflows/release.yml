@@ -158,7 +158,9 @@ jobs:
 
       - name: Build package
         run: |
-          chmod +x build.sh run.sh build-exe.sh build-dmg.sh build-appimage.sh packaging/common.sh || true
+          chmod +x \
+            build.sh run.sh build-exe.sh build-dmg.sh build-appimage.sh \
+            packaging/common.sh packaging/macos-adhoc-sign.sh || true
           ${{ matrix.script }}
 
       - name: Also keep portable release binary in dist
