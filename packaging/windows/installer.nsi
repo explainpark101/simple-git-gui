@@ -24,7 +24,9 @@ Unicode true
 !include "StrFunc.nsh"
 ${StrCase}
 ${StrLoc}
-${un.StrLoc}
+; Do not declare ${un.StrLoc} — cargo-packager's bundled StrFunc does not
+; expose it (makensis: "Invalid command: ${un.StrLoc}"). Uninstall PATH
+; removal uses a pure-NSIS substring search instead.
 
 !define MANUFACTURER "{{manufacturer}}"
 !define PRODUCTNAME "{{product_name}}"
@@ -710,29 +712,40 @@ Function AddInstallDirToPath
 FunctionEnd
 
 ; Remove $INSTDIR from HKCU Environment Path (handles leading / middle / trailing).
+; Pure NSIS — no ${un.StrLoc} (unavailable in packager's StrFunc).
 Function un.RemoveInstallDirFromPath
- ReadRegStr $0 HKCU "Environment" "Path"
- StrCmp $0 "" un_path_done
- ; Work on ";path;" so edge entries match the same needle.
- StrCpy $1 ";$0;"
- ${un.StrLoc} $2 $1 ";$INSTDIR;" ">"
- StrCmp $2 "" un_path_done
- ; $2 = offset of ";$INSTDIR;" inside $1; splice it out, keep one ";".
- StrCpy $3 $1 $2
- StrCpy $4 $1 "" $2
- StrCpy $4 $4 "" 1
- StrLen $5 $INSTDIR
- IntOp $5 $5 + 1
- StrCpy $4 $4 "" $5
- StrCpy $1 "$3;$4"
- ; Trim leading / trailing ";"
- StrCpy $2 $1 1
- StrCmp $2 ";" 0 +2
- StrCpy $1 $1 "" 1
- StrCpy $2 $1 "" -1
- StrCmp $2 ";" 0 +2
- StrCpy $1 $1 -1
- WriteRegExpandStr HKCU "Environment" "Path" "$1"
- SendMessage ${HWND_BROADCAST} ${WM_WININICHANGE} 0 "STR:Environment" /TIMEOUT=5000
- un_path_done:
+  ReadRegStr $0 HKCU "Environment" "Path"
+  StrCmp $0 "" un_path_done
+  ; Work on ";path;" so edge entries match the same needle.
+  StrCpy $1 ";$0;"
+  StrCpy $R9 ";$INSTDIR;"
+  StrLen $R8 $R9
+  StrLen $R7 $1
+  StrCpy $2 0
+  un_path_search:
+    IntCmp $2 $R7 un_path_done un_path_check un_path_done
+  un_path_check:
+    StrCpy $R5 $1 $R8 $2
+    StrCmp $R5 $R9 un_path_found
+    IntOp $2 $2 + 1
+    Goto un_path_search
+  un_path_found:
+  ; $2 = offset of ";$INSTDIR;" inside $1; splice it out, keep one ";".
+  StrCpy $3 $1 $2
+  StrCpy $4 $1 "" $2
+  StrCpy $4 $4 "" 1
+  StrLen $5 $INSTDIR
+  IntOp $5 $5 + 1
+  StrCpy $4 $4 "" $5
+  StrCpy $1 "$3;$4"
+  ; Trim leading / trailing ";"
+  StrCpy $2 $1 1
+  StrCmp $2 ";" 0 +2
+  StrCpy $1 $1 "" 1
+  StrCpy $2 $1 "" -1
+  StrCmp $2 ";" 0 +2
+  StrCpy $1 $1 -1
+  WriteRegExpandStr HKCU "Environment" "Path" "$1"
+  SendMessage ${HWND_BROADCAST} ${WM_WININICHANGE} 0 "STR:Environment" /TIMEOUT=5000
+  un_path_done:
 FunctionEnd
