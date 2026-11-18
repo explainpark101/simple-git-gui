@@ -1,10 +1,19 @@
 //! Multi-provider registry for AI commit messages.
 //!
 //! OpenAI-compatible entries store title, docs URL, base URL, model, API key,
-//! and auth scheme. Cursor / Codex CLI are separate kinds with their own binary
-//! path. Defaults ship with **no** providers — the user adds them explicitly.
+//! and auth scheme. Cursor / Codex CLI are built-in kinds (stable ids) plus any
+//! extra user-added HTTP/CLI providers.
 
 use serde::{Deserialize, Serialize};
+
+/// Stable id for the built-in Cursor Agent CLI provider (T3-style first-class).
+pub const BUILTIN_CURSOR_ID: &str = "builtin-cursor";
+/// Stable id for the built-in OpenAI Codex CLI provider.
+pub const BUILTIN_CODEX_ID: &str = "builtin-codex";
+
+pub fn is_builtin_cli_id(id: &str) -> bool {
+    id == BUILTIN_CURSOR_ID || id == BUILTIN_CODEX_ID
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
@@ -138,31 +147,45 @@ impl AiProvider {
     }
 
     pub fn blank_cursor() -> Self {
+        let mut p = Self::builtin_cursor();
+        p.id = Self::new_id();
+        p
+    }
+
+    pub fn blank_codex() -> Self {
+        let mut p = Self::builtin_codex();
+        p.id = Self::new_id();
+        p
+    }
+
+    pub fn builtin_cursor() -> Self {
         Self {
-            id: Self::new_id(),
+            id: BUILTIN_CURSOR_ID.into(),
             title: AiProviderPreset::CursorCli.title().into(),
             kind: AiProviderKind::CursorCli,
-            docs_url: "https://cursor.com/docs/cli/overview".into(),
+            // T3 V2 uses @cursor/sdk + CURSOR_API_KEY; we auth the same way and
+            // invoke via Cursor's documented headless CLI (`agent -p`).
+            docs_url: "https://cursor.com/docs/cli/headless".into(),
             base_url: String::new(),
             chat_path: default_chat_path(),
             model: String::new(),
             api_key: String::new(),
-            auth: AiAuthKind::None,
+            auth: AiAuthKind::Bearer,
             auth_header: default_auth_header(),
             auth_query_param: default_auth_query(),
-            api_key_env: String::new(),
+            api_key_env: "CURSOR_API_KEY".into(),
             cli_bin: String::new(),
             enabled: true,
             preset: AiProviderPreset::CursorCli.slug().into(),
         }
     }
 
-    pub fn blank_codex() -> Self {
+    pub fn builtin_codex() -> Self {
         Self {
-            id: Self::new_id(),
+            id: BUILTIN_CODEX_ID.into(),
             title: AiProviderPreset::CodexCli.title().into(),
             kind: AiProviderKind::CodexCli,
-            docs_url: "https://learn.chatgpt.com/docs/codex/cli.md".into(),
+            docs_url: "https://developers.openai.com/codex/cli".into(),
             base_url: String::new(),
             chat_path: default_chat_path(),
             model: String::new(),
@@ -175,6 +198,10 @@ impl AiProvider {
             enabled: true,
             preset: AiProviderPreset::CodexCli.slug().into(),
         }
+    }
+
+    pub fn is_builtin(&self) -> bool {
+        is_builtin_cli_id(&self.id)
     }
 
     pub fn resolve_api_key(&self) -> Option<String> {

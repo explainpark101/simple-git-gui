@@ -7,9 +7,10 @@
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::menu::PopupMenuItem;
 use gpui_kit::component::{ActiveTheme as _, Icon, Sizable as _, h_flex};
+use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     App, ClickEvent, Div, ElementId, ParentElement as _, SharedString, Styled as _, Window, div,
-    px,
+    px, relative,
 };
 
 use super::busy::BusyKind;
@@ -106,6 +107,45 @@ pub fn confirm_btn(id: impl Into<ElementId>, icon: impl Into<Icon>, _cx: &App) -
 /// Apply loading spinner when `kind` matches the current busy state.
 pub fn with_busy(btn: Button, busy: Option<BusyKind>, kind: BusyKind) -> Button {
     btn.loading(busy == Some(kind))
+}
+
+/// Busy button with a bottom-edge progress fill (0.0..=1.0).
+///
+/// gpui-kit `Button` has no built-in progress API — only a spinner via
+/// [`with_busy`]. This wraps the button so the bottom border fills as
+/// `progress` advances (e.g. CLI install download). When busy but
+/// `progress` is `None`, shows an indeterminate mid-width pulse bar.
+pub fn with_busy_bottom_progress(
+    btn: Button,
+    busy: Option<BusyKind>,
+    kind: BusyKind,
+    progress: Option<f32>,
+    cx: &App,
+) -> Div {
+    let is_busy = busy == Some(kind);
+    let btn = btn.loading(is_busy);
+    let fill = if is_busy {
+        progress.map(|p| p.clamp(0.0, 1.0)).unwrap_or(0.35)
+    } else {
+        0.0
+    };
+    let track = cx.theme().border;
+    let bar = cx.theme().primary;
+    div()
+        .relative()
+        .child(btn)
+        .when(is_busy, |el| {
+            el.child(
+                div()
+                    .absolute()
+                    .left_0()
+                    .right_0()
+                    .bottom_0()
+                    .h(px(2.))
+                    .bg(track)
+                    .child(div().h_full().w(relative(fill)).bg(bar)),
+            )
+        })
 }
 
 /// Container for action buttons: right-aligned row.

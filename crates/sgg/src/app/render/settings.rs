@@ -11,10 +11,12 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use crate::app::busy::BusyKind;
+use crate::app::cli_tools::CliToolKind;
 use crate::app::editor::{EditorPreset, ZED_DOWNLOAD_URL};
 use crate::app::i18n::{Locale, UiText};
 use crate::app::ai_provider::{
-    AiAuthKind, AiProviderKind, AiProviderPreset, CommitAiFormMode, LocalLlmPreset, ACTIVE_AUTO,
+    is_builtin_cli_id, AiAuthKind, AiProviderKind, AiProviderPreset, CommitAiFormMode,
+    LocalLlmPreset, ACTIVE_AUTO,
 };
 use crate::app::prefs::{
     settings_path, CommitAiStyle, StatusColors, TerminalShellKind, ThemePreference,
@@ -24,6 +26,7 @@ use crate::app::render::status_style::display_label;
 use crate::app::view::AppView;
 use crate::app::widgets::{
     action_btn, display_btn, icon_btn, icon_danger_btn, list_row_btn, menu_item, with_busy,
+    with_busy_bottom_progress,
 };
 
 pub fn render(view: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
@@ -870,6 +873,7 @@ fn commit_ai_section(
         CommitAiFormMode::Closed => None,
     };
     let show_http = matches!(editing_kind, Some(AiProviderKind::OpenAiCompatible));
+    let show_cursor = matches!(editing_kind, Some(AiProviderKind::CursorCli));
     let show_cli = matches!(
         editing_kind,
         Some(AiProviderKind::CursorCli | AiProviderKind::CodexCli)
@@ -954,6 +958,9 @@ fn commit_ai_section(
                         .into_any_element()
                 })),
         )
+        .child(div().text_sm().text_left().child(t.commit_ai_builtin_clis))
+        .child(builtin_cli_card(view, CliToolKind::Cursor, t, cx))
+        .child(builtin_cli_card(view, CliToolKind::Codex, t, cx))
         .child(div().text_sm().text_left().child(t.commit_ai_providers))
         .when(providers.is_empty(), |this| {
             this.child(
@@ -977,6 +984,7 @@ fn commit_ai_section(
                     let id_rm = id.clone();
                     let id_en = id.clone();
                     let enabled = p.enabled;
+                    let builtin = is_builtin_cli_id(&id);
                     let editing = form.edit_id() == Some(id.as_str());
                     let last = idx + 1 >= providers.len();
                     let kind_label = p.kind.label();
@@ -1067,9 +1075,17 @@ fn commit_ai_section(
                         .child(
                             icon_danger_btn(
                                 SharedString::from(format!("commit-ai-rm:{id}")),
-                                AssetIcon::Trash,
+                                if builtin {
+                                    AssetIcon::Ban
+                                } else {
+                                    AssetIcon::Trash
+                                },
                             )
-                            .tooltip(t.tip_remove_commit_ai_provider)
+                            .tooltip(if builtin {
+                                t.tip_disable_builtin_cli
+                            } else {
+                                t.tip_remove_commit_ai_provider
+                            })
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.remove_commit_ai_provider(id_rm.clone(), cx);
                             })),
@@ -1341,6 +1357,27 @@ fn commit_ai_section(
                                 )
                             })
                     })
+                    .when(show_cursor, |form_el| {
+                        form_el
+                            .child(div().text_sm().text_left().child(t.commit_ai_provider_key))
+                            .child(Input::new(&view.commit_ai_key_input))
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .line_height(relative(1.35))
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(t.tip_commit_ai_cursor_api_key),
+                            )
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .text_left()
+                                    .child(t.commit_ai_provider_key_env),
+                            )
+                            .child(Input::new(&view.commit_ai_key_env_input))
+                            .child(div().text_sm().text_left().child(t.commit_ai_provider_model))
+                            .child(Input::new(&view.commit_ai_model_input))
+                    })
                     .when(show_cli, |form_el| {
                         form_el
                             .child(div().text_sm().text_left().child(t.commit_ai_cli_bin))
@@ -1367,7 +1404,7 @@ fn commit_ai_section(
                                         view.busy,
                                         BusyKind::InstallCli,
                                     ))
-                                    .child(with_busy(
+                                    .child(with_busy_bottom_progress(
                                         action_btn("commit-ai-install-cli", AssetIcon::Download)
                                             .outline()
                                             .small()
@@ -1378,6 +1415,8 @@ fn commit_ai_section(
                                             })),
                                         view.busy,
                                         BusyKind::InstallCli,
+                                        view.cli_install_progress,
+                                        cx,
                                     ))
                                     .child(
                                         action_btn("commit-ai-browse-cli", AssetIcon::FolderOpen)
@@ -1418,6 +1457,120 @@ fn commit_ai_section(
                     ),
             )
         })
+}
+
+fn builtin_cli_card(
+    view: &AppView,
+    kind: CliToolKind,
+    t: UiText,
+    cx: &mut Context<AppView>,
+) -> impl IntoElement {
+    let status = crate::app::cli_tools::status(kind);
+    let title = kind.label().to_string();
+    let cursor_key = matches!(kind, CliToolKind::Cursor)
+        && view
+            .commit_ai
+            .provider_by_id(crate::app::ai_provider::BUILTIN_CURSOR_ID)
+            .is_some_and(|p| p.resolve_api_key().is_some());
+    let status_text = match kind {
+        CliToolKind::Cursor => match (&status.binary, cursor_key, status.source) {
+            (None, false, _) => t.commit_ai_cli_status_missing.to_string(),
+            (None, true, _) => "API key set — install agent CLI".into(),
+            (Some(path), true, Some(source)) => {
+                let ready = t.commit_ai_cli_status_ready.replace("{source}", source);
+                format!("{ready} · key · {path}")
+            }
+            (Some(path), false, Some(source)) => {
+                let ready = t.commit_ai_cli_status_ready.replace("{source}", source);
+                format!("{ready} · set CURSOR_API_KEY · {path}")
+            }
+            (Some(path), _, _) => path.clone(),
+        },
+        CliToolKind::Codex => match (&status.binary, status.logged_in, status.source) {
+            (None, _, _) => t.commit_ai_cli_status_missing.to_string(),
+            (Some(_), Some(false), _) => t.commit_ai_cli_status_needs_login.to_string(),
+            (Some(path), _, Some(source)) => {
+                let ready = t.commit_ai_cli_status_ready.replace("{source}", source);
+                format!("{ready} · {path}")
+            }
+            (Some(path), _, None) => path.clone(),
+        },
+    };
+    let id = match kind {
+        CliToolKind::Cursor => "builtin-cli-cursor",
+        CliToolKind::Codex => "builtin-cli-codex",
+    };
+
+    div()
+        .flex()
+        .flex_col()
+        .gap_2()
+        .min_w_0()
+        .py_1()
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap_2()
+                .min_w_0()
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .flex()
+                        .flex_col()
+                        .gap_2()
+                        .child(
+                            div()
+                                .text_sm()
+                                .line_height(relative(1.35))
+                                .overflow_hidden()
+                                .text_ellipsis()
+                                .whitespace_nowrap()
+                                .child(title),
+                        )
+                        .child(
+                            div()
+                                .text_xs()
+                                .line_height(relative(1.35))
+                                .text_color(cx.theme().muted_foreground)
+                                .overflow_hidden()
+                                .text_ellipsis()
+                                .whitespace_nowrap()
+                                .child(status_text),
+                        ),
+                )
+                .child(with_busy_bottom_progress(
+                    action_btn(
+                        SharedString::from(format!("{id}-install")),
+                        AssetIcon::Download,
+                    )
+                    .outline()
+                    .small()
+                    .label(t.commit_ai_install_cli)
+                    .tooltip(t.tip_commit_ai_install_cli)
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.install_builtin_cli(kind, window, cx);
+                    })),
+                    view.busy,
+                    BusyKind::InstallCli,
+                    view.cli_install_progress,
+                    cx,
+                ))
+                .child(
+                    action_btn(
+                        SharedString::from(format!("{id}-login")),
+                        AssetIcon::ExternalLink,
+                    )
+                    .outline()
+                    .small()
+                    .label(t.commit_ai_cli_login)
+                    .tooltip(t.tip_commit_ai_cli_login)
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.login_commit_ai_cli(kind, cx);
+                    })),
+                ),
+        )
 }
 
 fn terminal_shell_tip(kind: TerminalShellKind, t: UiText) -> &'static str {

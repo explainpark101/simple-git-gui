@@ -166,7 +166,7 @@ pub struct CommitAiPrefs {
     #[serde(default = "default_active_provider")]
     pub active_provider_id: String,
     /// Registered backends (OpenAI-compatible + CLI). Order = Auto try order.
-    /// Empty by default — user adds providers in Settings.
+    /// Always includes built-in Cursor / Codex CLI entries after load.
     #[serde(default)]
     pub providers: Vec<AiProvider>,
     /// Legacy global Cursor CLI path (fallback when a provider has empty `cli_bin`).
@@ -183,17 +183,69 @@ fn default_active_provider() -> String {
 
 impl Default for CommitAiPrefs {
     fn default() -> Self {
-        Self {
+        let mut prefs = Self {
             style: CommitAiStyle::Conventional,
             active_provider_id: default_active_provider(),
             providers: Vec::new(),
             cursor_bin: String::new(),
             codex_bin: String::new(),
-        }
+        };
+        prefs.ensure_builtin_cli_providers();
+        prefs
     }
 }
 
 impl CommitAiPrefs {
+    /// Ensure first-class Cursor / Codex CLI providers exist (stable ids).
+    pub fn ensure_builtin_cli_providers(&mut self) {
+        use super::ai_provider::{AiProvider, AiProviderKind, BUILTIN_CODEX_ID, BUILTIN_CURSOR_ID};
+
+        if !self.providers.iter().any(|p| p.id == BUILTIN_CURSOR_ID) {
+            // Prefer promoting an existing Cursor CLI entry rather than duplicating.
+            if let Some(existing) = self
+                .providers
+                .iter_mut()
+                .find(|p| p.kind == AiProviderKind::CursorCli && !p.is_builtin())
+            {
+                existing.id = BUILTIN_CURSOR_ID.into();
+                if existing.title.trim().is_empty() {
+                    existing.title = AiProvider::builtin_cursor().title;
+                }
+                if existing.api_key_env.trim().is_empty() {
+                    existing.api_key_env = "CURSOR_API_KEY".into();
+                }
+            } else {
+                self.providers.insert(0, AiProvider::builtin_cursor());
+            }
+        } else if let Some(cursor) = self.providers.iter_mut().find(|p| p.id == BUILTIN_CURSOR_ID)
+        {
+            if cursor.api_key_env.trim().is_empty() {
+                cursor.api_key_env = "CURSOR_API_KEY".into();
+            }
+        }
+        if !self.providers.iter().any(|p| p.id == BUILTIN_CODEX_ID) {
+            if let Some(existing) = self
+                .providers
+                .iter_mut()
+                .find(|p| p.kind == AiProviderKind::CodexCli && !p.is_builtin())
+            {
+                existing.id = BUILTIN_CODEX_ID.into();
+                if existing.title.trim().is_empty() {
+                    existing.title = AiProvider::builtin_codex().title;
+                }
+            } else {
+                let insert_at = self
+                    .providers
+                    .iter()
+                    .position(|p| p.id == BUILTIN_CURSOR_ID)
+                    .map(|i| i + 1)
+                    .unwrap_or(0);
+                self.providers
+                    .insert(insert_at, AiProvider::builtin_codex());
+            }
+        }
+    }
+
     pub fn is_auto(&self) -> bool {
         let id = self.active_provider_id.trim();
         id.is_empty() || id.eq_ignore_ascii_case(ACTIVE_AUTO)
@@ -208,7 +260,7 @@ impl CommitAiPrefs {
     }
 
     pub fn ensure_defaults(&mut self) {
-        // Keep an empty provider list — do not auto-seed presets.
+        self.ensure_builtin_cli_providers();
         if self.active_provider_id.trim().is_empty() {
             self.active_provider_id = ACTIVE_AUTO.into();
         }

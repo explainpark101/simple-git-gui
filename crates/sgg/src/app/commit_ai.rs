@@ -3,6 +3,7 @@
 //! Uses the multi-provider registry in Settings. Auto tries enabled providers
 //! in list order. Never commits — fills the commit textarea for review.
 
+use std::fs;
 use std::io::Write;
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -108,13 +109,13 @@ fn generate_with_provider(
             let bin = resolve_cursor_bin(provider, prefs).or_else(|_| {
                 super::cli_tools::ensure_cursor().context("install Cursor Agent CLI")
             })?;
-            generate_cursor_with_bin(repo, prompt, &bin)
+            generate_cursor_with_bin(repo, prompt, provider, &bin)
         }
         AiProviderKind::CodexCli => {
             let bin = resolve_codex_bin(provider, prefs).or_else(|_| {
                 super::cli_tools::ensure_codex().context("install Codex CLI")
             })?;
-            generate_codex_with_bin(prompt, &bin)
+            generate_codex_with_bin(repo, prompt, provider, &bin)
         }
     }
 }
@@ -122,26 +123,28 @@ fn generate_with_provider(
 fn build_prompt(ctx: &CommitMessageContext, style: CommitAiStyle) -> String {
     let style_rules = match style {
         CommitAiStyle::Conventional => {
-            "Use Conventional Commits: type(optional-scope): subject.\n\
+            "Use Conventional Commits for subject: type(optional-scope): subject.\n\
              Types: feat, fix, docs, style, refactor, test, chore.\n\
              Subject: imperative mood, ~50 chars, no trailing period."
         }
         CommitAiStyle::Free => {
-            "Write a clear imperative subject (~50–72 chars). Optional short body."
+            "Subject: clear imperative mood, ~50–72 chars, no trailing period."
         }
     };
 
     let mut out = String::new();
+    // Match T3 commit prompt shape: structured JSON {subject,body}.
     out.push_str(
-        "You write git commit messages. Output ONLY the commit message text \
-         (subject, then optional blank line + body). No markdown fences, no commentary.\n",
+        "You write concise git commit messages.\n\
+         Return a JSON object with keys: subject, body.\n\
+         Rules:\n\
+         - subject must be imperative, <= 72 chars, and no trailing period\n\
+         - body can be empty string or short bullet points\n\
+         - capture the primary user-visible or developer-visible change\n\
+         - do not invent files not in the diff; never paste secrets\n",
     );
     out.push_str(style_rules);
-    out.push('\n');
-    out.push_str(
-        "Do not run git commands. Do not invent files not in the diff. \
-         Avoid secrets; never paste API keys or passwords into the message.\n\n",
-    );
+    out.push_str("\n\n");
     if let Some(branch) = ctx.branch.as_deref() {
         out.push_str(&format!("Branch: {branch}\n"));
     }
@@ -169,8 +172,42 @@ fn build_prompt(ctx: &CommitMessageContext, style: CommitAiStyle) -> String {
     out
 }
 
+#[derive(Deserialize)]
+struct CommitJson {
+    #[serde(default)]
+    subject: String,
+    #[serde(default)]
+    body: String,
+}
+
 fn parse_message(raw: &str) -> GeneratedCommitMessage {
     let text = strip_fences(raw).trim().to_string();
+    if let Ok(parsed) = serde_json::from_str::<CommitJson>(&text) {
+        let subject = parsed.subject.trim().trim_matches('"').to_string();
+        if !subject.is_empty() {
+            return GeneratedCommitMessage {
+                subject,
+                body: parsed.body.trim().to_string(),
+            };
+        }
+    }
+    // Tolerate models that wrap JSON in prose.
+    if let Some(start) = text.find('{') {
+        if let Some(end) = text.rfind('}') {
+            if end > start {
+                let slice = &text[start..=end];
+                if let Ok(parsed) = serde_json::from_str::<CommitJson>(slice) {
+                    let subject = parsed.subject.trim().trim_matches('"').to_string();
+                    if !subject.is_empty() {
+                        return GeneratedCommitMessage {
+                            subject,
+                            body: parsed.body.trim().to_string(),
+                        };
+                    }
+                }
+            }
+        }
+    }
     let mut lines = text.lines();
     let subject = lines
         .next()
@@ -324,45 +361,143 @@ struct ChatMessageOut {
     content: String,
 }
 
-// --- Cursor / Codex CLI -------------------------------------------------------
+// --- Cursor / Codex (T3-aligned commit text generation) -----------------------
+
+const COMMIT_OUTPUT_SCHEMA: &str = r#"{
+  "type": "object",
+  "properties": {
+    "subject": { "type": "string" },
+    "body": { "type": "string" }
+  },
+  "required": ["subject", "body"],
+  "additionalProperties": false
+}"#;
 
 fn generate_cursor_with_bin(
     repo: &Path,
     prompt: &str,
+    provider: &AiProvider,
     bin: &str,
 ) -> Result<GeneratedCommitMessage> {
+    // T3 V2 uses @cursor/sdk in-process; Rust can't load that. Auth matches T3
+    // (CURSOR_API_KEY / provider key). Invocation uses Cursor's documented
+    // headless CLI: `agent -p` with the key in the environment.
+    let workspace = repo.to_string_lossy();
+    let mut args = vec![
+        "-p".to_string(),
+        "--mode".into(),
+        "ask".into(),
+        "--trust".into(),
+        "--workspace".into(),
+        workspace.as_ref().to_string(),
+        "--output-format".into(),
+        "text".into(),
+    ];
+    if !provider.model.trim().is_empty() {
+        args.push("--model".into());
+        args.push(provider.model.trim().to_string());
+    }
+    args.push(prompt.to_string());
+    let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+
+    let mut env: Vec<(String, String)> = Vec::new();
+    if let Some(key) = provider.resolve_api_key() {
+        env.push(("CURSOR_API_KEY".into(), key));
+    }
+    let env_refs: Vec<(&str, &str)> = env.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+
     let output = run_command_capture(
         bin,
-        &["-p", prompt, "--output-format", "text"],
+        &arg_refs,
         Some(repo),
         None,
+        &env_refs,
         CLI_TIMEOUT_SECS,
     )?;
     if output.trim().is_empty() {
-        bail!("cursor agent returned empty output");
+        bail!("cursor agent returned empty output (sign in or set CURSOR_API_KEY)");
     }
     Ok(parse_message(&output))
 }
 
-fn generate_codex_with_bin(prompt: &str, bin: &str) -> Result<GeneratedCommitMessage> {
-    let output = run_command_capture(
-        bin,
-        &[
-            "exec",
-            "--ephemeral",
-            "--skip-git-repo-check",
-            "-s",
-            "read-only",
-            "-",
-        ],
-        None,
-        Some(prompt),
-        CLI_TIMEOUT_SECS,
-    )?;
-    if output.trim().is_empty() {
-        bail!("codex returned empty output");
+fn generate_codex_with_bin(
+    repo: &Path,
+    prompt: &str,
+    provider: &AiProvider,
+    bin: &str,
+) -> Result<GeneratedCommitMessage> {
+    // Same one-shot path as T3 CodexTextGeneration: exec + schema + last-message file.
+    let tmp = std::env::temp_dir().join(format!(
+        "sgg-codex-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis())
+            .unwrap_or(0)
+    ));
+    fs::create_dir_all(&tmp).with_context(|| format!("create {}", tmp.display()))?;
+    let schema_path = tmp.join("schema.json");
+    let output_path = tmp.join("out.json");
+    fs::write(&schema_path, COMMIT_OUTPUT_SCHEMA)
+        .with_context(|| format!("write {}", schema_path.display()))?;
+    fs::write(&output_path, "").with_context(|| format!("write {}", output_path.display()))?;
+
+    let schema_s = schema_path.to_string_lossy().into_owned();
+    let output_s = output_path.to_string_lossy().into_owned();
+    let mut args = vec![
+        "exec".to_string(),
+        "--config".into(),
+        "features.plugins=false".into(),
+        "--config".into(),
+        "features.apps=false".into(),
+        "--ephemeral".into(),
+        "--skip-git-repo-check".into(),
+        "-s".into(),
+        "read-only".into(),
+        "--config".into(),
+        "features.codex_hooks=false".into(),
+        "--config".into(),
+        "features.hooks=false".into(),
+        "--output-schema".into(),
+        schema_s,
+        "--output-last-message".into(),
+        output_s,
+    ];
+    if !provider.model.trim().is_empty() {
+        args.push("--model".into());
+        args.push(provider.model.trim().to_string());
+        args.push("--config".into());
+        args.push("model_reasoning_effort=\"medium\"".into());
     }
-    Ok(parse_message(&output))
+    args.push("-".into());
+    let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+
+    let result = run_command_capture(
+        bin,
+        &arg_refs,
+        Some(repo),
+        Some(prompt),
+        &[],
+        CLI_TIMEOUT_SECS,
+    );
+    let file_raw = fs::read_to_string(&output_path).unwrap_or_default();
+    let _ = fs::remove_dir_all(&tmp);
+
+    match result {
+        Ok(_) => {
+            if file_raw.trim().is_empty() {
+                bail!("codex returned empty --output-last-message");
+            }
+            Ok(parse_message(&file_raw))
+        }
+        Err(err) => {
+            if !file_raw.trim().is_empty() {
+                Ok(parse_message(&file_raw))
+            } else {
+                Err(err).context("codex exec")
+            }
+        }
+    }
 }
 
 pub fn resolve_cursor_bin(provider: &AiProvider, prefs: &CommitAiPrefs) -> Result<String> {
@@ -386,16 +521,24 @@ pub fn resolve_codex_bin(provider: &AiProvider, prefs: &CommitAiPrefs) -> Result
 }
 
 pub fn detect_cursor_bin() -> Option<String> {
-    super::cli_tools::detect_cursor()
+    super::cli_tools::detect_cursor_bin()
 }
 
 pub fn detect_codex_bin() -> Option<String> {
-    super::cli_tools::detect_codex()
+    super::cli_tools::detect_codex_bin()
 }
 
 /// Install Cursor Agent or Codex when missing; returns the resolved binary path.
 pub fn install_cli_bin(kind: super::cli_tools::CliToolKind) -> Result<String> {
     super::cli_tools::ensure_cli(kind)
+}
+
+/// Like [`install_cli_bin`], with 0.0..=1.0 progress callbacks for UI.
+pub fn install_cli_bin_with_progress(
+    kind: super::cli_tools::CliToolKind,
+    progress: super::cli_tools::InstallProgressFn,
+) -> Result<String> {
+    super::cli_tools::ensure_cli_with_progress(kind, Some(progress))
 }
 
 /// GET `{base}/models` (OpenAI-compatible) and return model ids.
@@ -484,6 +627,7 @@ fn run_command_capture(
     args: &[&str],
     cwd: Option<&Path>,
     stdin_text: Option<&str>,
+    env: &[(&str, &str)],
     _timeout_secs: u64,
 ) -> Result<String> {
     let mut cmd = Command::new(program);
@@ -492,6 +636,9 @@ fn run_command_capture(
         .stderr(Stdio::piped());
     if let Some(dir) = cwd {
         cmd.current_dir(dir);
+    }
+    for (k, v) in env {
+        cmd.env(k, v);
     }
     if stdin_text.is_some() {
         cmd.stdin(Stdio::piped());

@@ -22,7 +22,7 @@ use super::page::AppPage;
 use super::terminal::{TERMINAL_MAX_HEIGHT, TERMINAL_MIN_HEIGHT};
 use super::view::AppView;
 use crate::app::busy::BusyKind;
-use crate::app::widgets::{action_btn, list_row_btn, with_busy};
+use crate::app::widgets::{action_btn, icon_btn, list_row_btn, with_busy};
 use crate::app::{
     ClosePreview, HistoryBack, HistoryForward, NewTerminalTab, SavePreview, ToggleTerminal,
 };
@@ -92,9 +92,26 @@ impl Render for AppView {
                         .py_2()
                         .bg(cx.theme().danger)
                         .text_color(cx.theme().background)
-                        .text_sm()
-                        .text_left()
-                        .child(err),
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .min_w_0()
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .text_sm()
+                                .text_left()
+                                .line_height(relative(1.35))
+                                .child(err),
+                        )
+                        .child(
+                            icon_btn("dismiss-error", AssetIcon::Close)
+                                .tooltip(self.t().tip_dismiss_error)
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.clear_error(cx);
+                                })),
+                        ),
                 )
             })
             .child({

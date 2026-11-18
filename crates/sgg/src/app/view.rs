@@ -1,5 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 use gpui_kit::component::color_picker::{ColorPickerEvent, ColorPickerState};
@@ -273,6 +275,8 @@ pub struct AppView {
     pub(super) commit_ai_models_error: Option<String>,
     pub(super) commit_ai_models_task: Option<Task<()>>,
     commit_ai_install_cli_task: Option<Task<()>>,
+    /// 0.0..=1.0 while [`BusyKind::InstallCli`] runs (bottom-border progress).
+    pub(super) cli_install_progress: Option<f32>,
     generate_commit_task: Option<Task<()>>,
     /// Latest release from `latest.json` when newer than this build.
     pub(super) update_available: Option<super::update::LatestInfo>,
@@ -568,6 +572,7 @@ impl AppView {
             commit_ai_models_error: None,
             commit_ai_models_task: None,
             commit_ai_install_cli_task: None,
+            cli_install_progress: None,
             generate_commit_task: None,
             update_available: None,
             update_task: None,
@@ -2642,48 +2647,16 @@ impl AppView {
             return;
         };
 
-        self.busy = Some(BusyKind::InstallCli);
-        self.begin_progress(BusyKind::InstallCli);
-        cx.notify();
-        self.commit_ai_install_cli_task = Some(cx.spawn_in(window, async move |this, cx| {
-            let result =
-                cx.background_spawn(async move { super::commit_ai::install_cli_bin(kind) })
-                    .await;
-            let _ = cx.update(|window, cx| {
-                this.update(cx, |this, cx| {
-                    this.commit_ai_install_cli_task = None;
-                    this.busy = None;
-                    match result {
-                        Ok(path) => {
-                            this.commit_ai_cli_bin_input.update(cx, |input, cx| {
-                                input.set_value(&path, window, cx);
-                            });
-                            let msg = this
-                                .t()
-                                .commit_ai_install_cli_done
-                                .replace("{path}", &path);
-                            this.set_ok_status(msg);
-                        }
-                        Err(err) => {
-                            let msg = this
-                                .t()
-                                .commit_ai_install_cli_failed
-                                .replace("{error}", &format!("{err:#}"));
-                            this.set_error(msg.into(), cx);
-                        }
-                    }
-                    if this
-                        .progress_log
-                        .last()
-                        .is_some_and(|e| e.state == super::progress::ProgressState::Running)
-                    {
-                        let done = this.status_line.clone();
-                        this.finish_progress(this.error.is_none(), done);
-                    }
-                    cx.notify();
-                })
-            });
-        }));
+        self.start_cli_install(
+            kind,
+            window,
+            cx,
+            |this, path, window, cx| {
+                this.commit_ai_cli_bin_input.update(cx, |input, cx| {
+                    input.set_value(&path, window, cx);
+                });
+            },
+        );
     }
 
     pub(super) fn browse_commit_ai_cli_bin(
@@ -2768,6 +2741,15 @@ impl AppView {
         cx: &mut Context<Self>,
     ) {
         let id = id.as_ref();
+        if super::ai_provider::is_builtin_cli_id(id) {
+            // Built-ins stay registered; disable instead of remove.
+            if let Some(p) = self.commit_ai.provider_by_id_mut(id) {
+                p.enabled = false;
+            }
+            self.persist_prefs(cx);
+            cx.notify();
+            return;
+        }
         self.commit_ai.providers.retain(|p| p.id != id);
         if self.commit_ai.active_provider_id == id {
             self.commit_ai.active_provider_id = super::ai_provider::ACTIVE_AUTO.into();
@@ -2777,6 +2759,152 @@ impl AppView {
         }
         self.persist_prefs(cx);
         cx.notify();
+    }
+
+    pub(super) fn login_commit_ai_cli(
+        &mut self,
+        kind: super::cli_tools::CliToolKind,
+        cx: &mut Context<Self>,
+    ) {
+        match super::cli_tools::open_login(kind) {
+            Ok(()) => {
+                let msg = self
+                    .t()
+                    .commit_ai_cli_login_started
+                    .replace("{name}", kind.label());
+                self.set_ok_status(msg);
+            }
+            Err(err) => {
+                let msg = self
+                    .t()
+                    .commit_ai_cli_login_failed
+                    .replace("{error}", &format!("{err:#}"));
+                self.set_error(msg.into(), cx);
+            }
+        }
+        cx.notify();
+    }
+
+    pub(super) fn install_builtin_cli(
+        &mut self,
+        kind: super::cli_tools::CliToolKind,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.commit_ai_install_cli_task.is_some()
+            || self.busy == Some(BusyKind::InstallCli)
+        {
+            return;
+        }
+        self.start_cli_install(
+            kind,
+            window,
+            cx,
+            move |this, path, _window, cx| {
+                let id = match kind {
+                    super::cli_tools::CliToolKind::Cursor => {
+                        super::ai_provider::BUILTIN_CURSOR_ID
+                    }
+                    super::cli_tools::CliToolKind::Codex => super::ai_provider::BUILTIN_CODEX_ID,
+                };
+                this.commit_ai.ensure_builtin_cli_providers();
+                if let Some(p) = this.commit_ai.provider_by_id_mut(id) {
+                    p.cli_bin = path.clone();
+                    p.enabled = true;
+                }
+                this.persist_prefs(cx);
+            },
+        );
+    }
+
+    fn start_cli_install(
+        &mut self,
+        kind: super::cli_tools::CliToolKind,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        on_ok: impl FnOnce(&mut Self, String, &mut Window, &mut Context<Self>) + 'static,
+    ) {
+        self.busy = Some(BusyKind::InstallCli);
+        self.cli_install_progress = Some(0.0);
+        self.begin_progress(BusyKind::InstallCli);
+        cx.notify();
+
+        let millipct = Arc::new(AtomicU32::new(0));
+        let millipct_bg = millipct.clone();
+        let progress_cb: super::cli_tools::InstallProgressFn = Arc::new(move |frac| {
+            let v = (frac.clamp(0.0, 1.0) * 1000.0).round() as u32;
+            millipct_bg.store(v, Ordering::Relaxed);
+        });
+
+        self.commit_ai_install_cli_task = Some(cx.spawn_in(window, async move |this, cx| {
+            // Poll install progress into UI ~10×/s while the download runs.
+            let millipct_poll = millipct.clone();
+            let this_poll = this.clone();
+            let poll = cx.spawn(async move |cx| {
+                loop {
+                    cx.background_executor()
+                        .timer(Duration::from_millis(100))
+                        .await;
+                    let v = millipct_poll.load(Ordering::Relaxed) as f32 / 1000.0;
+                    let cont = this_poll
+                        .update(cx, |this, cx| {
+                            if this.busy == Some(BusyKind::InstallCli) {
+                                this.cli_install_progress = Some(v);
+                                cx.notify();
+                                true
+                            } else {
+                                false
+                            }
+                        })
+                        .unwrap_or(false);
+                    if !cont {
+                        break;
+                    }
+                }
+            });
+
+            let result = cx
+                .background_spawn(async move {
+                    super::commit_ai::install_cli_bin_with_progress(kind, progress_cb)
+                })
+                .await;
+            // Dropping the poll task cancels the UI heartbeat loop.
+            drop(poll);
+
+            let _ = cx.update(|window, cx| {
+                this.update(cx, |this, cx| {
+                    this.commit_ai_install_cli_task = None;
+                    this.busy = None;
+                    this.cli_install_progress = None;
+                    match result {
+                        Ok(path) => {
+                            on_ok(this, path.clone(), window, cx);
+                            let msg = this
+                                .t()
+                                .commit_ai_install_cli_done
+                                .replace("{path}", &path);
+                            this.set_ok_status(msg);
+                        }
+                        Err(err) => {
+                            let msg = this
+                                .t()
+                                .commit_ai_install_cli_failed
+                                .replace("{error}", &format!("{err:#}"));
+                            this.set_error(msg.into(), cx);
+                        }
+                    }
+                    if this
+                        .progress_log
+                        .last()
+                        .is_some_and(|e| e.state == super::progress::ProgressState::Running)
+                    {
+                        let done = this.status_line.clone();
+                        this.finish_progress(this.error.is_none(), done);
+                    }
+                    cx.notify();
+                })
+            });
+        }));
     }
 
     pub(super) fn move_commit_ai_provider(
@@ -3078,6 +3206,12 @@ impl AppView {
         self.error = Some(err.clone());
         self.finish_progress(false, err);
         cx.notify();
+    }
+
+    pub(super) fn clear_error(&mut self, cx: &mut Context<Self>) {
+        if self.error.take().is_some() {
+            cx.notify();
+        }
     }
 
     pub(super) fn toggle_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
