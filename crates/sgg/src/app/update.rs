@@ -294,7 +294,28 @@ pub fn download_dir() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("."))
 }
 
-pub fn open_downloaded(path: &Path) -> Result<()> {
+/// Result of launching a downloaded update package.
+#[derive(Debug, Clone)]
+pub struct UpdateLaunch {
+    pub path: PathBuf,
+    /// Caller should quit so the installer can overwrite / relaunch cleanly.
+    pub should_quit: bool,
+}
+
+fn is_windows_nsis_setup(path: &Path) -> bool {
+    let name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    name.ends_with("-setup.exe") || name.ends_with("_setup.exe")
+}
+
+/// Open / run the downloaded package.
+///
+/// On Windows NSIS setups, launches passive in-place install (`/P`) and requests
+/// relaunch (`/R`) so the user is not prompted to uninstall first.
+pub fn open_downloaded(path: &Path) -> Result<UpdateLaunch> {
     #[cfg(target_os = "macos")]
     {
         let _ = Command::new("xattr")
@@ -305,19 +326,40 @@ pub fn open_downloaded(path: &Path) -> Result<()> {
             .arg(path)
             .spawn()
             .with_context(|| format!("open {}", path.display()))?;
-        return Ok(());
+        return Ok(UpdateLaunch {
+            path: path.to_path_buf(),
+            should_quit: false,
+        });
     }
     #[cfg(target_os = "windows")]
     {
         use std::os::windows::process::CommandExt;
-        // CREATE_NO_WINDOW — avoid a brief console flash when launching the installer.
+        // CREATE_NEW_PROCESS_GROUP — installer keeps running after we quit.
+        const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+        if is_windows_nsis_setup(path) {
+            // /P = passive (skip wizard pages, including uninstall-before-install)
+            // /R = relaunch app after install (.onInstSuccess)
+            Command::new(path)
+                .args(["/P", "/R"])
+                .creation_flags(CREATE_NEW_PROCESS_GROUP)
+                .spawn()
+                .with_context(|| format!("spawn installer {}", path.display()))?;
+            return Ok(UpdateLaunch {
+                path: path.to_path_buf(),
+                should_quit: true,
+            });
+        }
+        // Portable / other: open normally without forcing quit.
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
         Command::new("cmd")
             .args(["/C", "start", "", &path.to_string_lossy()])
-            .creation_flags(CREATE_NO_WINDOW)
+            .creation_flags(CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP)
             .spawn()
             .with_context(|| format!("start {}", path.display()))?;
-        return Ok(());
+        return Ok(UpdateLaunch {
+            path: path.to_path_buf(),
+            should_quit: false,
+        });
     }
     #[cfg(target_os = "linux")]
     {
@@ -334,7 +376,10 @@ pub fn open_downloaded(path: &Path) -> Result<()> {
             .arg(path)
             .spawn()
             .with_context(|| format!("xdg-open {}", path.display()))?;
-        return Ok(());
+        return Ok(UpdateLaunch {
+            path: path.to_path_buf(),
+            should_quit: false,
+        });
     }
     #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
     {
@@ -342,8 +387,8 @@ pub fn open_downloaded(path: &Path) -> Result<()> {
     }
 }
 
-/// Fetch latest.json, download the platform installer, open it.
-pub fn download_and_open_latest(info: &LatestInfo) -> Result<PathBuf> {
+/// Fetch latest.json, download the platform installer, open/apply it.
+pub fn download_and_open_latest(info: &LatestInfo) -> Result<UpdateLaunch> {
     let asset = info
         .asset_for_this_platform()
         .ok_or_else(|| {
@@ -354,8 +399,7 @@ pub fn download_and_open_latest(info: &LatestInfo) -> Result<PathBuf> {
         })?;
     let dest = download_dir().join(&asset.name);
     download_file(&asset.url, &dest)?;
-    open_downloaded(&dest)?;
-    Ok(dest)
+    open_downloaded(&dest)
 }
 
 #[cfg(test)]

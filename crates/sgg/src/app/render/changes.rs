@@ -466,7 +466,7 @@ fn render_flat_range(
 }
 
 fn stage_filter_row(
-    _view: &AppView,
+    view: &AppView,
     sort: ChangeSort,
     group_by_status: bool,
     t: UiText,
@@ -483,6 +483,32 @@ fn stage_filter_row(
         .px_3()
         .py_2()
         .min_w_0()
+        .child(
+            with_busy(
+                raised_action_btn("filter-stage-all", AssetIcon::ListPlus, cx)
+                    .small()
+                    .label(t.stage_all)
+                    .tooltip(t.tip_stage_all)
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.stage_all(window, cx);
+                    })),
+                view.busy,
+                BusyKind::StageAll,
+            ),
+        )
+        .child(
+            with_busy(
+                raised_action_btn("filter-unstage-all", AssetIcon::ListMinus, cx)
+                    .small()
+                    .label(t.unstage_all)
+                    .tooltip(t.tip_unstage_all)
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.unstage_all(window, cx);
+                    })),
+                view.busy,
+                BusyKind::UnstageAll,
+            ),
+        )
         .child(
             Switch::new("group-by-status")
                 .small()
@@ -628,68 +654,42 @@ fn section_header(
                         .text_color(cx.theme().foreground)
                         .child(format!("{label} ({count})")),
                 )
-                .when(title == "Unstaged" || title == "All", |this| {
-                    this.child(
-                        with_busy(
+                .when(
+                    title == "Unstaged"
+                        || title == "Untracked"
+                        || title == "Staged"
+                        || title == "All"
+                        || title == "Conflicted",
+                    |this| {
+                        let all_selected = view.section_all_selected(title);
+                        let title_sel = title.to_string();
+                        let (label, tip) = if all_selected {
+                            (t.deselect_all_section, t.tip_deselect_all_section)
+                        } else {
+                            (t.select_all_section, t.tip_select_all_section)
+                        };
+                        this.child(
                             section_action_label(
-                                raised_action_btn("section-stage-all", AssetIcon::ListPlus, cx)
-                                    .small(),
-                                t.stage_all,
-                                t.tip_stage_all,
+                                display_btn(SharedString::from(format!(
+                                    "section-select-all:{title}"
+                                )))
+                                .outline()
+                                .small()
+                                .icon(if all_selected {
+                                    AssetIcon::ListMinus
+                                } else {
+                                    AssetIcon::ListPlus
+                                }),
+                                label,
+                                tip,
                                 hide_labels,
                             )
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.stage_all(window, cx)
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.toggle_select_section(title_sel.clone(), cx);
                             })),
-                            view.busy,
-                            BusyKind::StageAll,
-                        ),
-                    )
-                })
-                .when(title == "Untracked", |this| {
-                    this.child(
-                        with_busy(
-                            section_action_label(
-                                raised_action_btn(
-                                    "section-stage-all-untracked",
-                                    AssetIcon::ListPlus,
-                                    cx,
-                                )
-                                .small(),
-                                t.stage_all_untracked,
-                                t.tip_stage_all_untracked,
-                                hide_labels,
-                            )
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.stage_all_untracked(window, cx)
-                            })),
-                            view.busy,
-                            BusyKind::StageAll,
-                        ),
-                    )
-                })
-                .when(title == "Staged" || title == "All", |this| {
-                    this.child(
-                        with_busy(
-                            section_action_label(
-                                raised_action_btn(
-                                    "section-unstage-all",
-                                    AssetIcon::ListMinus,
-                                    cx,
-                                )
-                                .small(),
-                                t.unstage_all,
-                                t.tip_unstage_all,
-                                hide_labels,
-                            )
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.unstage_all(window, cx)
-                            })),
-                            view.busy,
-                            BusyKind::UnstageAll,
-                        ),
-                    )
-                })
+                        )
+                    },
+                )
                 .when(title == "Untracked", |this| {
                     this.child({
                         use crate::app::widgets::action_btn;

@@ -13,7 +13,9 @@ use gpui_kit::*;
 use crate::app::busy::BusyKind;
 use crate::app::editor::{EditorPreset, ZED_DOWNLOAD_URL};
 use crate::app::i18n::{Locale, UiText};
-use crate::app::ai_provider::{AiAuthKind, AiProviderKind, AiProviderPreset, ACTIVE_AUTO};
+use crate::app::ai_provider::{
+    AiAuthKind, AiProviderKind, AiProviderPreset, CommitAiFormMode, LocalLlmPreset, ACTIVE_AUTO,
+};
 use crate::app::prefs::{
     settings_path, CommitAiStyle, StatusColors, TerminalShellKind, ThemePreference,
     COMFORTABLE_TERMINAL_LINE_HEIGHT, DEFAULT_TERMINAL_LINE_HEIGHT,
@@ -857,17 +859,27 @@ fn commit_ai_section(
 ) -> impl IntoElement {
     let style = view.commit_ai.style;
     let active = view.commit_ai.active_provider_id.clone();
-    let edit_id = view.commit_ai_edit_id.clone();
     let providers = view.commit_ai.providers.clone();
-    let editing = providers.iter().find(|p| p.id == edit_id).cloned();
-    let is_http = editing
-        .as_ref()
-        .is_some_and(|p| p.kind == AiProviderKind::OpenAiCompatible);
-    let auth = editing.as_ref().map(|p| p.auth).unwrap_or(AiAuthKind::Bearer);
-    let docs_url = editing
-        .as_ref()
-        .map(|p| p.docs_url.clone())
-        .unwrap_or_default();
+    let form = view.commit_ai_form.clone();
+    let form_open = form.is_open();
+    let editing_kind = match &form {
+        CommitAiFormMode::AddHttp => Some(AiProviderKind::OpenAiCompatible),
+        CommitAiFormMode::AddCursor => Some(AiProviderKind::CursorCli),
+        CommitAiFormMode::AddCodex => Some(AiProviderKind::CodexCli),
+        CommitAiFormMode::Edit(id) => providers.iter().find(|p| &p.id == id).map(|p| p.kind),
+        CommitAiFormMode::Closed => None,
+    };
+    let show_http = matches!(editing_kind, Some(AiProviderKind::OpenAiCompatible));
+    let show_cli = matches!(
+        editing_kind,
+        Some(AiProviderKind::CursorCli | AiProviderKind::CodexCli)
+    );
+    let auth = view.commit_ai_form_auth;
+    let docs_url = view.commit_ai_docs_input.read(cx).value().to_string();
+    let models = view.commit_ai_models.clone();
+    let models_error = view.commit_ai_models_error.clone();
+    let models_loading = view.commit_ai_models_task.is_some();
+    let current_model = view.commit_ai_model_input.read(cx).value().to_string();
     let style_tips = [
         (CommitAiStyle::Conventional, t.tip_commit_ai_style_conventional),
         (CommitAiStyle::Free, t.tip_commit_ai_style_free),
@@ -943,6 +955,15 @@ fn commit_ai_section(
                 })),
         )
         .child(div().text_sm().text_left().child(t.commit_ai_providers))
+        .when(providers.is_empty(), |this| {
+            this.child(
+                div()
+                    .text_xs()
+                    .line_height(relative(1.35))
+                    .text_color(cx.theme().muted_foreground)
+                    .child(t.commit_ai_no_providers),
+            )
+        })
         .child(
             div()
                 .flex()
@@ -950,13 +971,13 @@ fn commit_ai_section(
                 .gap_2()
                 .children(providers.iter().enumerate().map(|(idx, p)| {
                     let id = p.id.clone();
-                    let id_sel = id.clone();
+                    let id_edit = id.clone();
                     let id_up = id.clone();
                     let id_down = id.clone();
                     let id_rm = id.clone();
                     let id_en = id.clone();
                     let enabled = p.enabled;
-                    let selected = edit_id == id;
+                    let editing = form.edit_id() == Some(id.as_str());
                     let last = idx + 1 >= providers.len();
                     let kind_label = p.kind.label();
                     let title = p.title.clone();
@@ -975,24 +996,21 @@ fn commit_ai_section(
                             div()
                                 .flex_1()
                                 .min_w_0()
+                                .flex()
+                                .flex_col()
+                                .gap_2()
                                 .child(
-                                    list_row_btn(
-                                        SharedString::from(format!("commit-ai-row:{id}")),
-                                        title,
-                                    )
-                                    .w_full()
-                                    .selected(selected)
-                                    .on_click(cx.listener(move |this, _, window, cx| {
-                                        this.select_commit_ai_provider(
-                                            id_sel.clone(),
-                                            window,
-                                            cx,
-                                        );
-                                    })),
+                                    div()
+                                        .text_sm()
+                                        .line_height(relative(1.35))
+                                        .overflow_hidden()
+                                        .text_ellipsis()
+                                        .whitespace_nowrap()
+                                        .when(editing, |el| el.font_semibold())
+                                        .child(title),
                                 )
                                 .child(
                                     div()
-                                        .px_2()
                                         .text_xs()
                                         .line_height(relative(1.35))
                                         .text_color(cx.theme().muted_foreground)
@@ -1013,6 +1031,16 @@ fn commit_ai_section(
                                         cx,
                                     );
                                 })),
+                        )
+                        .child(
+                            icon_btn(
+                                SharedString::from(format!("commit-ai-edit:{id}")),
+                                AssetIcon::Pencil,
+                            )
+                            .tooltip(t.tip_edit_commit_ai_provider)
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.open_commit_ai_edit(id_edit.clone(), window, cx);
+                            })),
                         )
                         .child(
                             icon_btn(
@@ -1042,169 +1070,340 @@ fn commit_ai_section(
                                 AssetIcon::Trash,
                             )
                             .tooltip(t.tip_remove_commit_ai_provider)
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                this.remove_commit_ai_provider(id_rm.clone(), window, cx);
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.remove_commit_ai_provider(id_rm.clone(), cx);
                             })),
                         )
                         .into_any_element()
                 })),
         )
-        .child(
-            div()
-                .flex()
-                .flex_wrap()
-                .gap_2()
-                .child(
-                    div()
-                        .text_xs()
-                        .text_color(cx.theme().muted_foreground)
-                        .child(t.commit_ai_add_preset),
-                )
-                .children(AiProviderPreset::HTTP_PRESETS.into_iter().map(|preset| {
-                    display_btn(SharedString::from(format!("commit-ai-preset:{}", preset.slug())))
-                        .outline()
-                        .small()
-                        .label(preset.title().to_string())
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            this.add_commit_ai_preset(preset, window, cx);
-                        }))
-                        .into_any_element()
-                }))
-                .child(
-                    display_btn("commit-ai-preset:cursor_cli")
-                        .outline()
-                        .small()
-                        .label(AiProviderPreset::CursorCli.title().to_string())
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            this.add_commit_ai_preset(AiProviderPreset::CursorCli, window, cx);
-                        })),
-                )
-                .child(
-                    display_btn("commit-ai-preset:codex_cli")
-                        .outline()
-                        .small()
-                        .label(AiProviderPreset::CodexCli.title().to_string())
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            this.add_commit_ai_preset(AiProviderPreset::CodexCli, window, cx);
-                        })),
-                )
-                .child(
-                    action_btn("commit-ai-add-custom", AssetIcon::Plus)
-                        .outline()
-                        .small()
-                        .label(t.commit_ai_add_custom)
-                        .tooltip(t.tip_commit_ai_add_custom)
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            this.add_custom_commit_ai_provider(window, cx);
-                        })),
-                ),
-        )
-        .when(editing.is_some(), |this| {
-            this.child(div().text_sm().text_left().child(t.commit_ai_provider_title))
-                .child(Input::new(&view.commit_ai_title_input))
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap_2()
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .child(div().text_sm().text_left().child(t.commit_ai_provider_docs))
-                                .child(Input::new(&view.commit_ai_docs_input)),
-                        )
-                        .when(!docs_url.trim().is_empty(), |row| {
-                            let url = docs_url.clone();
-                            row.child(
-                                icon_btn("commit-ai-open-docs", AssetIcon::ExternalLink)
-                                    .tooltip(t.tip_commit_ai_open_docs)
-                                    .on_click(move |_, _, cx| {
-                                        cx.open_url(&url);
-                                    }),
-                            )
-                        }),
-                )
-                .when(is_http, |this| {
-                    this.child(div().text_sm().text_left().child(t.commit_ai_provider_base))
-                        .child(Input::new(&view.commit_ai_base_input))
-                        .child(div().text_sm().text_left().child(t.commit_ai_provider_path))
-                        .child(Input::new(&view.commit_ai_path_input))
-                        .child(div().text_sm().text_left().child(t.commit_ai_provider_model))
-                        .child(Input::new(&view.commit_ai_model_input))
-                        .child(div().text_sm().text_left().child(t.commit_ai_provider_auth))
-                        .child(
-                            div()
-                                .flex()
-                                .flex_wrap()
-                                .gap_2()
-                                .children(AiAuthKind::ALL.into_iter().map(|kind| {
-                                    display_btn(SharedString::from(format!(
-                                        "commit-ai-auth:{}",
-                                        kind.label()
-                                    )))
-                                    .outline()
-                                    .small()
-                                    .label(kind.label().to_string())
-                                    .selected(auth == kind)
-                                    .on_click(cx.listener(move |this, _, _, cx| {
-                                        this.set_commit_ai_auth(kind, cx);
-                                    }))
-                                    .into_any_element()
-                                })),
-                        )
-                        .when(auth == AiAuthKind::Header, |this| {
-                            this.child(
-                                div()
-                                    .text_sm()
-                                    .text_left()
-                                    .child(t.commit_ai_provider_auth_header),
-                            )
-                            .child(Input::new(&view.commit_ai_auth_header_input))
-                        })
-                        .when(auth == AiAuthKind::Query, |this| {
-                            this.child(
-                                div()
-                                    .text_sm()
-                                    .text_left()
-                                    .child(t.commit_ai_provider_auth_query),
-                            )
-                            .child(Input::new(&view.commit_ai_auth_query_input))
-                        })
-                        .when(auth != AiAuthKind::None, |this| {
-                            this.child(
-                                div().text_sm().text_left().child(t.commit_ai_provider_key),
-                            )
-                            .child(Input::new(&view.commit_ai_key_input))
+        .when(!form_open, |this| {
+            this.child(
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .gap_2()
+                    .child(
+                        action_btn("commit-ai-add-http", AssetIcon::Plus)
+                            .outline()
+                            .small()
+                            .label(t.commit_ai_add_http)
+                            .tooltip(t.tip_commit_ai_add_http)
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.open_commit_ai_add_http(window, cx);
+                            })),
+                    )
+                    .child(
+                        action_btn("commit-ai-add-cursor", AssetIcon::Plus)
+                            .outline()
+                            .small()
+                            .label(t.commit_ai_add_cursor)
+                            .tooltip(t.tip_commit_ai_add_cursor)
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.open_commit_ai_add_cursor(window, cx);
+                            })),
+                    )
+                    .child(
+                        action_btn("commit-ai-add-codex", AssetIcon::Plus)
+                            .outline()
+                            .small()
+                            .label(t.commit_ai_add_codex)
+                            .tooltip(t.tip_commit_ai_add_codex)
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.open_commit_ai_add_codex(window, cx);
+                            })),
+                    ),
+            )
+        })
+        .when(form_open, |this| {
+            this.child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_3()
+                    .p_3()
+                    .rounded_md()
+                    .border_1()
+                    .border_color(cx.theme().border)
+                    .child(
+                        div()
+                            .font_semibold()
+                            .text_sm()
+                            .text_left()
+                            .child(match &form {
+                                CommitAiFormMode::Edit(_) => t.commit_ai_form_edit,
+                                _ => t.commit_ai_form_add,
+                            }),
+                    )
+                    .when(show_http, |form_el| {
+                        form_el
                             .child(
                                 div()
-                                    .text_sm()
-                                    .text_left()
-                                    .child(t.commit_ai_provider_key_env),
+                                    .text_xs()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(t.commit_ai_fill_preset),
                             )
-                            .child(Input::new(&view.commit_ai_key_env_input))
-                        })
-                })
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_wrap()
+                                    .gap_2()
+                                    .children(AiProviderPreset::HTTP_PRESETS.into_iter().map(
+                                        |preset| {
+                                            display_btn(SharedString::from(format!(
+                                                "commit-ai-fill:{}",
+                                                preset.slug()
+                                            )))
+                                            .outline()
+                                            .small()
+                                            .label(preset.title().to_string())
+                                            .on_click(cx.listener(move |this, _, window, cx| {
+                                                this.apply_commit_ai_http_preset(
+                                                    preset, window, cx,
+                                                );
+                                            }))
+                                            .into_any_element()
+                                        },
+                                    )),
+                            )
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(t.commit_ai_local_llm),
+                            )
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_wrap()
+                                    .gap_2()
+                                    .children(LocalLlmPreset::ALL.into_iter().map(|preset| {
+                                        display_btn(SharedString::from(format!(
+                                            "commit-ai-local:{}",
+                                            preset.label()
+                                        )))
+                                        .outline()
+                                        .small()
+                                        .label(preset.label().to_string())
+                                        .on_click(cx.listener(move |this, _, window, cx| {
+                                            this.apply_commit_ai_local_preset(preset, window, cx);
+                                        }))
+                                        .into_any_element()
+                                    })),
+                            )
+                    })
+                    .child(div().text_sm().text_left().child(t.commit_ai_provider_title))
+                    .child(Input::new(&view.commit_ai_title_input))
+                    .when(show_http || show_cli, |form_el| {
+                        form_el.child(
+                            div()
+                                .flex()
+                                .items_end()
+                                .gap_2()
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .min_w_0()
+                                        .child(
+                                            div()
+                                                .text_sm()
+                                                .text_left()
+                                                .child(t.commit_ai_provider_docs),
+                                        )
+                                        .child(Input::new(&view.commit_ai_docs_input)),
+                                )
+                                .when(!docs_url.trim().is_empty(), |row| {
+                                    let url = docs_url.clone();
+                                    row.child(
+                                        icon_btn("commit-ai-open-docs", AssetIcon::ExternalLink)
+                                            .tooltip(t.tip_commit_ai_open_docs)
+                                            .on_click(move |_, _, cx| {
+                                                cx.open_url(&url);
+                                            }),
+                                    )
+                                }),
+                        )
+                    })
+                    .when(show_http, |form_el| {
+                        form_el
+                            .child(div().text_sm().text_left().child(t.commit_ai_provider_base))
+                            .child(Input::new(&view.commit_ai_base_input))
+                            .child(div().text_sm().text_left().child(t.commit_ai_provider_path))
+                            .child(Input::new(&view.commit_ai_path_input))
+                            .child(div().text_sm().text_left().child(t.commit_ai_provider_auth))
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_wrap()
+                                    .gap_2()
+                                    .children(AiAuthKind::ALL.into_iter().map(|kind| {
+                                        display_btn(SharedString::from(format!(
+                                            "commit-ai-auth:{}",
+                                            kind.label()
+                                        )))
+                                        .outline()
+                                        .small()
+                                        .label(kind.label().to_string())
+                                        .selected(auth == kind)
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            this.set_commit_ai_form_auth(kind, cx);
+                                        }))
+                                        .into_any_element()
+                                    })),
+                            )
+                            .when(auth == AiAuthKind::Header, |this| {
+                                this.child(
+                                    div()
+                                        .text_sm()
+                                        .text_left()
+                                        .child(t.commit_ai_provider_auth_header),
+                                )
+                                .child(Input::new(&view.commit_ai_auth_header_input))
+                            })
+                            .when(auth == AiAuthKind::Query, |this| {
+                                this.child(
+                                    div()
+                                        .text_sm()
+                                        .text_left()
+                                        .child(t.commit_ai_provider_auth_query),
+                                )
+                                .child(Input::new(&view.commit_ai_auth_query_input))
+                            })
+                            .when(auth != AiAuthKind::None, |this| {
+                                this.child(
+                                    div().text_sm().text_left().child(t.commit_ai_provider_key),
+                                )
+                                .child(Input::new(&view.commit_ai_key_input))
+                                .child(
+                                    div()
+                                        .text_sm()
+                                        .text_left()
+                                        .child(t.commit_ai_provider_key_env),
+                                )
+                                .child(Input::new(&view.commit_ai_key_env_input))
+                            })
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .justify_between()
+                                    .gap_2()
+                                    .child(
+                                        div().text_sm().text_left().child(t.commit_ai_provider_model),
+                                    )
+                                    .child(
+                                        action_btn("commit-ai-refresh-models", AssetIcon::RefreshCw)
+                                            .outline()
+                                            .small()
+                                            .label(t.commit_ai_fetch_models)
+                                            .tooltip(t.tip_commit_ai_fetch_models)
+                                            .loading(models_loading)
+                                            .on_click(cx.listener(|this, _, window, cx| {
+                                                this.refresh_commit_ai_models(window, cx);
+                                            })),
+                                    ),
+                            )
+                            .child(Input::new(&view.commit_ai_model_input))
+                            .when(!models.is_empty(), |this| {
+                                this.child(
+                                    div()
+                                        .flex()
+                                        .flex_wrap()
+                                        .gap_2()
+                                        .children(models.into_iter().map(|model| {
+                                            let selected = current_model == model;
+                                            let model_set = model.clone();
+                                            display_btn(SharedString::from(format!(
+                                                "commit-ai-model:{model}"
+                                            )))
+                                            .outline()
+                                            .small()
+                                            .label(model)
+                                            .selected(selected)
+                                            .on_click(cx.listener(move |this, _, window, cx| {
+                                                this.set_commit_ai_model(
+                                                    model_set.clone(),
+                                                    window,
+                                                    cx,
+                                                );
+                                            }))
+                                            .into_any_element()
+                                        })),
+                                )
+                            })
+                            .when_some(models_error, |this, err| {
+                                this.child(
+                                    div()
+                                        .text_xs()
+                                        .line_height(relative(1.35))
+                                        .text_color(cx.theme().danger)
+                                        .child(err),
+                                )
+                            })
+                    })
+                    .when(show_cli, |form_el| {
+                        form_el
+                            .child(div().text_sm().text_left().child(t.commit_ai_cli_bin))
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap_2()
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .min_w_0()
+                                            .child(Input::new(&view.commit_ai_cli_bin_input)),
+                                    )
+                                    .child(
+                                        action_btn("commit-ai-detect-cli", AssetIcon::Search)
+                                            .outline()
+                                            .small()
+                                            .label(t.commit_ai_detect_cli)
+                                            .tooltip(t.tip_commit_ai_detect_cli)
+                                            .on_click(cx.listener(|this, _, window, cx| {
+                                                this.detect_commit_ai_cli_bin(window, cx);
+                                            })),
+                                    )
+                                    .child(
+                                        action_btn("commit-ai-browse-cli", AssetIcon::FolderOpen)
+                                            .outline()
+                                            .small()
+                                            .label(t.commit_ai_browse_cli)
+                                            .tooltip(t.tip_commit_ai_browse_cli)
+                                            .on_click(cx.listener(|this, _, window, cx| {
+                                                this.browse_commit_ai_cli_bin(window, cx);
+                                            })),
+                                    ),
+                            )
+                    })
+                    .child(
+                        div()
+                            .flex()
+                            .justify_end()
+                            .gap_2()
+                            .child(
+                                display_btn("commit-ai-form-cancel")
+                                    .outline()
+                                    .small()
+                                    .label(t.cancel)
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.cancel_commit_ai_form(cx);
+                                    })),
+                            )
+                            .child(
+                                action_btn("commit-ai-form-save", AssetIcon::Save)
+                                    .outline()
+                                    .small()
+                                    .label(t.save)
+                                    .tooltip(t.tip_apply_commit_ai_provider)
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.save_commit_ai_form(window, cx);
+                                    })),
+                            ),
+                    ),
+            )
         })
-        .child(div().text_sm().text_left().child(t.commit_ai_cursor_bin))
-        .child(Input::new(&view.commit_ai_cursor_bin_input))
-        .child(div().text_sm().text_left().child(t.commit_ai_codex_bin))
-        .child(Input::new(&view.commit_ai_codex_bin_input))
-        .child(
-            div()
-                .flex()
-                .justify_end()
-                .child(
-                    action_btn("apply-commit-ai-provider", AssetIcon::Save)
-                        .outline()
-                        .small()
-                        .label(t.save)
-                        .tooltip(t.tip_apply_commit_ai_provider)
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            this.apply_commit_ai_provider(window, cx);
-                        })),
-                ),
-        )
 }
 
 fn terminal_shell_tip(kind: TerminalShellKind, t: UiText) -> &'static str {

@@ -72,9 +72,13 @@ fn main() {
                     }
                     println!("Updating {current} → {} …", info.version);
                     match app::update::download_and_open_latest(&info) {
-                        Ok(path) => {
-                            println!("Downloaded and opened: {}", path.display());
-                            println!("Finish installing, then restart sgg.");
+                        Ok(launch) => {
+                            println!("Downloaded: {}", launch.path.display());
+                            if launch.should_quit {
+                                println!("Installer running — sgg will relaunch when done.");
+                            } else {
+                                println!("Finish installing, then restart sgg.");
+                            }
                         }
                         Err(err) => {
                             eprintln!("update failed: {err:#}");

@@ -91,8 +91,8 @@ fn generate_from_context(
 fn provider_usable(provider: &AiProvider, prefs: &CommitAiPrefs) -> bool {
     match provider.kind {
         AiProviderKind::OpenAiCompatible => provider.openai_ready(),
-        AiProviderKind::CursorCli => resolve_cursor_bin(prefs).is_ok(),
-        AiProviderKind::CodexCli => resolve_codex_bin(prefs).is_ok(),
+        AiProviderKind::CursorCli => resolve_cursor_bin(provider, prefs).is_ok(),
+        AiProviderKind::CodexCli => resolve_codex_bin(provider, prefs).is_ok(),
     }
 }
 
@@ -105,11 +105,11 @@ fn generate_with_provider(
     match provider.kind {
         AiProviderKind::OpenAiCompatible => generate_http(prompt, provider),
         AiProviderKind::CursorCli => {
-            let bin = resolve_cursor_bin(prefs)?;
+            let bin = resolve_cursor_bin(provider, prefs)?;
             generate_cursor_with_bin(repo, prompt, &bin)
         }
         AiProviderKind::CodexCli => {
-            let bin = resolve_codex_bin(prefs)?;
+            let bin = resolve_codex_bin(provider, prefs)?;
             generate_codex_with_bin(prompt, &bin)
         }
     }
@@ -361,19 +361,105 @@ fn generate_codex_with_bin(prompt: &str, bin: &str) -> Result<GeneratedCommitMes
     Ok(parse_message(&output))
 }
 
-pub fn resolve_cursor_bin(prefs: &CommitAiPrefs) -> Result<String> {
+pub fn resolve_cursor_bin(provider: &AiProvider, prefs: &CommitAiPrefs) -> Result<String> {
+    if let Some(p) = nonempty_path(&provider.cli_bin) {
+        return Ok(p);
+    }
     if let Some(p) = nonempty_path(&prefs.cursor_bin) {
         return Ok(p);
     }
-    which_first(&["agent", "cursor-agent"])
-        .ok_or_else(|| anyhow!("Cursor CLI not found (agent / cursor-agent)"))
+    detect_cursor_bin().ok_or_else(|| anyhow!("Cursor CLI not found (agent / cursor-agent)"))
 }
 
-pub fn resolve_codex_bin(prefs: &CommitAiPrefs) -> Result<String> {
+pub fn resolve_codex_bin(provider: &AiProvider, prefs: &CommitAiPrefs) -> Result<String> {
+    if let Some(p) = nonempty_path(&provider.cli_bin) {
+        return Ok(p);
+    }
     if let Some(p) = nonempty_path(&prefs.codex_bin) {
         return Ok(p);
     }
-    which_first(&["codex"]).ok_or_else(|| anyhow!("Codex CLI not found (codex)"))
+    detect_codex_bin().ok_or_else(|| anyhow!("Codex CLI not found (codex)"))
+}
+
+pub fn detect_cursor_bin() -> Option<String> {
+    which_first(&["agent", "cursor-agent"])
+}
+
+pub fn detect_codex_bin() -> Option<String> {
+    which_first(&["codex"])
+}
+
+/// GET `{base}/models` (OpenAI-compatible) and return model ids.
+pub fn fetch_models(provider: &AiProvider) -> Result<Vec<String>> {
+    if provider.base_url.trim().is_empty() {
+        bail!("base URL is empty");
+    }
+    let mut url = provider.models_url();
+    let key = provider.resolve_api_key();
+    if provider.auth == AiAuthKind::Query {
+        let param = if provider.auth_query_param.trim().is_empty() {
+            "key"
+        } else {
+            provider.auth_query_param.trim()
+        };
+        let Some(key) = key.as_deref() else {
+            bail!("API key required for query auth");
+        };
+        let sep = if url.contains('?') { '&' } else { '?' };
+        url = format!("{url}{sep}{param}={}", urlencoding_minimal(key));
+    }
+    let agent = ureq::AgentBuilder::new()
+        .timeout_connect(Duration::from_secs(10))
+        .timeout_read(Duration::from_secs(30))
+        .user_agent(&format!("simple-git-gui/{}", env!("CARGO_PKG_VERSION")))
+        .build();
+    let mut req = agent.get(&url);
+    match provider.auth {
+        AiAuthKind::None | AiAuthKind::Query => {}
+        AiAuthKind::Bearer => {
+            let Some(key) = key.as_deref() else {
+                bail!("API key required for Bearer auth");
+            };
+            req = req.set("Authorization", &format!("Bearer {key}"));
+        }
+        AiAuthKind::Header => {
+            let Some(key) = key.as_deref() else {
+                bail!("API key required for header auth");
+            };
+            let header = if provider.auth_header.trim().is_empty() {
+                "x-api-key"
+            } else {
+                provider.auth_header.trim()
+            };
+            req = req.set(header, key);
+        }
+    }
+    let response = req.call().with_context(|| format!("GET {url}"))?;
+    let parsed: ModelsResponse = response.into_json().context("parse /models JSON")?;
+    let mut ids: Vec<String> = parsed
+        .data
+        .into_iter()
+        .map(|m| m.id)
+        .filter(|id| !id.trim().is_empty())
+        .collect();
+    ids.sort();
+    ids.dedup();
+    if ids.is_empty() {
+        bail!("no models returned");
+    }
+    Ok(ids)
+}
+
+#[derive(Deserialize)]
+struct ModelsResponse {
+    #[serde(default)]
+    data: Vec<ModelEntry>,
+}
+
+#[derive(Deserialize)]
+struct ModelEntry {
+    #[serde(default)]
+    id: String,
 }
 
 fn nonempty_path(raw: &str) -> Option<String> {

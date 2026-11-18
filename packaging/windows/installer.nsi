@@ -237,13 +237,18 @@ Function PageReinstall
  !endif
  ${NSD_OnClick} $R3 PageReinstallUpdateSelection
 
- ; Check the first radio button if this the first time
- ; we enter this page or if the second button wasn't
- ; selected the last time we were on this page
- ${If} $ReinstallPageCheck != 2
- SendMessage $R2 ${BM_SETCHECK} ${BST_CHECKED} 0
+ ; Prefer in-place upgrade (don't uninstall) when versions differ.
+ ; Same-version maintenance still defaults to the first option.
+ ${If} $R5 == "1"
+  ${If} $ReinstallPageCheck == 1
+   SendMessage $R2 ${BM_SETCHECK} ${BST_CHECKED} 0
+  ${Else}
+   SendMessage $R3 ${BM_SETCHECK} ${BST_CHECKED} 0
+  ${EndIf}
+ ${ElseIf} $ReinstallPageCheck != 2
+  SendMessage $R2 ${BM_SETCHECK} ${BST_CHECKED} 0
  ${Else}
- SendMessage $R3 ${BM_SETCHECK} ${BST_CHECKED} 0
+  SendMessage $R3 ${BM_SETCHECK} ${BST_CHECKED} 0
  ${EndIf}
 
  ${NSD_SetFocus} $R2

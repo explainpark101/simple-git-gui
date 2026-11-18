@@ -9,7 +9,7 @@ This spec is the source of truth for the feature.
 
 Ship a GitHub Release asset `latest.json` that records the release version and per-platform download URLs. The desktop app and CLI read that manifest, compare against `CARGO_PKG_VERSION`, and download + open the matching installer when a newer version exists.
 
-Update does **not** silently replace a running binary in-place. It downloads the platform installer (DMG / NSIS / AppImage / portable) and opens it so the user finishes install and restarts `sgg`.
+On **Windows NSIS** (`*-setup.exe`), the client launches a passive install (`/P /R`): the app quits, the installer overwrites in place (no uninstall wizard), then relaunches `sgg`. macOS DMG / Linux AppImage / portable still download-and-open for the user to finish.
 
 ## Stable URLs
 
@@ -116,9 +116,10 @@ Responsibilities:
 - `platform_download_key()` / `platform_portable_key()`
 - `download_file(url, dest)` — write via `*.partial` then rename
 - `download_dir()` — `dirs::download_dir()` else home else `.`
-- `open_downloaded(path)`:
-  - macOS: `xattr -cr` then `open`
-  - Windows: `cmd /C start "" path`
+- `open_downloaded(path)` → `UpdateLaunch { path, should_quit }`:
+  - macOS: `xattr -cr` then `open` (`should_quit = false`)
+  - Windows NSIS `*-setup.exe`: spawn with `/P /R`, then UI calls `cx.quit()` (`should_quit = true`)
+  - Windows portable / other: `cmd /C start`
   - Linux: ensure executable bit, `xdg-open`
 - `download_and_open_latest(&LatestInfo)`
 

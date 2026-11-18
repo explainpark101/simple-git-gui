@@ -1,7 +1,8 @@
 //! Multi-provider registry for AI commit messages.
 //!
 //! OpenAI-compatible entries store title, docs URL, base URL, model, API key,
-//! and auth scheme so many endpoints can be registered at once.
+//! and auth scheme. Cursor / Codex CLI are separate kinds with their own binary
+//! path. Defaults ship with **no** providers — the user adds them explicitly.
 
 use serde::{Deserialize, Serialize};
 
@@ -81,6 +82,9 @@ pub struct AiProvider {
     /// Optional env var fallback for the API key (e.g. `OPENAI_API_KEY`).
     #[serde(default)]
     pub api_key_env: String,
+    /// Absolute path to `agent` / `codex` for CLI providers.
+    #[serde(default)]
+    pub cli_bin: String,
     #[serde(default = "default_true")]
     pub enabled: bool,
     /// Built-in preset slug (`chatgpt`, `deepseek`, …); empty for custom.
@@ -113,6 +117,66 @@ impl AiProvider {
         format!("p-{ms}")
     }
 
+    pub fn blank_http() -> Self {
+        Self {
+            id: Self::new_id(),
+            title: String::new(),
+            kind: AiProviderKind::OpenAiCompatible,
+            docs_url: String::new(),
+            base_url: String::new(),
+            chat_path: default_chat_path(),
+            model: String::new(),
+            api_key: String::new(),
+            auth: AiAuthKind::Bearer,
+            auth_header: default_auth_header(),
+            auth_query_param: default_auth_query(),
+            api_key_env: String::new(),
+            cli_bin: String::new(),
+            enabled: true,
+            preset: String::new(),
+        }
+    }
+
+    pub fn blank_cursor() -> Self {
+        Self {
+            id: Self::new_id(),
+            title: AiProviderPreset::CursorCli.title().into(),
+            kind: AiProviderKind::CursorCli,
+            docs_url: "https://cursor.com/docs/cli/overview".into(),
+            base_url: String::new(),
+            chat_path: default_chat_path(),
+            model: String::new(),
+            api_key: String::new(),
+            auth: AiAuthKind::None,
+            auth_header: default_auth_header(),
+            auth_query_param: default_auth_query(),
+            api_key_env: String::new(),
+            cli_bin: String::new(),
+            enabled: true,
+            preset: AiProviderPreset::CursorCli.slug().into(),
+        }
+    }
+
+    pub fn blank_codex() -> Self {
+        Self {
+            id: Self::new_id(),
+            title: AiProviderPreset::CodexCli.title().into(),
+            kind: AiProviderKind::CodexCli,
+            docs_url: "https://learn.chatgpt.com/docs/codex/cli.md".into(),
+            base_url: String::new(),
+            chat_path: default_chat_path(),
+            model: String::new(),
+            api_key: String::new(),
+            auth: AiAuthKind::None,
+            auth_header: default_auth_header(),
+            auth_query_param: default_auth_query(),
+            api_key_env: String::new(),
+            cli_bin: String::new(),
+            enabled: true,
+            preset: AiProviderPreset::CodexCli.slug().into(),
+        }
+    }
+
     pub fn resolve_api_key(&self) -> Option<String> {
         let trimmed = self.api_key.trim();
         if !trimmed.is_empty() {
@@ -143,6 +207,11 @@ impl AiProvider {
         format!("{base}{path}")
     }
 
+    pub fn models_url(&self) -> String {
+        let base = self.base_url.trim().trim_end_matches('/');
+        format!("{base}/models")
+    }
+
     pub fn openai_ready(&self) -> bool {
         self.kind == AiProviderKind::OpenAiCompatible
             && !self.base_url.trim().is_empty()
@@ -151,25 +220,23 @@ impl AiProvider {
     }
 }
 
-/// Built-in catalog entries the user can add (or that ship in defaults).
+/// Cloud / remote OpenAI-compatible presets (autofill the add form only).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AiProviderPreset {
     ChatGpt,
     GoogleAiStudio,
     DeepSeek,
     LgExaone,
-    OllamaLocal,
     CursorCli,
     CodexCli,
 }
 
 impl AiProviderPreset {
-    pub const HTTP_PRESETS: [Self; 5] = [
+    pub const HTTP_PRESETS: [Self; 4] = [
         Self::ChatGpt,
         Self::GoogleAiStudio,
         Self::DeepSeek,
         Self::LgExaone,
-        Self::OllamaLocal,
     ];
 
     pub fn slug(self) -> &'static str {
@@ -178,7 +245,6 @@ impl AiProviderPreset {
             Self::GoogleAiStudio => "google_ai_studio",
             Self::DeepSeek => "deepseek",
             Self::LgExaone => "lg_exaone",
-            Self::OllamaLocal => "ollama_local",
             Self::CursorCli => "cursor_cli",
             Self::CodexCli => "codex_cli",
         }
@@ -190,16 +256,16 @@ impl AiProviderPreset {
             Self::GoogleAiStudio => "Google AI Studio",
             Self::DeepSeek => "DeepSeek API",
             Self::LgExaone => "LG EXAONE API",
-            Self::OllamaLocal => "Ollama (local)",
             Self::CursorCli => "Cursor CLI",
             Self::CodexCli => "Codex CLI",
         }
     }
 
-    pub fn build(self) -> AiProvider {
+    /// Values to drop into the add/edit form (does not register a provider).
+    pub fn fill_template(self) -> AiProvider {
         match self {
             Self::ChatGpt => AiProvider {
-                id: self.slug().into(),
+                id: String::new(),
                 title: self.title().into(),
                 kind: AiProviderKind::OpenAiCompatible,
                 docs_url: "https://platform.openai.com/docs/api-reference".into(),
@@ -211,11 +277,12 @@ impl AiProviderPreset {
                 auth_header: default_auth_header(),
                 auth_query_param: default_auth_query(),
                 api_key_env: "OPENAI_API_KEY".into(),
+                cli_bin: String::new(),
                 enabled: true,
                 preset: self.slug().into(),
             },
             Self::GoogleAiStudio => AiProvider {
-                id: self.slug().into(),
+                id: String::new(),
                 title: self.title().into(),
                 kind: AiProviderKind::OpenAiCompatible,
                 docs_url: "https://ai.google.dev/gemini-api/docs/openai".into(),
@@ -227,11 +294,12 @@ impl AiProviderPreset {
                 auth_header: default_auth_header(),
                 auth_query_param: default_auth_query(),
                 api_key_env: "GOOGLE_API_KEY".into(),
+                cli_bin: String::new(),
                 enabled: true,
                 preset: self.slug().into(),
             },
             Self::DeepSeek => AiProvider {
-                id: self.slug().into(),
+                id: String::new(),
                 title: self.title().into(),
                 kind: AiProviderKind::OpenAiCompatible,
                 docs_url: "https://api-docs.deepseek.com/".into(),
@@ -243,14 +311,14 @@ impl AiProviderPreset {
                 auth_header: default_auth_header(),
                 auth_query_param: default_auth_query(),
                 api_key_env: "DEEPSEEK_API_KEY".into(),
+                cli_bin: String::new(),
                 enabled: true,
                 preset: self.slug().into(),
             },
             Self::LgExaone => AiProvider {
-                id: self.slug().into(),
+                id: String::new(),
                 title: self.title().into(),
                 kind: AiProviderKind::OpenAiCompatible,
-                // HF OpenAI-compatible router hosts LGAI-EXAONE models.
                 docs_url: "https://huggingface.co/LGAI-EXAONE".into(),
                 base_url: "https://router.huggingface.co/v1".into(),
                 chat_path: default_chat_path(),
@@ -260,72 +328,79 @@ impl AiProviderPreset {
                 auth_header: default_auth_header(),
                 auth_query_param: default_auth_query(),
                 api_key_env: "HF_TOKEN".into(),
+                cli_bin: String::new(),
                 enabled: true,
                 preset: self.slug().into(),
             },
-            Self::OllamaLocal => AiProvider {
-                id: self.slug().into(),
-                title: self.title().into(),
-                kind: AiProviderKind::OpenAiCompatible,
-                docs_url: "https://github.com/ollama/ollama/blob/main/docs/openai.md".into(),
-                base_url: "http://127.0.0.1:11434/v1".into(),
-                chat_path: default_chat_path(),
-                model: "llama3.2".into(),
-                api_key: String::new(),
-                auth: AiAuthKind::None,
-                auth_header: default_auth_header(),
-                auth_query_param: default_auth_query(),
-                api_key_env: String::new(),
-                enabled: true,
-                preset: self.slug().into(),
-            },
-            Self::CursorCli => AiProvider {
-                id: self.slug().into(),
-                title: self.title().into(),
-                kind: AiProviderKind::CursorCli,
-                docs_url: "https://cursor.com/docs/cli/overview".into(),
-                base_url: String::new(),
-                chat_path: default_chat_path(),
-                model: String::new(),
-                api_key: String::new(),
-                auth: AiAuthKind::None,
-                auth_header: default_auth_header(),
-                auth_query_param: default_auth_query(),
-                api_key_env: String::new(),
-                enabled: true,
-                preset: self.slug().into(),
-            },
-            Self::CodexCli => AiProvider {
-                id: self.slug().into(),
-                title: self.title().into(),
-                kind: AiProviderKind::CodexCli,
-                docs_url: "https://learn.chatgpt.com/docs/codex/cli.md".into(),
-                base_url: String::new(),
-                chat_path: default_chat_path(),
-                model: String::new(),
-                api_key: String::new(),
-                auth: AiAuthKind::None,
-                auth_header: default_auth_header(),
-                auth_query_param: default_auth_query(),
-                api_key_env: String::new(),
-                enabled: true,
-                preset: self.slug().into(),
-            },
+            Self::CursorCli => AiProvider::blank_cursor(),
+            Self::CodexCli => AiProvider::blank_codex(),
         }
     }
 }
 
-pub fn default_providers() -> Vec<AiProvider> {
-    vec![
-        AiProviderPreset::ChatGpt.build(),
-        AiProviderPreset::GoogleAiStudio.build(),
-        AiProviderPreset::DeepSeek.build(),
-        AiProviderPreset::LgExaone.build(),
-        AiProviderPreset::OllamaLocal.build(),
-        AiProviderPreset::CursorCli.build(),
-        AiProviderPreset::CodexCli.build(),
-    ]
+/// Local OpenAI-compatible servers (autofill base URL only).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LocalLlmPreset {
+    Ollama,
+    Lemonade,
+    LmStudio,
+    Custom,
+}
+
+impl LocalLlmPreset {
+    pub const ALL: [Self; 4] = [Self::Ollama, Self::Lemonade, Self::LmStudio, Self::Custom];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Ollama => "Ollama",
+            Self::Lemonade => "Lemonade",
+            Self::LmStudio => "LM Studio",
+            Self::Custom => "Custom",
+        }
+    }
+
+    pub fn base_url(self) -> &'static str {
+        match self {
+            Self::Ollama => "http://127.0.0.1:11434/v1",
+            Self::Lemonade => "http://127.0.0.1:8000/v1",
+            Self::LmStudio => "http://127.0.0.1:1234/v1",
+            Self::Custom => "",
+        }
+    }
+
+    pub fn docs_url(self) -> &'static str {
+        match self {
+            Self::Ollama => "https://github.com/ollama/ollama/blob/main/docs/openai.md",
+            Self::Lemonade => "https://github.com/amd/lemonade",
+            Self::LmStudio => "https://lmstudio.ai/docs/app/api/endpoints/openai",
+            Self::Custom => "",
+        }
+    }
 }
 
 /// Sentinel active id: try enabled providers in list order.
 pub const ACTIVE_AUTO: &str = "auto";
+
+/// Settings form mode — closed until Add / Edit.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum CommitAiFormMode {
+    #[default]
+    Closed,
+    AddHttp,
+    AddCursor,
+    AddCodex,
+    Edit(String),
+}
+
+impl CommitAiFormMode {
+    pub fn is_open(&self) -> bool {
+        !matches!(self, Self::Closed)
+    }
+
+    pub fn edit_id(&self) -> Option<&str> {
+        match self {
+            Self::Edit(id) => Some(id.as_str()),
+            _ => None,
+        }
+    }
+}

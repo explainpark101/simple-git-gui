@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
-use super::ai_provider::{default_providers, AiProvider, ACTIVE_AUTO};
+use super::ai_provider::{AiProvider, ACTIVE_AUTO};
 use super::editor::ExternalEditor;
 use super::i18n::Locale;
 use super::sort::ChangeSort;
@@ -166,12 +166,13 @@ pub struct CommitAiPrefs {
     #[serde(default = "default_active_provider")]
     pub active_provider_id: String,
     /// Registered backends (OpenAI-compatible + CLI). Order = Auto try order.
-    #[serde(default = "default_providers")]
+    /// Empty by default — user adds providers in Settings.
+    #[serde(default)]
     pub providers: Vec<AiProvider>,
-    /// Override `agent` / `cursor-agent` path.
+    /// Legacy global Cursor CLI path (fallback when a provider has empty `cli_bin`).
     #[serde(default)]
     pub cursor_bin: String,
-    /// Override `codex` path.
+    /// Legacy global Codex CLI path (fallback when a provider has empty `cli_bin`).
     #[serde(default)]
     pub codex_bin: String,
 }
@@ -185,7 +186,7 @@ impl Default for CommitAiPrefs {
         Self {
             style: CommitAiStyle::Conventional,
             active_provider_id: default_active_provider(),
-            providers: default_providers(),
+            providers: Vec::new(),
             cursor_bin: String::new(),
             codex_bin: String::new(),
         }
@@ -207,10 +208,11 @@ impl CommitAiPrefs {
     }
 
     pub fn ensure_defaults(&mut self) {
-        if self.providers.is_empty() {
-            self.providers = default_providers();
-        }
+        // Keep an empty provider list — do not auto-seed presets.
         if self.active_provider_id.trim().is_empty() {
+            self.active_provider_id = ACTIVE_AUTO.into();
+        }
+        if !self.is_auto() && self.provider_by_id(&self.active_provider_id).is_none() {
             self.active_provider_id = ACTIVE_AUTO.into();
         }
     }

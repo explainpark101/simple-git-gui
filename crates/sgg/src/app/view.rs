@@ -256,8 +256,9 @@ pub struct AppView {
     /// Version dismissed via "Later" (silent launch checks skip re-prompting it).
     pub(super) skipped_update_version: String,
     pub(super) commit_ai: CommitAiPrefs,
-    /// Provider id currently open in the Settings editor (empty = none).
-    pub(super) commit_ai_edit_id: String,
+    /// Add/Edit form; closed until the user opens it.
+    pub(super) commit_ai_form: super::ai_provider::CommitAiFormMode,
+    pub(super) commit_ai_form_auth: super::ai_provider::AiAuthKind,
     pub(super) commit_ai_title_input: Entity<InputState>,
     pub(super) commit_ai_docs_input: Entity<InputState>,
     pub(super) commit_ai_base_input: Entity<InputState>,
@@ -267,8 +268,10 @@ pub struct AppView {
     pub(super) commit_ai_auth_header_input: Entity<InputState>,
     pub(super) commit_ai_auth_query_input: Entity<InputState>,
     pub(super) commit_ai_key_env_input: Entity<InputState>,
-    pub(super) commit_ai_cursor_bin_input: Entity<InputState>,
-    pub(super) commit_ai_codex_bin_input: Entity<InputState>,
+    pub(super) commit_ai_cli_bin_input: Entity<InputState>,
+    pub(super) commit_ai_models: Vec<String>,
+    pub(super) commit_ai_models_error: Option<String>,
+    pub(super) commit_ai_models_task: Option<Task<()>>,
     generate_commit_task: Option<Task<()>>,
     /// Latest release from `latest.json` when newer than this build.
     pub(super) update_available: Option<super::update::LatestInfo>,
@@ -389,7 +392,7 @@ impl AppView {
         let commit_ai_path_input =
             cx.new(|cx| InputState::new(window, cx).placeholder("/chat/completions"));
         let commit_ai_model_input =
-            cx.new(|cx| InputState::new(window, cx).placeholder("gpt-4o-mini"));
+            cx.new(|cx| InputState::new(window, cx).placeholder("model id or pick from /models"));
         let commit_ai_key_input =
             cx.new(|cx| InputState::new(window, cx).placeholder("sk-… or leave empty"));
         let commit_ai_auth_header_input =
@@ -398,10 +401,8 @@ impl AppView {
             cx.new(|cx| InputState::new(window, cx).placeholder("key"));
         let commit_ai_key_env_input =
             cx.new(|cx| InputState::new(window, cx).placeholder("OPENAI_API_KEY"));
-        let commit_ai_cursor_bin_input =
-            cx.new(|cx| InputState::new(window, cx).placeholder("agent / cursor-agent"));
-        let commit_ai_codex_bin_input =
-            cx.new(|cx| InputState::new(window, cx).placeholder("codex"));
+        let commit_ai_cli_bin_input =
+            cx.new(|cx| InputState::new(window, cx).placeholder("CLI path"));
         let terminal_shell_input = cx.new(|cx| {
             InputState::new(window, cx)
                 .placeholder(super::terminal_shell::custom_command_placeholder())
@@ -452,50 +453,9 @@ impl AppView {
             input.set_value(&prefs.editor.custom_command, window, cx);
         });
         // UI / terminal font inputs are search filters only (start empty).
-        commit_ai_cursor_bin_input.update(cx, |input, cx| {
-            input.set_value(&prefs.commit_ai.cursor_bin, window, cx);
-        });
-        commit_ai_codex_bin_input.update(cx, |input, cx| {
-            input.set_value(&prefs.commit_ai.codex_bin, window, cx);
-        });
         terminal_shell_input.update(cx, |input, cx| {
             input.set_value(&prefs.terminal_shell.custom_command, window, cx);
         });
-        let commit_ai_edit_id = prefs
-            .commit_ai
-            .providers
-            .first()
-            .map(|p| p.id.clone())
-            .unwrap_or_default();
-        if let Some(provider) = prefs.commit_ai.provider_by_id(&commit_ai_edit_id) {
-            commit_ai_title_input.update(cx, |input, cx| {
-                input.set_value(&provider.title, window, cx);
-            });
-            commit_ai_docs_input.update(cx, |input, cx| {
-                input.set_value(&provider.docs_url, window, cx);
-            });
-            commit_ai_base_input.update(cx, |input, cx| {
-                input.set_value(&provider.base_url, window, cx);
-            });
-            commit_ai_path_input.update(cx, |input, cx| {
-                input.set_value(&provider.chat_path, window, cx);
-            });
-            commit_ai_model_input.update(cx, |input, cx| {
-                input.set_value(&provider.model, window, cx);
-            });
-            commit_ai_key_input.update(cx, |input, cx| {
-                input.set_value(&provider.api_key, window, cx);
-            });
-            commit_ai_auth_header_input.update(cx, |input, cx| {
-                input.set_value(&provider.auth_header, window, cx);
-            });
-            commit_ai_auth_query_input.update(cx, |input, cx| {
-                input.set_value(&provider.auth_query_param, window, cx);
-            });
-            commit_ai_key_env_input.update(cx, |input, cx| {
-                input.set_value(&provider.api_key_env, window, cx);
-            });
-        }
 
         let status_colors = prefs.status_colors.clone();
         // Placeholder pickers; values synced after theme apply.
@@ -591,7 +551,8 @@ impl AppView {
             auto_check_updates: prefs.auto_check_updates,
             skipped_update_version: prefs.skipped_update_version,
             commit_ai: prefs.commit_ai.clone(),
-            commit_ai_edit_id,
+            commit_ai_form: super::ai_provider::CommitAiFormMode::Closed,
+            commit_ai_form_auth: super::ai_provider::AiAuthKind::Bearer,
             commit_ai_title_input,
             commit_ai_docs_input,
             commit_ai_base_input,
@@ -601,8 +562,10 @@ impl AppView {
             commit_ai_auth_header_input,
             commit_ai_auth_query_input,
             commit_ai_key_env_input,
-            commit_ai_cursor_bin_input,
-            commit_ai_codex_bin_input,
+            commit_ai_cli_bin_input,
+            commit_ai_models: Vec::new(),
+            commit_ai_models_error: None,
+            commit_ai_models_task: None,
             generate_commit_task: None,
             update_available: None,
             update_task: None,
@@ -991,6 +954,31 @@ impl AppView {
             }
         }
         cx.notify();
+    }
+
+    /// Paths listed under a Changes section title (`Staged` / `Unstaged` / …).
+    pub(super) fn paths_in_section(&self, title: &str) -> Vec<String> {
+        self.changes_sections
+            .iter()
+            .find(|s| s.title == title)
+            .map(|s| s.items.iter().map(|c| c.path.clone()).collect())
+            .unwrap_or_default()
+    }
+
+    pub(super) fn section_all_selected(&self, title: &str) -> bool {
+        let paths = self.paths_in_section(title);
+        !paths.is_empty() && paths.iter().all(|p| self.selected.contains(p))
+    }
+
+    /// Toggle checkbox selection for every file in a Changes section.
+    pub(super) fn toggle_select_section(&mut self, title: impl AsRef<str>, cx: &mut Context<Self>) {
+        let title = title.as_ref();
+        let paths = self.paths_in_section(title);
+        if paths.is_empty() {
+            return;
+        }
+        let select = !self.section_all_selected(title);
+        self.set_selected_many(&paths, select, cx);
     }
 
     pub(super) fn select_remote(&mut self, name: String, cx: &mut Context<Self>) {
@@ -2167,13 +2155,26 @@ impl AppView {
                 this.update_task = None;
                 this.busy = None;
                 match result {
-                    Ok(path) => {
+                    Ok(launch) => {
                         this.skipped_update_version.clear();
                         this.persist_prefs(cx);
+                        if launch.should_quit {
+                            this.set_ok_status(this.t().update_installing_restart);
+                            if this
+                                .progress_log
+                                .last()
+                                .is_some_and(|e| e.state == super::progress::ProgressState::Running)
+                            {
+                                let done = this.status_line.clone();
+                                this.finish_progress(true, done);
+                            }
+                            cx.quit();
+                            return;
+                        }
                         let msg = this
                             .t()
                             .update_downloaded
-                            .replace("{path}", &path.display().to_string());
+                            .replace("{path}", &launch.path.display().to_string());
                         this.set_ok_status(msg);
                     }
                     Err(err) => {
@@ -2233,15 +2234,43 @@ impl AppView {
         }));
     }
 
-    pub(super) fn sync_commit_ai_bins_from_inputs(&mut self, cx: &App) {
-        self.commit_ai.cursor_bin = self.commit_ai_cursor_bin_input.read(cx).value().to_string();
-        self.commit_ai.codex_bin = self.commit_ai_codex_bin_input.read(cx).value().to_string();
+    fn clear_commit_ai_form_inputs(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        for input in [
+            &self.commit_ai_title_input,
+            &self.commit_ai_docs_input,
+            &self.commit_ai_base_input,
+            &self.commit_ai_path_input,
+            &self.commit_ai_model_input,
+            &self.commit_ai_key_input,
+            &self.commit_ai_auth_header_input,
+            &self.commit_ai_auth_query_input,
+            &self.commit_ai_key_env_input,
+            &self.commit_ai_cli_bin_input,
+        ] {
+            input.update(cx, |input, cx| {
+                input.set_value("", window, cx);
+            });
+        }
+        self.commit_ai_path_input.update(cx, |input, cx| {
+            input.set_value("/chat/completions", window, cx);
+        });
+        self.commit_ai_auth_header_input.update(cx, |input, cx| {
+            input.set_value("x-api-key", window, cx);
+        });
+        self.commit_ai_auth_query_input.update(cx, |input, cx| {
+            input.set_value("key", window, cx);
+        });
+        self.commit_ai_form_auth = super::ai_provider::AiAuthKind::Bearer;
+        self.commit_ai_models.clear();
+        self.commit_ai_models_error = None;
     }
 
-    fn load_commit_ai_editor_inputs(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(provider) = self.commit_ai.provider_by_id(&self.commit_ai_edit_id).cloned() else {
-            return;
-        };
+    fn fill_commit_ai_form_from_provider(
+        &mut self,
+        provider: &super::ai_provider::AiProvider,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.commit_ai_title_input.update(cx, |input, cx| {
             input.set_value(&provider.title, window, cx);
         });
@@ -2269,45 +2298,70 @@ impl AppView {
         self.commit_ai_key_env_input.update(cx, |input, cx| {
             input.set_value(&provider.api_key_env, window, cx);
         });
+        self.commit_ai_cli_bin_input.update(cx, |input, cx| {
+            input.set_value(&provider.cli_bin, window, cx);
+        });
+        self.commit_ai_form_auth = provider.auth;
+        self.commit_ai_models.clear();
+        self.commit_ai_models_error = None;
     }
 
-    pub(super) fn sync_commit_ai_editor_to_provider(&mut self, cx: &App) {
-        let id = self.commit_ai_edit_id.clone();
-        if id.is_empty() {
-            return;
+    fn draft_provider_from_form(&self, cx: &App) -> super::ai_provider::AiProvider {
+        use super::ai_provider::{AiProvider, AiProviderKind, CommitAiFormMode};
+        let mut provider = match &self.commit_ai_form {
+            CommitAiFormMode::AddCursor => AiProvider::blank_cursor(),
+            CommitAiFormMode::AddCodex => AiProvider::blank_codex(),
+            CommitAiFormMode::Edit(id) => self
+                .commit_ai
+                .provider_by_id(id)
+                .cloned()
+                .unwrap_or_else(AiProvider::blank_http),
+            _ => AiProvider::blank_http(),
+        };
+        if matches!(self.commit_ai_form, CommitAiFormMode::AddHttp) {
+            provider.kind = AiProviderKind::OpenAiCompatible;
+            provider.id = AiProvider::new_id();
         }
-        let title = self.commit_ai_title_input.read(cx).value().to_string();
-        let docs_url = self.commit_ai_docs_input.read(cx).value().to_string();
-        let base_url = self.commit_ai_base_input.read(cx).value().to_string();
+        if matches!(
+            self.commit_ai_form,
+            CommitAiFormMode::AddCursor | CommitAiFormMode::AddCodex
+        ) {
+            provider.id = AiProvider::new_id();
+        }
+        provider.title = self.commit_ai_title_input.read(cx).value().to_string();
+        provider.docs_url = self.commit_ai_docs_input.read(cx).value().to_string();
+        provider.base_url = self.commit_ai_base_input.read(cx).value().to_string();
         let chat_path = self.commit_ai_path_input.read(cx).value().to_string();
-        let model = self.commit_ai_model_input.read(cx).value().to_string();
-        let api_key = self.commit_ai_key_input.read(cx).value().to_string();
+        provider.chat_path = if chat_path.trim().is_empty() {
+            "/chat/completions".into()
+        } else {
+            chat_path
+        };
+        provider.model = self.commit_ai_model_input.read(cx).value().to_string();
+        provider.api_key = self.commit_ai_key_input.read(cx).value().to_string();
+        provider.auth = self.commit_ai_form_auth;
         let auth_header = self.commit_ai_auth_header_input.read(cx).value().to_string();
-        let auth_query_param = self.commit_ai_auth_query_input.read(cx).value().to_string();
-        let api_key_env = self.commit_ai_key_env_input.read(cx).value().to_string();
-        if let Some(provider) = self.commit_ai.provider_by_id_mut(&id) {
-            provider.title = title;
-            provider.docs_url = docs_url;
-            provider.base_url = base_url;
-            provider.chat_path = if chat_path.trim().is_empty() {
-                "/chat/completions".into()
-            } else {
-                chat_path
+        provider.auth_header = if auth_header.trim().is_empty() {
+            "x-api-key".into()
+        } else {
+            auth_header
+        };
+        let auth_query = self.commit_ai_auth_query_input.read(cx).value().to_string();
+        provider.auth_query_param = if auth_query.trim().is_empty() {
+            "key".into()
+        } else {
+            auth_query
+        };
+        provider.api_key_env = self.commit_ai_key_env_input.read(cx).value().to_string();
+        provider.cli_bin = self.commit_ai_cli_bin_input.read(cx).value().to_string();
+        if provider.title.trim().is_empty() {
+            provider.title = match provider.kind {
+                AiProviderKind::CursorCli => "Cursor CLI".into(),
+                AiProviderKind::CodexCli => "Codex CLI".into(),
+                AiProviderKind::OpenAiCompatible => "OpenAI-compatible".into(),
             };
-            provider.model = model;
-            provider.api_key = api_key;
-            provider.auth_header = if auth_header.trim().is_empty() {
-                "x-api-key".into()
-            } else {
-                auth_header
-            };
-            provider.auth_query_param = if auth_query_param.trim().is_empty() {
-                "key".into()
-            } else {
-                auth_query_param
-            };
-            provider.api_key_env = api_key_env;
         }
+        provider
     }
 
     pub(super) fn set_commit_ai_style(
@@ -2330,29 +2384,294 @@ impl AppView {
         cx.notify();
     }
 
-    pub(super) fn select_commit_ai_provider(
+    pub(super) fn open_commit_ai_add_http(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.clear_commit_ai_form_inputs(window, cx);
+        self.commit_ai_form = super::ai_provider::CommitAiFormMode::AddHttp;
+        cx.notify();
+    }
+
+    pub(super) fn open_commit_ai_add_cursor(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let template = super::ai_provider::AiProvider::blank_cursor();
+        self.fill_commit_ai_form_from_provider(&template, window, cx);
+        if let Some(detected) = super::commit_ai::detect_cursor_bin() {
+            self.commit_ai_cli_bin_input.update(cx, |input, cx| {
+                input.set_value(&detected, window, cx);
+            });
+        }
+        self.commit_ai_form = super::ai_provider::CommitAiFormMode::AddCursor;
+        cx.notify();
+    }
+
+    pub(super) fn open_commit_ai_add_codex(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let template = super::ai_provider::AiProvider::blank_codex();
+        self.fill_commit_ai_form_from_provider(&template, window, cx);
+        if let Some(detected) = super::commit_ai::detect_codex_bin() {
+            self.commit_ai_cli_bin_input.update(cx, |input, cx| {
+                input.set_value(&detected, window, cx);
+            });
+        }
+        self.commit_ai_form = super::ai_provider::CommitAiFormMode::AddCodex;
+        cx.notify();
+    }
+
+    pub(super) fn open_commit_ai_edit(
         &mut self,
         id: impl Into<String>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.sync_commit_ai_editor_to_provider(cx);
-        self.commit_ai_edit_id = id.into();
-        self.load_commit_ai_editor_inputs(window, cx);
+        let id = id.into();
+        let Some(provider) = self.commit_ai.provider_by_id(&id).cloned() else {
+            return;
+        };
+        self.fill_commit_ai_form_from_provider(&provider, window, cx);
+        if provider.cli_bin.trim().is_empty() {
+            let detected = match provider.kind {
+                super::ai_provider::AiProviderKind::CursorCli => {
+                    super::commit_ai::detect_cursor_bin()
+                }
+                super::ai_provider::AiProviderKind::CodexCli => {
+                    super::commit_ai::detect_codex_bin()
+                }
+                _ => None,
+            };
+            if let Some(path) = detected {
+                self.commit_ai_cli_bin_input.update(cx, |input, cx| {
+                    input.set_value(&path, window, cx);
+                });
+            }
+        }
+        self.commit_ai_form = super::ai_provider::CommitAiFormMode::Edit(id);
         cx.notify();
     }
 
-    pub(super) fn set_commit_ai_auth(
+    pub(super) fn cancel_commit_ai_form(&mut self, cx: &mut Context<Self>) {
+        self.commit_ai_form = super::ai_provider::CommitAiFormMode::Closed;
+        self.commit_ai_models.clear();
+        self.commit_ai_models_error = None;
+        self.commit_ai_models_task = None;
+        cx.notify();
+    }
+
+    pub(super) fn apply_commit_ai_http_preset(
+        &mut self,
+        preset: super::ai_provider::AiProviderPreset,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !matches!(
+            self.commit_ai_form,
+            super::ai_provider::CommitAiFormMode::AddHttp
+                | super::ai_provider::CommitAiFormMode::Edit(_)
+        ) {
+            self.commit_ai_form = super::ai_provider::CommitAiFormMode::AddHttp;
+        }
+        let template = preset.fill_template();
+        // Keep API key already typed in the form.
+        let existing_key = self.commit_ai_key_input.read(cx).value().to_string();
+        self.fill_commit_ai_form_from_provider(&template, window, cx);
+        if !existing_key.trim().is_empty() {
+            self.commit_ai_key_input.update(cx, |input, cx| {
+                input.set_value(&existing_key, window, cx);
+            });
+        }
+        cx.notify();
+    }
+
+    pub(super) fn apply_commit_ai_local_preset(
+        &mut self,
+        preset: super::ai_provider::LocalLlmPreset,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        use super::ai_provider::{AiAuthKind, CommitAiFormMode, LocalLlmPreset};
+        if !matches!(
+            self.commit_ai_form,
+            CommitAiFormMode::AddHttp | CommitAiFormMode::Edit(_)
+        ) {
+            self.commit_ai_form = CommitAiFormMode::AddHttp;
+        }
+        let title = match preset {
+            LocalLlmPreset::Custom => "Custom local LLM".to_string(),
+            other => format!("{} (local)", other.label()),
+        };
+        self.commit_ai_title_input.update(cx, |input, cx| {
+            input.set_value(&title, window, cx);
+        });
+        self.commit_ai_base_input.update(cx, |input, cx| {
+            input.set_value(preset.base_url(), window, cx);
+        });
+        self.commit_ai_docs_input.update(cx, |input, cx| {
+            input.set_value(preset.docs_url(), window, cx);
+        });
+        self.commit_ai_path_input.update(cx, |input, cx| {
+            input.set_value("/chat/completions", window, cx);
+        });
+        self.commit_ai_form_auth = AiAuthKind::None;
+        self.commit_ai_models.clear();
+        self.commit_ai_models_error = None;
+        cx.notify();
+    }
+
+    pub(super) fn set_commit_ai_form_auth(
         &mut self,
         auth: super::ai_provider::AiAuthKind,
         cx: &mut Context<Self>,
     ) {
-        let id = self.commit_ai_edit_id.clone();
-        if let Some(provider) = self.commit_ai.provider_by_id_mut(&id) {
-            provider.auth = auth;
-            self.persist_prefs(cx);
-            cx.notify();
+        self.commit_ai_form_auth = auth;
+        cx.notify();
+    }
+
+    pub(super) fn set_commit_ai_model(
+        &mut self,
+        model: impl Into<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let model = model.into();
+        self.commit_ai_model_input.update(cx, |input, cx| {
+            input.set_value(&model, window, cx);
+        });
+        cx.notify();
+    }
+
+    pub(super) fn refresh_commit_ai_models(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.commit_ai_models_task.is_some() {
+            return;
         }
+        let draft = self.draft_provider_from_form(cx);
+        self.commit_ai_models_error = None;
+        cx.notify();
+        self.commit_ai_models_task = Some(cx.spawn_in(window, async move |this, cx| {
+            let result =
+                cx.background_spawn(async move { super::commit_ai::fetch_models(&draft) })
+                    .await;
+            let _ = cx.update(|_, cx| {
+                this.update(cx, |this, cx| {
+                    this.commit_ai_models_task = None;
+                    match result {
+                        Ok(models) => {
+                            this.commit_ai_models = models;
+                            this.commit_ai_models_error = None;
+                        }
+                        Err(err) => {
+                            this.commit_ai_models.clear();
+                            this.commit_ai_models_error = Some(format!("{err:#}"));
+                        }
+                    }
+                    cx.notify();
+                })
+            });
+        }));
+    }
+
+    pub(super) fn detect_commit_ai_cli_bin(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        use super::ai_provider::CommitAiFormMode;
+        let detected = match &self.commit_ai_form {
+            CommitAiFormMode::AddCursor => super::commit_ai::detect_cursor_bin(),
+            CommitAiFormMode::AddCodex => super::commit_ai::detect_codex_bin(),
+            CommitAiFormMode::Edit(id) => match self.commit_ai.provider_by_id(id).map(|p| p.kind)
+            {
+                Some(super::ai_provider::AiProviderKind::CursorCli) => {
+                    super::commit_ai::detect_cursor_bin()
+                }
+                Some(super::ai_provider::AiProviderKind::CodexCli) => {
+                    super::commit_ai::detect_codex_bin()
+                }
+                _ => None,
+            },
+            _ => None,
+        };
+        if let Some(path) = detected {
+            self.commit_ai_cli_bin_input.update(cx, |input, cx| {
+                input.set_value(&path, window, cx);
+            });
+            cx.notify();
+        } else {
+            self.set_error(self.t().commit_ai_cli_not_found.into(), cx);
+        }
+    }
+
+    pub(super) fn browse_commit_ai_cli_bin(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let paths = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: false,
+            prompt: Some(self.t().commit_ai_browse_cli.into()),
+        });
+        cx.spawn_in(window, async move |this, window| {
+            let Ok(result) = paths.await else {
+                return;
+            };
+            let Ok(Some(selected)) = result else {
+                return;
+            };
+            let Some(path) = selected.into_iter().next() else {
+                return;
+            };
+            let _ = window.update(|window, cx| {
+                this.update(cx, |this, cx| {
+                    this.commit_ai_cli_bin_input.update(cx, |input, cx| {
+                        input.set_value(path.to_string_lossy().as_ref(), window, cx);
+                    });
+                    cx.notify();
+                })
+            });
+        })
+        .detach();
+    }
+
+    pub(super) fn save_commit_ai_form(
+        &mut self,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        use super::ai_provider::CommitAiFormMode;
+        let draft = self.draft_provider_from_form(cx);
+        match &self.commit_ai_form {
+            CommitAiFormMode::AddHttp | CommitAiFormMode::AddCursor | CommitAiFormMode::AddCodex => {
+                self.commit_ai.providers.push(draft);
+            }
+            CommitAiFormMode::Edit(id) => {
+                if let Some(provider) = self.commit_ai.provider_by_id_mut(id) {
+                    let enabled = provider.enabled;
+                    let keep_id = provider.id.clone();
+                    *provider = draft;
+                    provider.id = keep_id;
+                    provider.enabled = enabled;
+                }
+            }
+            CommitAiFormMode::Closed => return,
+        }
+        self.commit_ai_form = CommitAiFormMode::Closed;
+        self.commit_ai_models.clear();
+        self.commit_ai_models_error = None;
+        self.persist_prefs(cx);
+        cx.notify();
     }
 
     pub(super) fn set_commit_ai_provider_enabled(
@@ -2369,72 +2688,9 @@ impl AppView {
         }
     }
 
-    pub(super) fn apply_commit_ai_provider(
-        &mut self,
-        _window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.sync_commit_ai_editor_to_provider(cx);
-        self.sync_commit_ai_bins_from_inputs(cx);
-        self.persist_prefs(cx);
-        cx.notify();
-    }
-
-    pub(super) fn add_commit_ai_preset(
-        &mut self,
-        preset: super::ai_provider::AiProviderPreset,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.sync_commit_ai_editor_to_provider(cx);
-        let mut provider = preset.build();
-        if self.commit_ai.provider_by_id(&provider.id).is_some() {
-            provider.id = super::ai_provider::AiProvider::new_id();
-            provider.title = format!("{} (copy)", provider.title);
-        }
-        let id = provider.id.clone();
-        self.commit_ai.providers.push(provider);
-        self.commit_ai_edit_id = id;
-        self.load_commit_ai_editor_inputs(window, cx);
-        self.persist_prefs(cx);
-        cx.notify();
-    }
-
-    pub(super) fn add_custom_commit_ai_provider(
-        &mut self,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        use super::ai_provider::{AiAuthKind, AiProvider, AiProviderKind};
-        self.sync_commit_ai_editor_to_provider(cx);
-        let id = AiProvider::new_id();
-        let provider = AiProvider {
-            id: id.clone(),
-            title: "Custom OpenAI-compatible".into(),
-            kind: AiProviderKind::OpenAiCompatible,
-            docs_url: String::new(),
-            base_url: String::new(),
-            chat_path: "/chat/completions".into(),
-            model: String::new(),
-            api_key: String::new(),
-            auth: AiAuthKind::Bearer,
-            auth_header: "x-api-key".into(),
-            auth_query_param: "key".into(),
-            api_key_env: String::new(),
-            enabled: true,
-            preset: String::new(),
-        };
-        self.commit_ai.providers.push(provider);
-        self.commit_ai_edit_id = id;
-        self.load_commit_ai_editor_inputs(window, cx);
-        self.persist_prefs(cx);
-        cx.notify();
-    }
-
     pub(super) fn remove_commit_ai_provider(
         &mut self,
         id: impl AsRef<str>,
-        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let id = id.as_ref();
@@ -2442,14 +2698,8 @@ impl AppView {
         if self.commit_ai.active_provider_id == id {
             self.commit_ai.active_provider_id = super::ai_provider::ACTIVE_AUTO.into();
         }
-        if self.commit_ai_edit_id == id {
-            self.commit_ai_edit_id = self
-                .commit_ai
-                .providers
-                .first()
-                .map(|p| p.id.clone())
-                .unwrap_or_default();
-            self.load_commit_ai_editor_inputs(window, cx);
+        if self.commit_ai_form.edit_id() == Some(id) {
+            self.commit_ai_form = super::ai_provider::CommitAiFormMode::Closed;
         }
         self.persist_prefs(cx);
         cx.notify();
@@ -2489,6 +2739,10 @@ impl AppView {
             self.set_error(self.t().no_folder_open.into(), cx);
             return;
         }
+        if self.commit_ai.providers.is_empty() {
+            self.set_error(self.t().commit_ai_no_providers.into(), cx);
+            return;
+        }
         let root = self.repo_root();
         let hint = {
             let current = self.commit_input.read(cx).value().to_string();
@@ -2499,8 +2753,6 @@ impl AppView {
                 Some(trimmed)
             }
         };
-        self.sync_commit_ai_editor_to_provider(cx);
-        self.sync_commit_ai_bins_from_inputs(cx);
         let prefs = self.commit_ai.clone();
         self.busy = Some(BusyKind::GenerateCommitMessage);
         self.begin_progress(BusyKind::GenerateCommitMessage);
@@ -2572,11 +2824,7 @@ impl AppView {
             show_inline_blame: self.show_inline_blame,
             show_diff_line_background: self.show_diff_line_background,
             ui_font_family: self.ui_font_family.clone(),
-            commit_ai: {
-                self.sync_commit_ai_editor_to_provider(cx);
-                self.sync_commit_ai_bins_from_inputs(cx);
-                self.commit_ai.clone()
-            },
+            commit_ai: self.commit_ai.clone(),
         };
         if let Err(err) = prefs.save() {
             self.error = Some(format!("Failed to save settings: {err:#}").into());
