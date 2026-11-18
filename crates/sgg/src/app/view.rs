@@ -23,8 +23,9 @@ use super::files::{list_tree, FsNode};
 use super::i18n::{Locale, UiText};
 use super::page::{AppPage, NavEntry};
 use super::prefs::{
-    absolute_path, display_path, remember_repo, AppPrefs, StatusColors, ThemePreference,
-    DEFAULT_TERMINAL_FONT_FAMILY, DEFAULT_TERMINAL_FONT_SIZE, DEFAULT_TERMINAL_LINE_HEIGHT,
+    absolute_path, display_path, remember_repo, AppPrefs, CommitAiPrefs, StatusColors,
+    ThemePreference, DEFAULT_TERMINAL_FONT_FAMILY, DEFAULT_TERMINAL_FONT_SIZE,
+    DEFAULT_TERMINAL_LINE_HEIGHT,
 };
 use super::progress::{
     ProgressEntry, ProgressState, PROGRESS_DEFAULT_HEIGHT, PROGRESS_LOG_LIMIT,
@@ -254,6 +255,21 @@ pub struct AppView {
     pub(super) auto_check_updates: bool,
     /// Version dismissed via "Later" (silent launch checks skip re-prompting it).
     pub(super) skipped_update_version: String,
+    pub(super) commit_ai: CommitAiPrefs,
+    /// Provider id currently open in the Settings editor (empty = none).
+    pub(super) commit_ai_edit_id: String,
+    pub(super) commit_ai_title_input: Entity<InputState>,
+    pub(super) commit_ai_docs_input: Entity<InputState>,
+    pub(super) commit_ai_base_input: Entity<InputState>,
+    pub(super) commit_ai_path_input: Entity<InputState>,
+    pub(super) commit_ai_model_input: Entity<InputState>,
+    pub(super) commit_ai_key_input: Entity<InputState>,
+    pub(super) commit_ai_auth_header_input: Entity<InputState>,
+    pub(super) commit_ai_auth_query_input: Entity<InputState>,
+    pub(super) commit_ai_key_env_input: Entity<InputState>,
+    pub(super) commit_ai_cursor_bin_input: Entity<InputState>,
+    pub(super) commit_ai_codex_bin_input: Entity<InputState>,
+    generate_commit_task: Option<Task<()>>,
     /// Latest release from `latest.json` when newer than this build.
     pub(super) update_available: Option<super::update::LatestInfo>,
     update_task: Option<Task<()>>,
@@ -363,6 +379,29 @@ impl AppView {
         let ui_font_input = cx.new(|cx| {
             InputState::new(window, cx).placeholder(t.font_search_placeholder)
         });
+        let commit_ai_title_input =
+            cx.new(|cx| InputState::new(window, cx).placeholder("Provider title"));
+        let commit_ai_docs_input =
+            cx.new(|cx| InputState::new(window, cx).placeholder("https://… docs / console"));
+        let commit_ai_base_input = cx.new(|cx| {
+            InputState::new(window, cx).placeholder("https://api.openai.com/v1")
+        });
+        let commit_ai_path_input =
+            cx.new(|cx| InputState::new(window, cx).placeholder("/chat/completions"));
+        let commit_ai_model_input =
+            cx.new(|cx| InputState::new(window, cx).placeholder("gpt-4o-mini"));
+        let commit_ai_key_input =
+            cx.new(|cx| InputState::new(window, cx).placeholder("sk-… or leave empty"));
+        let commit_ai_auth_header_input =
+            cx.new(|cx| InputState::new(window, cx).placeholder("x-api-key"));
+        let commit_ai_auth_query_input =
+            cx.new(|cx| InputState::new(window, cx).placeholder("key"));
+        let commit_ai_key_env_input =
+            cx.new(|cx| InputState::new(window, cx).placeholder("OPENAI_API_KEY"));
+        let commit_ai_cursor_bin_input =
+            cx.new(|cx| InputState::new(window, cx).placeholder("agent / cursor-agent"));
+        let commit_ai_codex_bin_input =
+            cx.new(|cx| InputState::new(window, cx).placeholder("codex"));
         let terminal_shell_input = cx.new(|cx| {
             InputState::new(window, cx)
                 .placeholder(super::terminal_shell::custom_command_placeholder())
@@ -413,9 +452,50 @@ impl AppView {
             input.set_value(&prefs.editor.custom_command, window, cx);
         });
         // UI / terminal font inputs are search filters only (start empty).
+        commit_ai_cursor_bin_input.update(cx, |input, cx| {
+            input.set_value(&prefs.commit_ai.cursor_bin, window, cx);
+        });
+        commit_ai_codex_bin_input.update(cx, |input, cx| {
+            input.set_value(&prefs.commit_ai.codex_bin, window, cx);
+        });
         terminal_shell_input.update(cx, |input, cx| {
             input.set_value(&prefs.terminal_shell.custom_command, window, cx);
         });
+        let commit_ai_edit_id = prefs
+            .commit_ai
+            .providers
+            .first()
+            .map(|p| p.id.clone())
+            .unwrap_or_default();
+        if let Some(provider) = prefs.commit_ai.provider_by_id(&commit_ai_edit_id) {
+            commit_ai_title_input.update(cx, |input, cx| {
+                input.set_value(&provider.title, window, cx);
+            });
+            commit_ai_docs_input.update(cx, |input, cx| {
+                input.set_value(&provider.docs_url, window, cx);
+            });
+            commit_ai_base_input.update(cx, |input, cx| {
+                input.set_value(&provider.base_url, window, cx);
+            });
+            commit_ai_path_input.update(cx, |input, cx| {
+                input.set_value(&provider.chat_path, window, cx);
+            });
+            commit_ai_model_input.update(cx, |input, cx| {
+                input.set_value(&provider.model, window, cx);
+            });
+            commit_ai_key_input.update(cx, |input, cx| {
+                input.set_value(&provider.api_key, window, cx);
+            });
+            commit_ai_auth_header_input.update(cx, |input, cx| {
+                input.set_value(&provider.auth_header, window, cx);
+            });
+            commit_ai_auth_query_input.update(cx, |input, cx| {
+                input.set_value(&provider.auth_query_param, window, cx);
+            });
+            commit_ai_key_env_input.update(cx, |input, cx| {
+                input.set_value(&provider.api_key_env, window, cx);
+            });
+        }
 
         let status_colors = prefs.status_colors.clone();
         // Placeholder pickers; values synced after theme apply.
@@ -510,6 +590,20 @@ impl AppView {
             auto_refresh: prefs.auto_refresh,
             auto_check_updates: prefs.auto_check_updates,
             skipped_update_version: prefs.skipped_update_version,
+            commit_ai: prefs.commit_ai.clone(),
+            commit_ai_edit_id,
+            commit_ai_title_input,
+            commit_ai_docs_input,
+            commit_ai_base_input,
+            commit_ai_path_input,
+            commit_ai_model_input,
+            commit_ai_key_input,
+            commit_ai_auth_header_input,
+            commit_ai_auth_query_input,
+            commit_ai_key_env_input,
+            commit_ai_cursor_bin_input,
+            commit_ai_codex_bin_input,
+            generate_commit_task: None,
             update_available: None,
             update_task: None,
             show_remote_branches: prefs.show_remote_branches,
@@ -2139,6 +2233,318 @@ impl AppView {
         }));
     }
 
+    pub(super) fn sync_commit_ai_bins_from_inputs(&mut self, cx: &App) {
+        self.commit_ai.cursor_bin = self.commit_ai_cursor_bin_input.read(cx).value().to_string();
+        self.commit_ai.codex_bin = self.commit_ai_codex_bin_input.read(cx).value().to_string();
+    }
+
+    fn load_commit_ai_editor_inputs(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(provider) = self.commit_ai.provider_by_id(&self.commit_ai_edit_id).cloned() else {
+            return;
+        };
+        self.commit_ai_title_input.update(cx, |input, cx| {
+            input.set_value(&provider.title, window, cx);
+        });
+        self.commit_ai_docs_input.update(cx, |input, cx| {
+            input.set_value(&provider.docs_url, window, cx);
+        });
+        self.commit_ai_base_input.update(cx, |input, cx| {
+            input.set_value(&provider.base_url, window, cx);
+        });
+        self.commit_ai_path_input.update(cx, |input, cx| {
+            input.set_value(&provider.chat_path, window, cx);
+        });
+        self.commit_ai_model_input.update(cx, |input, cx| {
+            input.set_value(&provider.model, window, cx);
+        });
+        self.commit_ai_key_input.update(cx, |input, cx| {
+            input.set_value(&provider.api_key, window, cx);
+        });
+        self.commit_ai_auth_header_input.update(cx, |input, cx| {
+            input.set_value(&provider.auth_header, window, cx);
+        });
+        self.commit_ai_auth_query_input.update(cx, |input, cx| {
+            input.set_value(&provider.auth_query_param, window, cx);
+        });
+        self.commit_ai_key_env_input.update(cx, |input, cx| {
+            input.set_value(&provider.api_key_env, window, cx);
+        });
+    }
+
+    pub(super) fn sync_commit_ai_editor_to_provider(&mut self, cx: &App) {
+        let id = self.commit_ai_edit_id.clone();
+        if id.is_empty() {
+            return;
+        }
+        let title = self.commit_ai_title_input.read(cx).value().to_string();
+        let docs_url = self.commit_ai_docs_input.read(cx).value().to_string();
+        let base_url = self.commit_ai_base_input.read(cx).value().to_string();
+        let chat_path = self.commit_ai_path_input.read(cx).value().to_string();
+        let model = self.commit_ai_model_input.read(cx).value().to_string();
+        let api_key = self.commit_ai_key_input.read(cx).value().to_string();
+        let auth_header = self.commit_ai_auth_header_input.read(cx).value().to_string();
+        let auth_query_param = self.commit_ai_auth_query_input.read(cx).value().to_string();
+        let api_key_env = self.commit_ai_key_env_input.read(cx).value().to_string();
+        if let Some(provider) = self.commit_ai.provider_by_id_mut(&id) {
+            provider.title = title;
+            provider.docs_url = docs_url;
+            provider.base_url = base_url;
+            provider.chat_path = if chat_path.trim().is_empty() {
+                "/chat/completions".into()
+            } else {
+                chat_path
+            };
+            provider.model = model;
+            provider.api_key = api_key;
+            provider.auth_header = if auth_header.trim().is_empty() {
+                "x-api-key".into()
+            } else {
+                auth_header
+            };
+            provider.auth_query_param = if auth_query_param.trim().is_empty() {
+                "key".into()
+            } else {
+                auth_query_param
+            };
+            provider.api_key_env = api_key_env;
+        }
+    }
+
+    pub(super) fn set_commit_ai_style(
+        &mut self,
+        style: super::prefs::CommitAiStyle,
+        cx: &mut Context<Self>,
+    ) {
+        self.commit_ai.style = style;
+        self.persist_prefs(cx);
+        cx.notify();
+    }
+
+    pub(super) fn set_commit_ai_active_provider(
+        &mut self,
+        id: impl Into<String>,
+        cx: &mut Context<Self>,
+    ) {
+        self.commit_ai.active_provider_id = id.into();
+        self.persist_prefs(cx);
+        cx.notify();
+    }
+
+    pub(super) fn select_commit_ai_provider(
+        &mut self,
+        id: impl Into<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.sync_commit_ai_editor_to_provider(cx);
+        self.commit_ai_edit_id = id.into();
+        self.load_commit_ai_editor_inputs(window, cx);
+        cx.notify();
+    }
+
+    pub(super) fn set_commit_ai_auth(
+        &mut self,
+        auth: super::ai_provider::AiAuthKind,
+        cx: &mut Context<Self>,
+    ) {
+        let id = self.commit_ai_edit_id.clone();
+        if let Some(provider) = self.commit_ai.provider_by_id_mut(&id) {
+            provider.auth = auth;
+            self.persist_prefs(cx);
+            cx.notify();
+        }
+    }
+
+    pub(super) fn set_commit_ai_provider_enabled(
+        &mut self,
+        id: impl AsRef<str>,
+        enabled: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let id = id.as_ref();
+        if let Some(provider) = self.commit_ai.provider_by_id_mut(id) {
+            provider.enabled = enabled;
+            self.persist_prefs(cx);
+            cx.notify();
+        }
+    }
+
+    pub(super) fn apply_commit_ai_provider(
+        &mut self,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.sync_commit_ai_editor_to_provider(cx);
+        self.sync_commit_ai_bins_from_inputs(cx);
+        self.persist_prefs(cx);
+        cx.notify();
+    }
+
+    pub(super) fn add_commit_ai_preset(
+        &mut self,
+        preset: super::ai_provider::AiProviderPreset,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.sync_commit_ai_editor_to_provider(cx);
+        let mut provider = preset.build();
+        if self.commit_ai.provider_by_id(&provider.id).is_some() {
+            provider.id = super::ai_provider::AiProvider::new_id();
+            provider.title = format!("{} (copy)", provider.title);
+        }
+        let id = provider.id.clone();
+        self.commit_ai.providers.push(provider);
+        self.commit_ai_edit_id = id;
+        self.load_commit_ai_editor_inputs(window, cx);
+        self.persist_prefs(cx);
+        cx.notify();
+    }
+
+    pub(super) fn add_custom_commit_ai_provider(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        use super::ai_provider::{AiAuthKind, AiProvider, AiProviderKind};
+        self.sync_commit_ai_editor_to_provider(cx);
+        let id = AiProvider::new_id();
+        let provider = AiProvider {
+            id: id.clone(),
+            title: "Custom OpenAI-compatible".into(),
+            kind: AiProviderKind::OpenAiCompatible,
+            docs_url: String::new(),
+            base_url: String::new(),
+            chat_path: "/chat/completions".into(),
+            model: String::new(),
+            api_key: String::new(),
+            auth: AiAuthKind::Bearer,
+            auth_header: "x-api-key".into(),
+            auth_query_param: "key".into(),
+            api_key_env: String::new(),
+            enabled: true,
+            preset: String::new(),
+        };
+        self.commit_ai.providers.push(provider);
+        self.commit_ai_edit_id = id;
+        self.load_commit_ai_editor_inputs(window, cx);
+        self.persist_prefs(cx);
+        cx.notify();
+    }
+
+    pub(super) fn remove_commit_ai_provider(
+        &mut self,
+        id: impl AsRef<str>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let id = id.as_ref();
+        self.commit_ai.providers.retain(|p| p.id != id);
+        if self.commit_ai.active_provider_id == id {
+            self.commit_ai.active_provider_id = super::ai_provider::ACTIVE_AUTO.into();
+        }
+        if self.commit_ai_edit_id == id {
+            self.commit_ai_edit_id = self
+                .commit_ai
+                .providers
+                .first()
+                .map(|p| p.id.clone())
+                .unwrap_or_default();
+            self.load_commit_ai_editor_inputs(window, cx);
+        }
+        self.persist_prefs(cx);
+        cx.notify();
+    }
+
+    pub(super) fn move_commit_ai_provider(
+        &mut self,
+        id: impl AsRef<str>,
+        delta: isize,
+        cx: &mut Context<Self>,
+    ) {
+        let id = id.as_ref();
+        let Some(idx) = self.commit_ai.providers.iter().position(|p| p.id == id) else {
+            return;
+        };
+        let target = idx as isize + delta;
+        if target < 0 || target as usize >= self.commit_ai.providers.len() {
+            return;
+        }
+        self.commit_ai.providers.swap(idx, target as usize);
+        self.persist_prefs(cx);
+        cx.notify();
+    }
+
+    /// Fill the commit textarea from AI (staged diff preferred). Never commits.
+    pub(super) fn generate_commit_message(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.generate_commit_task.is_some()
+            || self.busy == Some(BusyKind::GenerateCommitMessage)
+        {
+            return;
+        }
+        if !self.has_repo() {
+            self.set_error(self.t().no_folder_open.into(), cx);
+            return;
+        }
+        let root = self.repo_root();
+        let hint = {
+            let current = self.commit_input.read(cx).value().to_string();
+            let trimmed = current.trim().to_string();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed)
+            }
+        };
+        self.sync_commit_ai_editor_to_provider(cx);
+        self.sync_commit_ai_bins_from_inputs(cx);
+        let prefs = self.commit_ai.clone();
+        self.busy = Some(BusyKind::GenerateCommitMessage);
+        self.begin_progress(BusyKind::GenerateCommitMessage);
+        cx.notify();
+        self.generate_commit_task = Some(cx.spawn_in(window, async move |this, cx| {
+            let result = cx
+                .background_spawn(async move {
+                    super::commit_ai::generate_for_repo(&root, hint.as_deref(), &prefs)
+                })
+                .await;
+            let _ = cx.update(|window, cx| {
+                this.update(cx, |this, cx| {
+                    this.generate_commit_task = None;
+                    this.busy = None;
+                    match result {
+                        Ok(msg) => {
+                            let text = msg.combined();
+                            this.commit_input.update(cx, |input, cx| {
+                                input.set_value(&text, window, cx);
+                            });
+                            this.set_ok_status(this.t().generate_commit_done);
+                        }
+                        Err(err) => {
+                            let msg = this
+                                .t()
+                                .generate_commit_failed
+                                .replace("{error}", &format!("{err:#}"));
+                            this.set_error(msg.into(), cx);
+                        }
+                    }
+                    if this
+                        .progress_log
+                        .last()
+                        .is_some_and(|e| e.state == super::progress::ProgressState::Running)
+                    {
+                        let done = this.status_line.clone();
+                        this.finish_progress(this.error.is_none(), done);
+                    }
+                    cx.notify();
+                })
+            });
+        }));
+    }
+
     pub(super) fn persist_prefs(&mut self, cx: &mut Context<Self>) {
         self.sync_custom_command_from_input(cx);
         let prefs = AppPrefs {
@@ -2166,6 +2572,11 @@ impl AppView {
             show_inline_blame: self.show_inline_blame,
             show_diff_line_background: self.show_diff_line_background,
             ui_font_family: self.ui_font_family.clone(),
+            commit_ai: {
+                self.sync_commit_ai_editor_to_provider(cx);
+                self.sync_commit_ai_bins_from_inputs(cx);
+                self.commit_ai.clone()
+            },
         };
         if let Err(err) = prefs.save() {
             self.error = Some(format!("Failed to save settings: {err:#}").into());

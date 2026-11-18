@@ -7,7 +7,8 @@ use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::input::Textarea;
 use gpui_kit::component::switch::Switch;
 use gpui_kit::component::{
-    ActiveTheme as _, IconName, Sizable as _, h_resizable, resizable_panel, v_resizable,
+    ActiveTheme as _, Disableable as _, IconName, Sizable as _, h_resizable, resizable_panel,
+    v_resizable,
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{InteractiveElement as _, *};
@@ -72,6 +73,27 @@ pub fn render(view: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
                         .border_color(cx.theme().border)
                         // Input surface — distinct from secondary/toolbar action chips.
                         .bg(cx.theme().input_background())
+                        .flex()
+                        .flex_col()
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .justify_end()
+                                .px_1()
+                                .pt_1()
+                                .child(with_busy(
+                                    icon_btn("generate-commit-ai", AssetIcon::Sparkles)
+                                        .accessibility_label(t.generate_commit_message)
+                                        .tooltip(t.tip_generate_commit_message)
+                                        .disabled(!view.has_repo())
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            this.generate_commit_message(window, cx);
+                                        })),
+                                    view.busy,
+                                    BusyKind::GenerateCommitMessage,
+                                )),
+                        )
                         .child(Textarea::new(&view.commit_input).appearance(false)),
                 )
                 .child(

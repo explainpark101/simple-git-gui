@@ -61,7 +61,7 @@ impl TerminalShellKind {
     pub fn available_kinds() -> Vec<Self> {
         Self::ALL
             .into_iter()
-            .filter(Self::is_available)
+            .filter(|kind| kind.is_available())
             .collect()
     }
 

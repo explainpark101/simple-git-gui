@@ -5,6 +5,7 @@
 //! SSH agents, and hooks behave like a normal developer toolchain.
 
 mod branch;
+mod commit_ai;
 mod error;
 mod find;
 mod graph;
@@ -17,6 +18,7 @@ mod state;
 mod status;
 mod types;
 
+pub use commit_ai::{prepare_commit_context, CommitMessageContext};
 pub use error::RepoError;
 pub use find::find_git_root;
 pub use graph::{

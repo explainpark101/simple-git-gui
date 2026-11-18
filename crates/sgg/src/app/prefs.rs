@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
+use super::ai_provider::{default_providers, AiProvider, ACTIVE_AUTO};
 use super::editor::ExternalEditor;
 use super::i18n::Locale;
 use super::sort::ChangeSort;
@@ -133,6 +134,86 @@ pub struct AppPrefs {
     /// Version the user dismissed with "Later" (silent launch checks skip this tag).
     #[serde(default)]
     pub skipped_update_version: String,
+    /// AI commit-message generator (Changes view sparkle button).
+    #[serde(default)]
+    pub commit_ai: CommitAiPrefs,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum CommitAiStyle {
+    #[default]
+    Conventional,
+    Free,
+}
+
+impl CommitAiStyle {
+    pub const ALL: [Self; 2] = [Self::Conventional, Self::Free];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Conventional => "Conventional Commits",
+            Self::Free => "Free-form",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CommitAiPrefs {
+    #[serde(default)]
+    pub style: CommitAiStyle,
+    /// `auto` or a provider [`AiProvider::id`].
+    #[serde(default = "default_active_provider")]
+    pub active_provider_id: String,
+    /// Registered backends (OpenAI-compatible + CLI). Order = Auto try order.
+    #[serde(default = "default_providers")]
+    pub providers: Vec<AiProvider>,
+    /// Override `agent` / `cursor-agent` path.
+    #[serde(default)]
+    pub cursor_bin: String,
+    /// Override `codex` path.
+    #[serde(default)]
+    pub codex_bin: String,
+}
+
+fn default_active_provider() -> String {
+    ACTIVE_AUTO.into()
+}
+
+impl Default for CommitAiPrefs {
+    fn default() -> Self {
+        Self {
+            style: CommitAiStyle::Conventional,
+            active_provider_id: default_active_provider(),
+            providers: default_providers(),
+            cursor_bin: String::new(),
+            codex_bin: String::new(),
+        }
+    }
+}
+
+impl CommitAiPrefs {
+    pub fn is_auto(&self) -> bool {
+        let id = self.active_provider_id.trim();
+        id.is_empty() || id.eq_ignore_ascii_case(ACTIVE_AUTO)
+    }
+
+    pub fn provider_by_id(&self, id: &str) -> Option<&AiProvider> {
+        self.providers.iter().find(|p| p.id == id)
+    }
+
+    pub fn provider_by_id_mut(&mut self, id: &str) -> Option<&mut AiProvider> {
+        self.providers.iter_mut().find(|p| p.id == id)
+    }
+
+    pub fn ensure_defaults(&mut self) {
+        if self.providers.is_empty() {
+            self.providers = default_providers();
+        }
+        if self.active_provider_id.trim().is_empty() {
+            self.active_provider_id = ACTIVE_AUTO.into();
+        }
+    }
 }
 
 fn default_true() -> bool {
@@ -195,6 +276,7 @@ impl Default for AppPrefs {
             ui_font_family: String::new(),
             auto_check_updates: true,
             skipped_update_version: String::new(),
+            commit_ai: CommitAiPrefs::default(),
         }
     }
 }
@@ -250,6 +332,7 @@ impl AppPrefs {
         prefs.change_sort = prefs.change_sort.normalized();
         prefs.normalize_terminal_font();
         prefs.terminal_shell.normalize_for_platform();
+        prefs.commit_ai.ensure_defaults();
         Ok(prefs)
     }
 

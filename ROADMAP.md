@@ -107,7 +107,7 @@ Goal: stash dirty work from the Changes view and restore it later without leavin
 - Line staging (hunk / line)
 - Ignore whitespace toggle
 
-### AI-assisted commit messages (planned)
+### AI-assisted commit messages — shipping in v1.5.0
 
 Goal: generate a commit subject (and optional body) from staged changes in the Changes view, with the same safety model as other tools — **text only**; the user reviews, edits, and commits manually.
 

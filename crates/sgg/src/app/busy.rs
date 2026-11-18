@@ -33,4 +33,5 @@ pub enum BusyKind {
     ResetHard,
     CheckUpdate,
     DownloadUpdate,
+    GenerateCommitMessage,
 }

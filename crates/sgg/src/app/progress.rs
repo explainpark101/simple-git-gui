@@ -56,6 +56,7 @@ impl BusyKind {
             Self::ResetHard => t.reset_hard,
             Self::CheckUpdate => t.check_for_updates,
             Self::DownloadUpdate => t.download_update,
+            Self::GenerateCommitMessage => t.generate_commit_message,
         }
     }
 }
