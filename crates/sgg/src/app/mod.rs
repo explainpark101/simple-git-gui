@@ -1,5 +1,6 @@
 mod ai_provider;
 mod busy;
+mod cli_tools;
 mod commit_ai;
 mod dialogs;
 mod editor;

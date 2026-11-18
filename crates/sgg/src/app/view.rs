@@ -272,6 +272,7 @@ pub struct AppView {
     pub(super) commit_ai_models: Vec<String>,
     pub(super) commit_ai_models_error: Option<String>,
     pub(super) commit_ai_models_task: Option<Task<()>>,
+    commit_ai_install_cli_task: Option<Task<()>>,
     generate_commit_task: Option<Task<()>>,
     /// Latest release from `latest.json` when newer than this build.
     pub(super) update_available: Option<super::update::LatestInfo>,
@@ -566,6 +567,7 @@ impl AppView {
             commit_ai_models: Vec::new(),
             commit_ai_models_error: None,
             commit_ai_models_task: None,
+            commit_ai_install_cli_task: None,
             generate_commit_task: None,
             update_available: None,
             update_task: None,
@@ -2610,6 +2612,78 @@ impl AppView {
         } else {
             self.set_error(self.t().commit_ai_cli_not_found.into(), cx);
         }
+    }
+
+    pub(super) fn install_commit_ai_cli_bin(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        use super::ai_provider::{AiProviderKind, CommitAiFormMode};
+        use super::cli_tools::CliToolKind;
+
+        if self.commit_ai_install_cli_task.is_some()
+            || self.busy == Some(BusyKind::InstallCli)
+        {
+            return;
+        }
+        let kind = match &self.commit_ai_form {
+            CommitAiFormMode::AddCursor => Some(CliToolKind::Cursor),
+            CommitAiFormMode::AddCodex => Some(CliToolKind::Codex),
+            CommitAiFormMode::Edit(id) => match self.commit_ai.provider_by_id(id).map(|p| p.kind)
+            {
+                Some(AiProviderKind::CursorCli) => Some(CliToolKind::Cursor),
+                Some(AiProviderKind::CodexCli) => Some(CliToolKind::Codex),
+                _ => None,
+            },
+            _ => None,
+        };
+        let Some(kind) = kind else {
+            return;
+        };
+
+        self.busy = Some(BusyKind::InstallCli);
+        self.begin_progress(BusyKind::InstallCli);
+        cx.notify();
+        self.commit_ai_install_cli_task = Some(cx.spawn_in(window, async move |this, cx| {
+            let result =
+                cx.background_spawn(async move { super::commit_ai::install_cli_bin(kind) })
+                    .await;
+            let _ = cx.update(|window, cx| {
+                this.update(cx, |this, cx| {
+                    this.commit_ai_install_cli_task = None;
+                    this.busy = None;
+                    match result {
+                        Ok(path) => {
+                            this.commit_ai_cli_bin_input.update(cx, |input, cx| {
+                                input.set_value(&path, window, cx);
+                            });
+                            let msg = this
+                                .t()
+                                .commit_ai_install_cli_done
+                                .replace("{path}", &path);
+                            this.set_ok_status(msg);
+                        }
+                        Err(err) => {
+                            let msg = this
+                                .t()
+                                .commit_ai_install_cli_failed
+                                .replace("{error}", &format!("{err:#}"));
+                            this.set_error(msg.into(), cx);
+                        }
+                    }
+                    if this
+                        .progress_log
+                        .last()
+                        .is_some_and(|e| e.state == super::progress::ProgressState::Running)
+                    {
+                        let done = this.status_line.clone();
+                        this.finish_progress(this.error.is_none(), done);
+                    }
+                    cx.notify();
+                })
+            });
+        }));
     }
 
     pub(super) fn browse_commit_ai_cli_bin(

@@ -105,11 +105,15 @@ fn generate_with_provider(
     match provider.kind {
         AiProviderKind::OpenAiCompatible => generate_http(prompt, provider),
         AiProviderKind::CursorCli => {
-            let bin = resolve_cursor_bin(provider, prefs)?;
+            let bin = resolve_cursor_bin(provider, prefs).or_else(|_| {
+                super::cli_tools::ensure_cursor().context("install Cursor Agent CLI")
+            })?;
             generate_cursor_with_bin(repo, prompt, &bin)
         }
         AiProviderKind::CodexCli => {
-            let bin = resolve_codex_bin(provider, prefs)?;
+            let bin = resolve_codex_bin(provider, prefs).or_else(|_| {
+                super::cli_tools::ensure_codex().context("install Codex CLI")
+            })?;
             generate_codex_with_bin(prompt, &bin)
         }
     }
@@ -382,11 +386,16 @@ pub fn resolve_codex_bin(provider: &AiProvider, prefs: &CommitAiPrefs) -> Result
 }
 
 pub fn detect_cursor_bin() -> Option<String> {
-    which_first(&["agent", "cursor-agent"])
+    super::cli_tools::detect_cursor()
 }
 
 pub fn detect_codex_bin() -> Option<String> {
-    which_first(&["codex"])
+    super::cli_tools::detect_codex()
+}
+
+/// Install Cursor Agent or Codex when missing; returns the resolved binary path.
+pub fn install_cli_bin(kind: super::cli_tools::CliToolKind) -> Result<String> {
+    super::cli_tools::ensure_cli(kind)
 }
 
 /// GET `{base}/models` (OpenAI-compatible) and return model ids.
@@ -468,39 +477,6 @@ fn nonempty_path(raw: &str) -> Option<String> {
         return None;
     }
     Some(t.to_string())
-}
-
-fn which_first(names: &[&str]) -> Option<String> {
-    for name in names {
-        if let Some(p) = which_bin(name) {
-            return Some(p);
-        }
-    }
-    None
-}
-
-fn which_bin(name: &str) -> Option<String> {
-    #[cfg(windows)]
-    let finder = "where";
-    #[cfg(not(windows))]
-    let finder = "which";
-
-    let mut cmd = Command::new(finder);
-    cmd.arg(name)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null());
-    hide_console(&mut cmd);
-    let output = cmd.output().ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let first = stdout.lines().next()?.trim();
-    if first.is_empty() {
-        return None;
-    }
-    Some(first.to_string())
 }
 
 fn run_command_capture(

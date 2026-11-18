@@ -34,4 +34,5 @@ pub enum BusyKind {
     CheckUpdate,
     DownloadUpdate,
     GenerateCommitMessage,
+    InstallCli,
 }

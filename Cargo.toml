@@ -4,7 +4,7 @@ members = ["crates/sgg-core", "crates/sgg"]
 default-members = ["crates/sgg"]
 
 [workspace.package]
-version = "1.5.1"
+version = "1.5.2"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/explainpark101/simple-git-gui"

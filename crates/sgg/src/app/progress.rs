@@ -57,6 +57,7 @@ impl BusyKind {
             Self::CheckUpdate => t.check_for_updates,
             Self::DownloadUpdate => t.download_update,
             Self::GenerateCommitMessage => t.generate_commit_message,
+            Self::InstallCli => t.commit_ai_install_cli,
         }
     }
 }

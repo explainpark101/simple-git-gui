@@ -1355,7 +1355,7 @@ fn commit_ai_section(
                                             .min_w_0()
                                             .child(Input::new(&view.commit_ai_cli_bin_input)),
                                     )
-                                    .child(
+                                    .child(with_busy(
                                         action_btn("commit-ai-detect-cli", AssetIcon::Search)
                                             .outline()
                                             .small()
@@ -1364,7 +1364,21 @@ fn commit_ai_section(
                                             .on_click(cx.listener(|this, _, window, cx| {
                                                 this.detect_commit_ai_cli_bin(window, cx);
                                             })),
-                                    )
+                                        view.busy,
+                                        BusyKind::InstallCli,
+                                    ))
+                                    .child(with_busy(
+                                        action_btn("commit-ai-install-cli", AssetIcon::Download)
+                                            .outline()
+                                            .small()
+                                            .label(t.commit_ai_install_cli)
+                                            .tooltip(t.tip_commit_ai_install_cli)
+                                            .on_click(cx.listener(|this, _, window, cx| {
+                                                this.install_commit_ai_cli_bin(window, cx);
+                                            })),
+                                        view.busy,
+                                        BusyKind::InstallCli,
+                                    ))
                                     .child(
                                         action_btn("commit-ai-browse-cli", AssetIcon::FolderOpen)
                                             .outline()
