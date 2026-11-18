@@ -20,7 +20,8 @@ use crate::app::view::{
     AppView, ChangesFileViewMode, HistoryDiffLayout, HistoryFileViewMode,
 };
 use crate::app::widgets::{
-    action_row, confirm_btn, display_btn, icon_btn, menu_item, pane_body, pane_header, with_busy,
+    action_row, confirm_btn, display_btn, hoverable_switch, icon_btn, menu_item, pane_body,
+    pane_header, with_busy,
 };
 
 pub fn render(
@@ -515,14 +516,18 @@ fn split_diff_side(
 
 fn diff_scroll_sync_switch(view: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
     let t = view.t();
-    Switch::new("preview-diff-scroll-sync")
-        .small()
-        .label(t.history_diff_scroll_sync)
-        .checked(view.history_diff_scroll_sync)
-        .tooltip(t.tip_history_diff_scroll_sync)
-        .on_click(cx.listener(|this, checked, _, cx| {
-            this.set_history_diff_scroll_sync(*checked, cx);
-        }))
+    hoverable_switch(
+        "preview-diff-scroll-sync",
+        Switch::new("preview-diff-scroll-sync")
+            .small()
+            .label(t.history_diff_scroll_sync)
+            .checked(view.history_diff_scroll_sync)
+            .tooltip(t.tip_history_diff_scroll_sync)
+            .on_click(cx.listener(|this, checked, _, cx| {
+                this.set_history_diff_scroll_sync(*checked, cx);
+            })),
+        cx,
+    )
 }
 
 /// Icon-only unified/split radio pill (labels live in tooltips).

@@ -21,8 +21,8 @@ use crate::app::i18n::UiText;
 use crate::app::sort::{ChangeFlatRow, ChangeSort};
 use crate::app::view::AppView;
 use crate::app::widgets::{
-    confirm_btn, display_btn, icon_btn, icon_danger_btn, menu_item_with_icon, pane_body, pane_header,
-    pane_toolbar, raised_action_btn, with_busy,
+    confirm_btn, display_btn, hoverable_switch, icon_btn, icon_danger_btn, menu_item_with_icon,
+    pane_body, pane_header, pane_toolbar, raised_action_btn, with_busy,
 };
 
 pub fn render(view: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
@@ -553,19 +553,23 @@ fn stage_filter_row(
             ),
         )
         .child(
-            Switch::new("group-by-status")
-                .small()
-                .label(t.group_by_status)
-                .checked(group_by_status)
-                .tooltip(t.tip_group_by_status)
-                .on_click({
-                    let entity = entity.clone();
-                    move |checked, _, cx| {
-                        entity.update(cx, |this, cx| {
-                            this.set_group_by_status(*checked, cx);
-                        });
-                    }
-                }),
+            hoverable_switch(
+                "group-by-status",
+                Switch::new("group-by-status")
+                    .small()
+                    .label(t.group_by_status)
+                    .checked(group_by_status)
+                    .tooltip(t.tip_group_by_status)
+                    .on_click({
+                        let entity = entity.clone();
+                        move |checked, _, cx| {
+                            entity.update(cx, |this, cx| {
+                                this.set_group_by_status(*checked, cx);
+                            });
+                        }
+                    }),
+                cx,
+            ),
         )
         .child(
             display_btn("sort-name-toggle")

@@ -6,11 +6,12 @@
 
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::menu::PopupMenuItem;
+use gpui_kit::component::switch::Switch;
 use gpui_kit::component::{ActiveTheme as _, Icon, Sizable as _, h_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    App, ClickEvent, Div, ElementId, ParentElement as _, SharedString, Styled as _, Window, div,
-    px, relative,
+    App, ClickEvent, Div, ElementId, InteractiveElement as _, IntoElement, ParentElement as _,
+    SharedString, Styled as _, Window, div, px, relative,
 };
 
 use super::busy::BusyKind;
@@ -161,6 +162,27 @@ pub fn icon_btn(id: impl Into<ElementId>, icon: impl Into<Icon>) -> Button {
 /// Compact icon-only danger button.
 pub fn icon_danger_btn(id: impl Into<ElementId>, icon: impl Into<Icon>) -> Button {
     btn(id).danger().small().compact().icon(icon)
+}
+
+/// Wrap a [`Switch`] so hover fills the track+label row and the cursor is a
+/// pointer. Upstream gpui-kit Switch omits both.
+pub fn hoverable_switch(
+    key: impl Into<SharedString>,
+    switch: Switch,
+    cx: &App,
+) -> impl IntoElement {
+    let key = key.into();
+    let hover_bg = cx.theme().muted.opacity(0.4);
+    div()
+        .id(SharedString::from(format!("sw-hover:{key}")))
+        .flex()
+        .items_center()
+        .rounded(cx.theme().radius)
+        .px_1()
+        .py_0p5()
+        .cursor_pointer()
+        .hover(move |this| this.bg(hover_bg))
+        .child(switch)
 }
 
 /// Popup / context-menu item with an explicit pointing-hand cursor.

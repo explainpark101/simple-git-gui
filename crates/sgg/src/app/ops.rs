@@ -463,6 +463,70 @@ impl AppView {
         );
     }
 
+    /// Double-click remote row: confirm fetch + local checkout/switch.
+    pub(super) fn confirm_checkout_remote_branch(
+        &mut self,
+        remote_ref: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let local = remote_ref
+            .split_once('/')
+            .map(|(_, rest)| rest.to_string())
+            .unwrap_or_else(|| remote_ref.clone());
+        let remote = remote_ref
+            .split_once('/')
+            .map(|(r, _)| r.to_string())
+            .unwrap_or_else(|| "origin".into());
+        if local.is_empty() || local == "HEAD" {
+            self.set_error("Pick a named remote branch (not remote HEAD)".into(), cx);
+            return;
+        }
+        let t = self.t();
+        let title = t.confirm_checkout_remote;
+        let ok = t.branch_confirm;
+        let cancel = t.branch_cancel;
+        let description = t
+            .desc_checkout_remote
+            .replace("{name}", &remote_ref)
+            .replace("{local}", &local)
+            .replace("{remote}", &remote);
+        let view = cx.entity();
+        open_confirm(
+            window,
+            cx,
+            title,
+            description,
+            ok,
+            cancel,
+            false,
+            move |_, window, cx| {
+                let remote_ref = remote_ref.clone();
+                view.update(cx, |this, cx| {
+                    this.run_busy(BusyKind::Fetch, window, cx, move |this, _, cx| {
+                        this.checkout_remote_branch_now(remote_ref, cx);
+                    });
+                });
+                true
+            },
+        );
+    }
+
+    pub(super) fn checkout_remote_branch_now(
+        &mut self,
+        remote_ref: String,
+        cx: &mut Context<Self>,
+    ) {
+        match self.with_repo(|repo| repo.checkout_remote_branch(&remote_ref)) {
+            Ok(local) => {
+                self.error = None;
+                self.set_ok_status(format!("Checked out `{local}` ← {remote_ref}"));
+                self.reload(cx);
+            }
+            Err(err) => self.set_error(err, cx),
+        }
+    }
+
     pub(super) fn confirm_branch_form(
         &mut self,
         window: &mut Window,

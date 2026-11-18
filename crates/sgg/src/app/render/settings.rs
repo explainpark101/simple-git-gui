@@ -19,14 +19,15 @@ use crate::app::ai_provider::{
     LocalLlmPreset, ACTIVE_AUTO, CHAT_PATH_PRESETS,
 };
 use crate::app::prefs::{
-    settings_path, CommitAiHttpMode, CommitAiStyle, StatusColors, TerminalShellKind,
-    ThemePreference, COMFORTABLE_TERMINAL_LINE_HEIGHT, DEFAULT_TERMINAL_LINE_HEIGHT,
+    settings_path, BranchSyncDisplay, CommitAiHttpMode, CommitAiStyle, StatusColors,
+    TerminalShellKind, ThemePreference, COMFORTABLE_TERMINAL_LINE_HEIGHT,
+    DEFAULT_TERMINAL_LINE_HEIGHT,
 };
 use crate::app::render::status_style::display_label;
 use crate::app::view::AppView;
 use crate::app::widgets::{
-    action_btn, display_btn, icon_btn, icon_danger_btn, list_row_btn, menu_item, with_busy,
-    with_busy_bottom_progress,
+    action_btn, display_btn, hoverable_switch, icon_btn, icon_danger_btn, list_row_btn, menu_item,
+    with_busy, with_busy_bottom_progress,
 };
 
 /// Field label inside a settings card — heavier than list item names.
@@ -289,7 +290,8 @@ pub fn render(view: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
                         .text_color(cx.theme().muted_foreground)
                         .child(t.tip_show_remote_branches),
                 )
-                .child(
+                .child(hoverable_switch(
+                    "settings-show-remote-branches",
                     Switch::new("settings-show-remote-branches")
                         .label(t.show_remote_branches)
                         .checked(view.show_remote_branches)
@@ -297,6 +299,44 @@ pub fn render(view: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
                         .on_click(cx.listener(|this, checked, _, cx| {
                             this.set_show_remote_branches(*checked, cx);
                         })),
+                    cx,
+                ))
+                .child(field_label(t.branch_sync_display))
+                .child(
+                    div()
+                        .text_xs()
+                        .text_left()
+                        .line_height(relative(1.35))
+                        .text_color(cx.theme().muted_foreground)
+                        .child(t.tip_branch_sync_display),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .flex_wrap()
+                        .gap_2()
+                        .child(
+                            display_btn("branch-sync-dot")
+                                .outline()
+                                .small()
+                                .label(t.branch_sync_display_dot)
+                                .tooltip(t.tip_branch_sync_display_dot)
+                                .selected(view.branch_sync_display == BranchSyncDisplay::Dot)
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.set_branch_sync_display(BranchSyncDisplay::Dot, cx);
+                                })),
+                        )
+                        .child(
+                            display_btn("branch-sync-counts")
+                                .outline()
+                                .small()
+                                .label(t.branch_sync_display_counts)
+                                .tooltip(t.tip_branch_sync_display_counts)
+                                .selected(view.branch_sync_display == BranchSyncDisplay::Counts)
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.set_branch_sync_display(BranchSyncDisplay::Counts, cx);
+                                })),
+                        ),
                 ),
         )
         .child(
@@ -562,12 +602,15 @@ pub fn render(view: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
                         .child(t.recent_projects),
                 )
                 .child(
+                    // Same as font pickers: avoid overflow_y_scrollbar size_full
+                    // clip in the settings column (see system_font_picker_list).
                     div()
-                        .max_h(px(280.))
-                        .min_h(px(72.))
+                        .id("settings-recent-repos")
+                        .h(px(200.))
                         .w_full()
                         .min_w_0()
-                        .overflow_y_scrollbar()
+                        .flex_shrink_0()
+                        .overflow_y_scroll()
                         .flex()
                         .flex_col()
                         .gap_1()
@@ -657,14 +700,16 @@ fn updates_section(
                 .justify_start()
                 .items_center()
                 .gap_3()
-                .child(
+                .child(hoverable_switch(
+                    "auto-check-updates",
                     Switch::new("auto-check-updates")
                         .checked(view.auto_check_updates)
                         .label(t.auto_check_updates)
                         .on_click(cx.listener(|this, checked, _, cx| {
                             this.set_auto_check_updates(*checked, cx);
                         })),
-                )
+                    cx,
+                ))
                 .child(
                     div()
                         .text_xs()
@@ -729,7 +774,8 @@ fn inline_blame_section(
                 .text_color(cx.theme().muted_foreground)
                 .child(t.tip_inline_blame),
         )
-        .child(
+        .child(hoverable_switch(
+            "settings-inline-blame",
             Switch::new("settings-inline-blame")
                 .label(t.inline_blame)
                 .checked(view.show_inline_blame)
@@ -737,7 +783,8 @@ fn inline_blame_section(
                 .on_click(cx.listener(|this, checked, _, cx| {
                     this.set_show_inline_blame(*checked, cx);
                 })),
-        )
+            cx,
+        ))
 }
 
 fn diff_line_background_section(
@@ -761,7 +808,8 @@ fn diff_line_background_section(
                 .text_color(cx.theme().muted_foreground)
                 .child(t.tip_diff_line_background),
         )
-        .child(
+        .child(hoverable_switch(
+            "settings-diff-line-bg",
             Switch::new("settings-diff-line-bg")
                 .label(t.diff_line_background)
                 .checked(view.show_diff_line_background)
@@ -769,7 +817,8 @@ fn diff_line_background_section(
                 .on_click(cx.listener(|this, checked, _, cx| {
                     this.set_show_diff_line_background(*checked, cx);
                 })),
-        )
+            cx,
+        ))
 }
 
 fn ui_font_section(
@@ -783,6 +832,7 @@ fn ui_font_section(
     div()
         .flex()
         .flex_col()
+        .flex_shrink_0()
         .gap_3()
         .p_4()
         .rounded_lg()
@@ -1123,7 +1173,8 @@ fn commit_ai_section(
                                         .child(meta),
                                 ),
                         )
-                        .child(
+                        .child(hoverable_switch(
+                            SharedString::from(format!("commit-ai-en:{id}")),
                             Switch::new(SharedString::from(format!("commit-ai-en:{id}")))
                                 .checked(enabled)
                                 .tooltip(t.commit_ai_enabled)
@@ -1134,7 +1185,8 @@ fn commit_ai_section(
                                         cx,
                                     );
                                 })),
-                        )
+                            cx,
+                        ))
                         .child(
                             icon_btn(
                                 SharedString::from(format!("commit-ai-edit:{id}")),
@@ -1956,12 +2008,17 @@ fn system_font_picker_list(
     let selected_empty = selected.trim().is_empty();
     let is_ui = id_prefix == "ui-font";
 
+    // Do NOT use overflow_y_scrollbar here. Kit Scrollable wraps with
+    // size_full(); in this content-sized settings column that expands the
+    // list and clips every card below UI font (blame, terminal, AI, …).
+    // Fixed height + native overflow_y_scroll keeps siblings laid out.
     div()
-        .max_h(px(220.))
-        .min_h(px(96.))
+        .id(SharedString::from(format!("{id_prefix}-font-picker")))
+        .h(px(220.))
         .w_full()
         .min_w_0()
-        .overflow_y_scrollbar()
+        .flex_shrink_0()
+        .overflow_y_scroll()
         .flex()
         .flex_col()
         .gap_1()
@@ -2041,6 +2098,7 @@ fn terminal_font_section(
     div()
         .flex()
         .flex_col()
+        .flex_shrink_0()
         .gap_3()
         .p_4()
         .rounded_lg()

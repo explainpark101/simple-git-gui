@@ -22,8 +22,8 @@ use crate::app::progress::{ProgressState, PROGRESS_MAX_HEIGHT, PROGRESS_MIN_HEIG
 use crate::app::remote_url::remote_browse_url;
 use crate::app::view::{AppView, BranchForm, RemoteForm};
 use crate::app::widgets::{
-    action_btn, action_row, confirm_btn, display_btn, icon_btn, icon_danger_btn, list_row_btn,
-    menu_item_with_icon, pane_body, pane_header, with_busy,
+    action_btn, action_row, confirm_btn, display_btn, hoverable_switch, icon_btn, icon_danger_btn,
+    list_row_btn, menu_item_with_icon, pane_body, pane_header, with_busy,
 };
 
 pub fn render(
@@ -341,7 +341,7 @@ fn remote_sync_chip(
 }
 
 fn sync_count_badge(
-    id: &'static str,
+    id: impl Into<ElementId>,
     icon: AssetIcon,
     count: usize,
     color: Hsla,
@@ -368,6 +368,77 @@ fn sync_count_badge(
                         .child(count.to_string()),
                 ),
         )
+}
+
+/// Uncommitted changes as `!n` (Counts sync display).
+fn sync_dirty_text_badge(
+    id: impl Into<ElementId>,
+    count: usize,
+    tip: impl Into<SharedString>,
+    color: Hsla,
+) -> impl IntoElement {
+    display_btn(id)
+        .ghost()
+        .compact()
+        .small()
+        .flex_shrink_0()
+        .tooltip(tip)
+        .child(
+            div()
+                .text_xs()
+                .font_semibold()
+                .text_color(color)
+                .child(format!("!{count}")),
+        )
+}
+
+/// ↑/↓ counts + optional `!n` for a local branch (Counts mode).
+fn branch_sync_counts(
+    name: &str,
+    branch: &BranchInfo,
+    changes_count: usize,
+    t: UiText,
+    cx: &App,
+) -> impl IntoElement {
+    let ahead = branch.ahead;
+    let behind = branch.behind;
+    let theme = cx.theme();
+    div()
+        .id(SharedString::from(format!("branch-sync-counts:{name}")))
+        .flex()
+        .items_center()
+        .gap_1()
+        .flex_shrink_0()
+        .when(behind > 0, |this| {
+            this.child(sync_count_badge(
+                SharedString::from(format!("branch-behind:{name}")),
+                AssetIcon::ArrowDown,
+                behind,
+                theme.danger,
+                t.tip_branch_behind
+                    .replace("{behind}", &behind.to_string())
+                    .replace("{upstream}", branch.upstream.as_deref().unwrap_or("")),
+            ))
+        })
+        .when(ahead > 0, |this| {
+            this.child(sync_count_badge(
+                SharedString::from(format!("branch-ahead:{name}")),
+                AssetIcon::ArrowUp,
+                ahead,
+                theme.warning,
+                t.tip_branch_ahead
+                    .replace("{ahead}", &ahead.to_string())
+                    .replace("{upstream}", branch.upstream.as_deref().unwrap_or("")),
+            ))
+        })
+        .when(changes_count > 0, |this| {
+            this.child(sync_dirty_text_badge(
+                SharedString::from(format!("branch-dirty:{name}")),
+                changes_count,
+                t.tip_branch_dirty,
+                theme.warning,
+            ))
+        })
 }
 
 fn operation_badge(
@@ -869,11 +940,11 @@ fn branches_panel(
     let show_remote = view.show_remote_branches;
     let search_compact = view.branch_search_compact;
     let search_open = view.branch_search_open;
-    let has_changes = view
+    let changes_count = view
         .snapshot
         .as_ref()
-        .map(|s| !s.changes.is_empty())
-        .unwrap_or(false);
+        .map(|s| s.changes.len())
+        .unwrap_or(0);
     let query = view
         .branch_search_input
         .read(cx)
@@ -983,21 +1054,26 @@ fn branches_panel(
                                             .read(cx)
                                             .show_remote_branches;
                                         let entity = entity.clone();
-                                        menu.item(PopupMenuItem::element(move |_, _| {
-                                            Switch::new("branch-menu-show-remote")
-                                                .label(label)
-                                                .checked(show_remote)
-                                                .tooltip(tip)
-                                                .on_click({
-                                                    let entity = entity.clone();
-                                                    move |checked, _, cx| {
-                                                        let _ = entity.update(cx, |this, cx| {
-                                                            this.set_show_remote_branches(
-                                                                *checked, cx,
-                                                            );
-                                                        });
-                                                    }
-                                                })
+                                        menu.item(PopupMenuItem::element(move |_, cx| {
+                                            hoverable_switch(
+                                                "branch-menu-show-remote",
+                                                Switch::new("branch-menu-show-remote")
+                                                    .label(label)
+                                                    .checked(show_remote)
+                                                    .tooltip(tip)
+                                                    .on_click({
+                                                        let entity = entity.clone();
+                                                        move |checked, _, cx| {
+                                                            let _ = entity.update(cx, |this, cx| {
+                                                                this.set_show_remote_branches(
+                                                                    *checked, cx,
+                                                                );
+                                                            });
+                                                        }
+                                                    }),
+                                                cx,
+                                            )
+                                            .into_any_element()
                                         }))
                                     }
                                 }),
@@ -1034,7 +1110,7 @@ fn branches_panel(
                 .children(
                     visible
                         .into_iter()
-                        .map(|b| branch_row(b, has_changes, view, cx)),
+                        .map(|b| branch_row(b, changes_count, view, cx)),
                 ),
         )
         .into_any_element()
@@ -1155,7 +1231,7 @@ fn branch_form_panel(
 
 fn branch_row(
     branch: &BranchInfo,
-    has_changes: bool,
+    changes_count: usize,
     view: &AppView,
     cx: &mut Context<AppView>,
 ) -> AnyElement {
@@ -1165,14 +1241,16 @@ fn branch_row(
     let name_rename = name.clone();
     let name_delete = name.clone();
     let name_history = name.clone();
+    let has_changes = changes_count > 0;
     let label = if branch.is_remote {
         format!("remotes/{}", branch.name)
     } else {
         branch.name.clone()
     };
     let sync = branch_sync_ui(branch, has_changes, t, cx);
+    let sync_mode = view.branch_sync_display;
     let tip = if branch.is_remote {
-        format!("remotes/{}", branch.name)
+        format!("remotes/{}\n{}", branch.name, t.tip_checkout_remote)
     } else {
         match &sync {
             Some(sync) => format!("{}\n{}", branch.name, sync.tip),
@@ -1180,8 +1258,10 @@ fn branch_row(
         }
     };
     let can_switch = !branch.is_remote && !branch.is_head;
+    let can_checkout_remote = branch.is_remote && !branch.name.ends_with("/HEAD");
     let can_rename = !branch.is_remote;
     let can_delete = !branch.is_remote && !branch.is_head;
+    let name_remote = name.clone();
     let head_color = if has_changes {
         cx.theme().warning
     } else {
@@ -1240,20 +1320,50 @@ fn branch_row(
                     .flex_1()
                     .min_w_0()
                     .tooltip(tip.clone())
-                    // Remote rows stay non-interactive; HEAD uses accent bg instead of disabled dim.
-                    .disabled(branch.is_remote)
+                    // Remote HEAD is non-interactive; named remotes use double-click checkout.
+                    .disabled(branch.is_remote && !can_checkout_remote)
                     .when(can_switch, |this| {
                         this.on_click(cx.listener(move |this, _, window, cx| {
                             this.confirm_switch_branch(name_switch.clone(), window, cx);
                         }))
+                    })
+                    .when(can_checkout_remote, |this| {
+                        this.on_click(cx.listener(
+                            move |this, event: &ClickEvent, window, cx| {
+                                if event.click_count() < 2 {
+                                    return;
+                                }
+                                this.confirm_checkout_remote_branch(
+                                    name_remote.clone(),
+                                    window,
+                                    cx,
+                                );
+                            },
+                        ))
                     }),
                 )
-                .when_some(sync, |this, sync| {
-                    this.child(branch_status_dot(
+                .when_some(sync, |this, sync| match sync_mode {
+                    crate::app::prefs::BranchSyncDisplay::Dot => this.child(branch_status_dot(
                         SharedString::from(format!("branch-sync:{}", name)),
                         sync.color,
                         sync.tip,
-                    ))
+                    )),
+                    crate::app::prefs::BranchSyncDisplay::Counts => {
+                        let show_counts = branch.ahead > 0
+                            || branch.behind > 0
+                            || changes_count > 0;
+                        if show_counts {
+                            this.child(branch_sync_counts(
+                                &name,
+                                branch,
+                                changes_count,
+                                t,
+                                cx,
+                            ))
+                        } else {
+                            this
+                        }
+                    }
                 }),
         )
         .child(

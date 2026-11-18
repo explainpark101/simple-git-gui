@@ -19,6 +19,21 @@ pub enum ThemePreference {
     System,
 }
 
+/// Branch list sync indicator style.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum BranchSyncDisplay {
+    /// Soft traffic-light glow after the name.
+    #[default]
+    Dot,
+    /// Push/pull counts with arrows; dirty working tree as `!n`.
+    Counts,
+}
+
+impl BranchSyncDisplay {
+    pub const ALL: [Self; 2] = [Self::Dot, Self::Counts];
+}
+
 /// Per-status color overrides as `#rrggbb` / `#rrggbbaa` hex (None = theme default).
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct StatusColors {
@@ -95,6 +110,9 @@ pub struct AppPrefs {
     /// Include remote-tracking branches in the Branches list.
     #[serde(default = "default_true")]
     pub show_remote_branches: bool,
+    /// How local branch sync status is shown (dot vs ↑/↓/! counts).
+    #[serde(default)]
+    pub branch_sync_display: BranchSyncDisplay,
     /// Ask whether to fetch when opening a repository (unless muted).
     #[serde(default = "default_true")]
     pub ask_fetch_on_open: bool,
@@ -351,6 +369,7 @@ impl Default for AppPrefs {
             changes_as_tree: false,
             auto_refresh: true,
             show_remote_branches: true,
+            branch_sync_display: BranchSyncDisplay::default(),
             ask_fetch_on_open: true,
             fetch_prompt_muted: Vec::new(),
             recent_repos: Vec::new(),

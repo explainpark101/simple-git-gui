@@ -26,8 +26,8 @@ use super::files::{list_tree, FsNode};
 use super::i18n::{Locale, UiText};
 use super::page::{AppPage, NavEntry};
 use super::prefs::{
-    absolute_path, display_path, remember_repo, AppPrefs, CommitAiPrefs, StatusColors,
-    ThemePreference, DEFAULT_TERMINAL_FONT_FAMILY, DEFAULT_TERMINAL_FONT_SIZE,
+    absolute_path, display_path, remember_repo, AppPrefs, BranchSyncDisplay, CommitAiPrefs,
+    StatusColors, ThemePreference, DEFAULT_TERMINAL_FONT_FAMILY, DEFAULT_TERMINAL_FONT_SIZE,
     DEFAULT_TERMINAL_LINE_HEIGHT,
 };
 use super::progress::{
@@ -303,6 +303,7 @@ pub struct AppView {
     pub(super) update_available: Option<super::update::LatestInfo>,
     update_task: Option<Task<()>>,
     pub(super) show_remote_branches: bool,
+    pub(super) branch_sync_display: BranchSyncDisplay,
     pub(super) ask_fetch_on_open: bool,
     pub(super) fetch_prompt_muted: Vec<String>,
     /// Absolute repo roots, most recent first (persisted, unbounded).
@@ -617,6 +618,7 @@ impl AppView {
             update_available: None,
             update_task: None,
             show_remote_branches: prefs.show_remote_branches,
+            branch_sync_display: prefs.branch_sync_display,
             ask_fetch_on_open: prefs.ask_fetch_on_open,
             fetch_prompt_muted: prefs.fetch_prompt_muted,
             recent_repos: prefs.recent_repos,
@@ -1086,6 +1088,9 @@ impl AppView {
         if page == AppPage::Settings {
             self.ensure_system_fonts(cx);
             self.refresh_cli_status(cx);
+            // Nested font-list height glitches can leave a stale offset so the
+            // viewport sits past real content (blank below UI font). Start at top.
+            self.settings_scroll.set_offset(point(px(0.), px(0.)));
         }
         self.restore_page_preview(window, cx);
         self.push_nav_entry(self.current_nav_entry());
@@ -1287,6 +1292,19 @@ impl AppView {
 
     pub(super) fn set_show_remote_branches(&mut self, enabled: bool, cx: &mut Context<Self>) {
         self.show_remote_branches = enabled;
+        self.persist_prefs(cx);
+        cx.notify();
+    }
+
+    pub(super) fn set_branch_sync_display(
+        &mut self,
+        mode: BranchSyncDisplay,
+        cx: &mut Context<Self>,
+    ) {
+        if self.branch_sync_display == mode {
+            return;
+        }
+        self.branch_sync_display = mode;
         self.persist_prefs(cx);
         cx.notify();
     }
@@ -3438,6 +3456,7 @@ impl AppView {
             auto_check_updates: self.auto_check_updates,
             skipped_update_version: self.skipped_update_version.clone(),
             show_remote_branches: self.show_remote_branches,
+            branch_sync_display: self.branch_sync_display,
             ask_fetch_on_open: self.ask_fetch_on_open,
             fetch_prompt_muted: self.fetch_prompt_muted.clone(),
             recent_repos: self.recent_repos.clone(),

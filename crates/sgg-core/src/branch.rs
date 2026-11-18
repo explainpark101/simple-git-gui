@@ -114,6 +114,38 @@ impl RepoState {
         Ok(())
     }
 
+    /// Fetch `remote` then create/switch a local branch tracking `remote_ref`
+    /// (`origin/feat/x` → local `feat/x`). Returns the local branch name.
+    pub fn checkout_remote_branch(&self, remote_ref: &str) -> Result<String, RepoError> {
+        let remote_ref = remote_ref.trim();
+        let Some((remote, local)) = remote_ref.split_once('/') else {
+            return Err(RepoError::Message(format!(
+                "invalid remote branch `{remote_ref}` (expected remote/name)"
+            )));
+        };
+        if remote.is_empty() || local.is_empty() {
+            return Err(RepoError::Message(format!(
+                "invalid remote branch `{remote_ref}`"
+            )));
+        }
+        if local == "HEAD" {
+            return Err(RepoError::Message(
+                "cannot check out remote HEAD; pick a named branch".into(),
+            ));
+        }
+
+        run_git(&self.root, &["fetch", remote])?;
+
+        let local_exists = self.repo.find_branch(local, BranchType::Local).is_ok();
+        if local_exists {
+            run_git(&self.root, &["switch", local])?;
+        } else {
+            // Creates local `local` tracking `remote_ref` and switches to it.
+            run_git(&self.root, &["switch", "--track", remote_ref])?;
+        }
+        Ok(local.to_string())
+    }
+
     pub fn rename_branch(&self, old: &str, new: &str) -> Result<(), RepoError> {
         let old = old.trim();
         let new = new.trim();
