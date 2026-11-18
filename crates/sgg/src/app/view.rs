@@ -161,6 +161,8 @@ pub struct AppView {
     pub(super) custom_editor_input: Entity<InputState>,
     pub(super) terminal_font_input: Entity<InputState>,
     pub(super) ui_font_input: Entity<InputState>,
+    /// Cached `TextSystem::all_font_names()` for Settings font pickers.
+    pub(super) system_font_names: Option<Vec<String>>,
     pub(super) preview_input: Entity<EditorState>,
     /// Left pane for History split-diff (old file / parent blob).
     pub(super) preview_input_old: Entity<EditorState>,
@@ -264,6 +266,7 @@ pub struct AppView {
     pub(super) status_color_pickers: StatusColorPickers,
     _status_color_subs: Vec<Subscription>,
     _branch_search_sub: Option<Subscription>,
+    _font_search_subs: Vec<Subscription>,
     _commit_input_sub: Option<Subscription>,
     _preview_blame_sub: Option<Subscription>,
     /// Re-render when Unified Diff line selection changes (blame strip).
@@ -355,14 +358,14 @@ impl AppView {
             InputState::new(window, cx).placeholder(r#"e.g. "C:\path\to\editor.exe" --wait"#)
         });
         let terminal_font_input = cx.new(|cx| {
-            InputState::new(window, cx).placeholder(DEFAULT_TERMINAL_FONT_FAMILY)
+            InputState::new(window, cx).placeholder(t.font_search_placeholder)
         });
         let ui_font_input = cx.new(|cx| {
-            InputState::new(window, cx).placeholder(".SystemUIFont")
+            InputState::new(window, cx).placeholder(t.font_search_placeholder)
         });
         let terminal_shell_input = cx.new(|cx| {
             InputState::new(window, cx)
-                .placeholder(r#"e.g. "C:\Program Files\Git\bin\bash.exe" --login"#)
+                .placeholder(super::terminal_shell::custom_command_placeholder())
         });
         // Code editor: line numbers + Ctrl/Cmd-F. soft_wrap(false) keeps the
         // gpui-base display_map on buffer lines only (visible-range paint), which
@@ -409,12 +412,7 @@ impl AppView {
         custom_editor_input.update(cx, |input, cx| {
             input.set_value(&prefs.editor.custom_command, window, cx);
         });
-        terminal_font_input.update(cx, |input, cx| {
-            input.set_value(&prefs.terminal_font_family, window, cx);
-        });
-        ui_font_input.update(cx, |input, cx| {
-            input.set_value(&prefs.ui_font_family, window, cx);
-        });
+        // UI / terminal font inputs are search filters only (start empty).
         terminal_shell_input.update(cx, |input, cx| {
             input.set_value(&prefs.terminal_shell.custom_command, window, cx);
         });
@@ -451,6 +449,7 @@ impl AppView {
             custom_editor_input,
             terminal_font_input,
             ui_font_input,
+            system_font_names: None,
             preview_input,
             preview_input_old,
             history_diff,
@@ -521,6 +520,7 @@ impl AppView {
             status_color_pickers,
             _status_color_subs: Vec::new(),
             _branch_search_sub: None,
+            _font_search_subs: Vec::new(),
             _commit_input_sub: None,
             _preview_blame_sub: None,
             _preview_diff_blame_sub: None,
@@ -561,6 +561,8 @@ impl AppView {
         view.wire_status_color_pickers(window, cx);
         view.wire_branch_search(cx);
         view.wire_history_branch_filter(cx);
+        view.wire_font_search_inputs(cx);
+        view.ensure_system_fonts(cx);
         view.wire_commit_input(window, cx);
         view.wire_preview_blame(cx);
         view.wire_window_bounds(window, cx);
@@ -911,8 +913,19 @@ impl AppView {
         if page == AppPage::Files && self.has_repo() {
             self.rebuild_files_tree();
         }
+        if page == AppPage::Settings {
+            self.ensure_system_fonts(cx);
+        }
         self.push_nav_entry(self.current_nav_entry());
         cx.notify();
+    }
+
+    /// Load installed font family names once (Settings font pickers).
+    pub(super) fn ensure_system_fonts(&mut self, cx: &App) {
+        if self.system_font_names.is_some() {
+            return;
+        }
+        self.system_font_names = Some(cx.text_system().all_font_names());
     }
 
     pub(super) fn history_back(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -1153,6 +1166,21 @@ impl AppView {
             }));
     }
 
+    fn wire_font_search_inputs(&mut self, cx: &mut Context<Self>) {
+        self._font_search_subs.clear();
+        for input in [
+            self.ui_font_input.clone(),
+            self.terminal_font_input.clone(),
+        ] {
+            let sub = cx.subscribe(&input, |_, _, event: &InputEvent, cx| {
+                if matches!(event, InputEvent::Change) {
+                    cx.notify();
+                }
+            });
+            self._font_search_subs.push(sub);
+        }
+    }
+
     fn wire_commit_input(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let input = self.commit_input.clone();
         // Ctrl/Cmd+Enter (secondary) commits; plain Enter inserts a newline in the textarea.
@@ -1283,14 +1311,11 @@ impl AppView {
     pub(super) fn set_ui_font_family(
         &mut self,
         family: impl Into<String>,
-        window: &mut Window,
+        _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let family = family.into().trim().to_string();
-        self.ui_font_family = family.clone();
-        self.ui_font_input.update(cx, |input, cx| {
-            input.set_value(&family, window, cx);
-        });
+        self.ui_font_family = family;
         self.apply_theme(cx);
         self.persist_prefs(cx);
         cx.notify();
@@ -1306,6 +1331,9 @@ impl AppView {
     }
 
     pub(super) fn reset_ui_font(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.ui_font_input.update(cx, |input, cx| {
+            input.set_value("", window, cx);
+        });
         self.set_ui_font_family(String::new(), window, cx);
     }
 
@@ -2362,6 +2390,9 @@ impl AppView {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if !kind.is_available() {
+            return;
+        }
         self.terminal_shell.kind = kind;
         self.persist_prefs(cx);
         cx.notify();
@@ -2439,10 +2470,7 @@ impl AppView {
         if family.trim().is_empty() {
             family = DEFAULT_TERMINAL_FONT_FAMILY.to_string();
         }
-        self.terminal_font_family = family.clone();
-        self.terminal_font_input.update(cx, |input, cx| {
-            input.set_value(&family, window, cx);
-        });
+        self.terminal_font_family = family;
         self.resize_terminal_to_window(window);
         self.persist_prefs(cx);
         cx.notify();
@@ -2497,6 +2525,9 @@ impl AppView {
     ) {
         self.terminal_font_size = DEFAULT_TERMINAL_FONT_SIZE;
         self.terminal_line_height = DEFAULT_TERMINAL_LINE_HEIGHT;
+        self.terminal_font_input.update(cx, |input, cx| {
+            input.set_value("", window, cx);
+        });
         self.set_terminal_font_family(DEFAULT_TERMINAL_FONT_FAMILY, window, cx);
     }
 

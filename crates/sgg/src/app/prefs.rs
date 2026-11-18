@@ -249,6 +249,7 @@ impl AppPrefs {
             .with_context(|| format!("parse {}", path.display()))?;
         prefs.change_sort = prefs.change_sort.normalized();
         prefs.normalize_terminal_font();
+        prefs.terminal_shell.normalize_for_platform();
         Ok(prefs)
     }
 

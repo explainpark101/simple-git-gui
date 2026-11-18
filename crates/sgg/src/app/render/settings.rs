@@ -15,7 +15,7 @@ use crate::app::editor::{EditorPreset, ZED_DOWNLOAD_URL};
 use crate::app::i18n::{Locale, UiText};
 use crate::app::prefs::{
     settings_path, StatusColors, TerminalShellKind, ThemePreference,
-    COMFORTABLE_TERMINAL_LINE_HEIGHT, DEFAULT_TERMINAL_FONT_FAMILY, DEFAULT_TERMINAL_LINE_HEIGHT,
+    COMFORTABLE_TERMINAL_LINE_HEIGHT, DEFAULT_TERMINAL_LINE_HEIGHT,
 };
 use crate::app::render::status_style::display_label;
 use crate::app::view::AppView;
@@ -754,13 +754,8 @@ fn ui_font_section(
     t: UiText,
     cx: &mut Context<AppView>,
 ) -> impl IntoElement {
-    let presets = [
-        ("Default", ""),
-        ("Segoe UI", "Segoe UI"),
-        ("Malgun Gothic", "Malgun Gothic"),
-        ("Noto Sans", "Noto Sans"),
-        ("Arial", "Arial"),
-    ];
+    let query = view.ui_font_input.read(cx).value().to_string();
+    let fonts = view.system_font_names.as_deref().unwrap_or(&[]);
 
     div()
         .flex()
@@ -798,23 +793,25 @@ fn ui_font_section(
         )
         .child(
             div()
-                .flex()
-                .flex_wrap()
-                .gap_2()
-                .children(presets.into_iter().map(|(label, family)| {
-                    let family = family.to_string();
-                    let selected = view.ui_font_family == family
-                        || (label == "Default" && view.ui_font_family.is_empty());
-                    display_btn(SharedString::from(format!("ui-font-preset:{label}")))
-                        .outline()
-                        .small()
-                        .label(label.to_string())
-                        .selected(selected)
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            this.set_ui_font_family(family.clone(), window, cx);
-                        }))
-                        .into_any_element()
-                })),
+                .text_xs()
+                .text_left()
+                .text_color(cx.theme().muted_foreground)
+                .child(t.tip_font_search),
+        )
+        .child(
+            div()
+                .text_xs()
+                .text_left()
+                .line_height(relative(1.35))
+                .child(format!(
+                    "{}: {}",
+                    t.font_current,
+                    if view.ui_font_family.trim().is_empty() {
+                        t.font_theme_default.to_string()
+                    } else {
+                        view.ui_font_family.clone()
+                    }
+                )),
         )
         .child(
             div()
@@ -825,7 +822,7 @@ fn ui_font_section(
                     div()
                         .flex_1()
                         .min_w_0()
-                        .child(Input::new(&view.ui_font_input)),
+                        .child(Input::new(&view.ui_font_input).cleanable(true)),
                 )
                 .child(
                     action_btn("apply-ui-font", AssetIcon::Save)
@@ -838,6 +835,26 @@ fn ui_font_section(
                         })),
                 ),
         )
+        .child(system_font_picker_list(
+            "ui-font",
+            fonts,
+            &query,
+            &view.ui_font_family,
+            true,
+            t,
+            cx,
+        ))
+}
+
+fn terminal_shell_tip(kind: TerminalShellKind, t: UiText) -> &'static str {
+    match kind {
+        TerminalShellKind::PowerShell => t.tip_terminal_shell_powershell,
+        TerminalShellKind::Cmd => t.tip_terminal_shell_cmd,
+        TerminalShellKind::GitBash => t.tip_terminal_shell_git_bash,
+        TerminalShellKind::Bash => t.tip_terminal_shell_bash,
+        TerminalShellKind::Zsh => t.tip_terminal_shell_zsh,
+        TerminalShellKind::Custom => t.tip_terminal_shell_custom,
+    }
 }
 
 fn terminal_shell_section(
@@ -846,15 +863,10 @@ fn terminal_shell_section(
     cx: &mut Context<AppView>,
 ) -> impl IntoElement {
     let kind = view.terminal_shell.kind;
-    let tips = [
-        (
-            TerminalShellKind::PowerShell,
-            t.tip_terminal_shell_powershell,
-        ),
-        (TerminalShellKind::Cmd, t.tip_terminal_shell_cmd),
-        (TerminalShellKind::GitBash, t.tip_terminal_shell_git_bash),
-        (TerminalShellKind::Custom, t.tip_terminal_shell_custom),
-    ];
+    let options: Vec<(TerminalShellKind, &'static str)> = TerminalShellKind::available_kinds()
+        .into_iter()
+        .map(|shell_kind| (shell_kind, terminal_shell_tip(shell_kind, t)))
+        .collect();
 
     div()
         .flex()
@@ -877,7 +889,7 @@ fn terminal_shell_section(
                 .flex()
                 .flex_wrap()
                 .gap_2()
-                .children(tips.into_iter().map(|(shell_kind, tip)| {
+                .children(options.into_iter().map(|(shell_kind, tip)| {
                     display_btn(SharedString::from(format!(
                         "term-shell:{}",
                         shell_kind.label()
@@ -925,6 +937,109 @@ fn terminal_shell_section(
         })
 }
 
+const FONT_PICKER_MATCH_LIMIT: usize = 120;
+
+fn filtered_system_fonts<'a>(fonts: &'a [String], query: &str) -> Vec<&'a str> {
+    let q = query.trim().to_lowercase();
+    fonts
+        .iter()
+        .map(String::as_str)
+        .filter(|name| q.is_empty() || name.to_lowercase().contains(&q))
+        .take(FONT_PICKER_MATCH_LIMIT)
+        .collect()
+}
+
+/// Searchable installed-font list. `allow_empty_default` adds a theme-default row for UI fonts.
+fn system_font_picker_list(
+    id_prefix: &'static str,
+    fonts: &[String],
+    query: &str,
+    selected: &str,
+    allow_empty_default: bool,
+    t: UiText,
+    cx: &mut Context<AppView>,
+) -> impl IntoElement {
+    let matches = filtered_system_fonts(fonts, query);
+    let q = query.trim().to_lowercase();
+    let show_default = allow_empty_default
+        && (q.is_empty()
+            || t.font_theme_default.to_lowercase().contains(&q)
+            || "default".contains(&q)
+            || ".systemuifont".contains(&q));
+    let selected_empty = selected.trim().is_empty();
+    let is_ui = id_prefix == "ui-font";
+
+    div()
+        .max_h(px(220.))
+        .min_h(px(96.))
+        .w_full()
+        .min_w_0()
+        .overflow_y_scrollbar()
+        .flex()
+        .flex_col()
+        .gap_1()
+        .border_1()
+        .border_color(cx.theme().border)
+        .rounded_md()
+        .p_2()
+        .when(show_default, |this| {
+            this.child(
+                list_row_btn(
+                    SharedString::from(format!("{id_prefix}:theme-default")),
+                    t.font_theme_default,
+                )
+                .selected(selected_empty)
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    if is_ui {
+                        this.set_ui_font_family(String::new(), window, cx);
+                    }
+                })),
+            )
+        })
+        .when(matches.is_empty() && !show_default, |this| {
+            this.child(
+                div()
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .text_left()
+                    .py_1()
+                    .child(t.font_list_empty),
+            )
+        })
+        .children(matches.into_iter().map(|family| {
+            let family_owned = family.to_string();
+            let selected_row = selected == family;
+            let family_for_click = family_owned.clone();
+            // Preview the face in the row label when the platform can resolve it.
+            display_btn(SharedString::from(format!("{id_prefix}:{family}")))
+                .ghost()
+                .w_full()
+                .selected(selected_row)
+                .child(
+                    div()
+                        .w_full()
+                        .min_w_0()
+                        .py_1()
+                        .text_left()
+                        .text_sm()
+                        .line_height(relative(1.35))
+                        .overflow_hidden()
+                        .text_ellipsis()
+                        .whitespace_nowrap()
+                        .font_family(family_owned.clone())
+                        .child(family_owned),
+                )
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    if is_ui {
+                        this.set_ui_font_family(family_for_click.clone(), window, cx);
+                    } else {
+                        this.set_terminal_font_family(family_for_click.clone(), window, cx);
+                    }
+                }))
+                .into_any_element()
+        }))
+}
+
 fn terminal_font_section(
     view: &AppView,
     t: UiText,
@@ -934,14 +1049,8 @@ fn terminal_font_section(
     let standard = (view.terminal_line_height - DEFAULT_TERMINAL_LINE_HEIGHT).abs() < 0.01;
     let comfortable =
         (view.terminal_line_height - COMFORTABLE_TERMINAL_LINE_HEIGHT).abs() < 0.01;
-    let presets = [
-        ("MesloLGS NF", "MesloLGS NF"),
-        ("JetBrainsMono NF", "JetBrainsMono NF"),
-        ("FiraCode NF", "FiraCode Nerd Font"),
-        ("Cascadia Mono", "Cascadia Mono"),
-        ("Consolas", "Consolas"),
-        ("Default", DEFAULT_TERMINAL_FONT_FAMILY),
-    ];
+    let query = view.terminal_font_input.read(cx).value().to_string();
+    let fonts = view.system_font_names.as_deref().unwrap_or(&[]);
 
     div()
         .flex()
@@ -985,24 +1094,17 @@ fn terminal_font_section(
         )
         .child(
             div()
-                .flex()
-                .flex_wrap()
-                .gap_2()
-                .children(presets.into_iter().map(|(label, family)| {
-                    let family = family.to_string();
-                    let selected = view.terminal_font_family == family
-                        || (label == "Default"
-                            && view.terminal_font_family == DEFAULT_TERMINAL_FONT_FAMILY);
-                    display_btn(SharedString::from(format!("term-font-preset:{label}")))
-                        .outline()
-                        .small()
-                        .label(label.to_string())
-                        .selected(selected)
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            this.set_terminal_font_family(family.clone(), window, cx);
-                        }))
-                        .into_any_element()
-                })),
+                .text_xs()
+                .text_left()
+                .text_color(cx.theme().muted_foreground)
+                .child(t.tip_font_search),
+        )
+        .child(
+            div()
+                .text_xs()
+                .text_left()
+                .line_height(relative(1.35))
+                .child(format!("{}: {}", t.font_current, view.terminal_font_family)),
         )
         .child(
             div()
@@ -1013,7 +1115,7 @@ fn terminal_font_section(
                     div()
                         .flex_1()
                         .min_w_0()
-                        .child(Input::new(&view.terminal_font_input)),
+                        .child(Input::new(&view.terminal_font_input).cleanable(true)),
                 )
                 .child(
                     action_btn("apply-terminal-font", AssetIcon::Save)
@@ -1026,6 +1128,15 @@ fn terminal_font_section(
                         })),
                 ),
         )
+        .child(system_font_picker_list(
+            "term-font",
+            fonts,
+            &query,
+            &view.terminal_font_family,
+            false,
+            t,
+            cx,
+        ))
         .child(
             div()
                 .flex()
