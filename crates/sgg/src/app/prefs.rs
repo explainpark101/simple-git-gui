@@ -127,6 +127,12 @@ pub struct AppPrefs {
     /// UI (sans) font family. Empty uses the theme default.
     #[serde(default)]
     pub ui_font_family: String,
+    /// Check GitHub `latest.json` for a newer release on launch.
+    #[serde(default = "default_true")]
+    pub auto_check_updates: bool,
+    /// Version the user dismissed with "Later" (silent launch checks skip this tag).
+    #[serde(default)]
+    pub skipped_update_version: String,
 }
 
 fn default_true() -> bool {
@@ -187,6 +193,8 @@ impl Default for AppPrefs {
             show_inline_blame: true,
             show_diff_line_background: true,
             ui_font_family: String::new(),
+            auto_check_updates: true,
+            skipped_update_version: String::new(),
         }
     }
 }

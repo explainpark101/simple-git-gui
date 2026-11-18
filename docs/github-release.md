@@ -41,11 +41,36 @@ git push origin main
    - Windows: `*-setup.exe` (NSIS), `sgg.exe`
    - macOS: `*.dmg` (서명된 `.app` + `Install sgg.command`; PATH에 `sgg` 등록)
    - Linux: `*.AppImage`, `sgg`
+   - `latest.json` — 버전 + **실제로 업로드된** 플랫폼별 다운로드 URL (앱/CLI 자동 업데이트용).
+     `packaging/generate-latest-json.sh`가 release 자산 폴더를 스캔해 생성합니다.
+     고정 URL: `…/releases/latest/download/latest.json`
+     (매니페스트가 없으면 앱이 GitHub Releases API로 폴백합니다.)
 
-macOS 참고: Apple Developer ID / 공증은 아직 없습니다. ad-hoc 서명만으로
-Apple Silicon에서 실행은 되지만, 다운로드 후 Gatekeeper 경고가 날 수 있어
-첫 실행은 **우클릭 → 열기**가 필요할 수 있습니다. macOS 서명은
-`build-dmg.sh`에서만 수행합니다 (`before-each-package-command`에 두면
+### macOS 서명 / 공증 (Gatekeeper)
+
+브라우저로 DMG를 받으면 Gatekeeper가 “악성 코드가 없음을 확인할 수 없습니다”를
+띄울 수 있습니다. **완전히 없애려면** Apple Developer Program + Developer ID
+서명 + 공증이 필요합니다.
+
+CI에 아래 GitHub Actions secrets를 넣으면 `build-dmg.sh`가 Developer ID로
+서명하고 `notarytool`로 공증·스테이플합니다.
+
+| Secret | 설명 |
+| --- | --- |
+| `MACOS_CERTIFICATE` | Developer ID Application `.p12` (base64) |
+| `MACOS_CERTIFICATE_PASSWORD` | `.p12` 비밀번호 |
+| `MACOS_SIGNING_IDENTITY` | (선택) `Developer ID Application: Name (TEAMID)` |
+| `APPLE_API_KEY` | App Store Connect API `.p8` (base64) |
+| `APPLE_API_KEY_ID` | 키 ID |
+| `APPLE_API_ISSUER` | Issuer UUID |
+| 또는 `APPLE_ID` + `APPLE_APP_SPECIFIC_PASSWORD` + `APPLE_TEAM_ID` | API 키 대신 Apple ID 인증 |
+
+secrets가 없으면 기존처럼 **ad-hoc** 서명만 하고 릴리스는 성공합니다.
+그 경우 사용자는 Release 본문의 `xattr -cr` 안내 또는
+`packaging/macos/install-from-github.sh`로 설치하면 됩니다.
+
+macOS 서명은 `build-dmg.sh` → `packaging/macos-sign.sh` /
+`macos-notarize.sh`에서만 수행합니다 (`before-each-package-command`에 두면
 Windows NSIS 빌드가 `cmd /C`로 깨집니다).
 
 ## 이 프로젝트 설정

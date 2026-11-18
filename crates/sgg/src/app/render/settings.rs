@@ -575,6 +575,7 @@ pub fn render(view: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
                         })),
                 ),
         )
+                .child(updates_section(view, t, cx))
                 .child(
             div()
                 .text_xs()
@@ -582,6 +583,105 @@ pub fn render(view: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
                 .text_color(cx.theme().muted_foreground)
                 .child(format!("{}: {settings_file}", t.settings_file)),
         ),
+        )
+}
+
+fn updates_section(
+    view: &AppView,
+    t: UiText,
+    cx: &mut Context<AppView>,
+) -> impl IntoElement {
+    let version = crate::app::update::current_version();
+    let latest = view
+        .update_available
+        .as_ref()
+        .map(|info| info.version.clone());
+    div()
+        .flex()
+        .flex_col()
+        .gap_3()
+        .p_4()
+        .rounded_lg()
+        .border_1()
+        .border_color(cx.theme().border)
+        .child(div().font_semibold().text_left().child(t.updates))
+        .child(
+            div()
+                .text_xs()
+                .text_left()
+                .text_color(cx.theme().muted_foreground)
+                .child(t.updates_help),
+        )
+        .child(
+            div()
+                .text_sm()
+                .text_left()
+                .line_height(relative(1.35))
+                .child(format!("{}: {version}", t.current_version)),
+        )
+        .when_some(latest, |this, ver| {
+            this.child(
+                div()
+                    .text_sm()
+                    .text_left()
+                    .line_height(relative(1.35))
+                    .child(format!("{}: {ver}", t.update_available)),
+            )
+        })
+        .child(
+            div()
+                .flex()
+                .justify_start()
+                .items_center()
+                .gap_3()
+                .child(
+                    Switch::new("auto-check-updates")
+                        .checked(view.auto_check_updates)
+                        .label(t.auto_check_updates)
+                        .on_click(cx.listener(|this, checked, _, cx| {
+                            this.set_auto_check_updates(*checked, cx);
+                        })),
+                )
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(if view.auto_check_updates {
+                            t.tip_auto_check_updates_on
+                        } else {
+                            t.tip_auto_check_updates_off
+                        }),
+                ),
+        )
+        .child(
+            div()
+                .flex()
+                .justify_end()
+                .gap_2()
+                .child(with_busy(
+                    action_btn("check-for-updates", AssetIcon::RefreshCw)
+                        .outline()
+                        .label(t.check_for_updates)
+                        .tooltip(t.tip_check_for_updates)
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.check_for_updates(false, window, cx);
+                        })),
+                    view.busy,
+                    BusyKind::CheckUpdate,
+                ))
+                .when(view.update_available.is_some(), |this| {
+                    this.child(with_busy(
+                        action_btn("download-update", AssetIcon::CloudDownload)
+                            .primary()
+                            .label(t.download_update)
+                            .tooltip(t.tip_download_update)
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.download_available_update(cx);
+                            })),
+                        view.busy,
+                        BusyKind::DownloadUpdate,
+                    ))
+                }),
         )
 }
 
