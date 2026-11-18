@@ -277,6 +277,10 @@ pub struct AppView {
     commit_ai_install_cli_task: Option<Task<()>>,
     /// 0.0..=1.0 while [`BusyKind::InstallCli`] runs (bottom-border progress).
     pub(super) cli_install_progress: Option<f32>,
+    /// Cached CLI probe results for Settings (never refresh on the UI thread).
+    pub(super) cli_status_cursor: Option<super::cli_tools::CliStatus>,
+    pub(super) cli_status_codex: Option<super::cli_tools::CliStatus>,
+    pub(super) cli_status_task: Option<Task<()>>,
     generate_commit_task: Option<Task<()>>,
     /// Latest release from `latest.json` when newer than this build.
     pub(super) update_available: Option<super::update::LatestInfo>,
@@ -573,6 +577,9 @@ impl AppView {
             commit_ai_models_task: None,
             commit_ai_install_cli_task: None,
             cli_install_progress: None,
+            cli_status_cursor: None,
+            cli_status_codex: None,
+            cli_status_task: None,
             generate_commit_task: None,
             update_available: None,
             update_task: None,
@@ -1004,9 +1011,33 @@ impl AppView {
         }
         if page == AppPage::Settings {
             self.ensure_system_fonts(cx);
+            self.refresh_cli_status(cx);
         }
         self.push_nav_entry(self.current_nav_entry());
         cx.notify();
+    }
+
+    /// Probe Cursor/Codex CLI on a background thread; Settings reads the cache only.
+    pub(super) fn refresh_cli_status(&mut self, cx: &mut Context<Self>) {
+        if self.cli_status_task.is_some() {
+            return;
+        }
+        self.cli_status_task = Some(cx.spawn(async move |this, cx| {
+            let (cursor, codex) = cx
+                .background_spawn(async {
+                    (
+                        super::cli_tools::status(super::cli_tools::CliToolKind::Cursor),
+                        super::cli_tools::status(super::cli_tools::CliToolKind::Codex),
+                    )
+                })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                this.cli_status_cursor = Some(cursor);
+                this.cli_status_codex = Some(codex);
+                this.cli_status_task = None;
+                cx.notify();
+            });
+        }));
     }
 
     /// Load installed font family names once (Settings font pickers).
@@ -2773,6 +2804,7 @@ impl AppView {
                     .commit_ai_cli_login_started
                     .replace("{name}", kind.label());
                 self.set_ok_status(msg);
+                self.refresh_cli_status(cx);
             }
             Err(err) => {
                 let msg = self
@@ -2884,6 +2916,7 @@ impl AppView {
                                 .commit_ai_install_cli_done
                                 .replace("{path}", &path);
                             this.set_ok_status(msg);
+                            this.refresh_cli_status(cx);
                         }
                         Err(err) => {
                             let msg = this

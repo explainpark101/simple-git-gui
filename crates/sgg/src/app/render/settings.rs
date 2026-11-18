@@ -1465,36 +1465,53 @@ fn builtin_cli_card(
     t: UiText,
     cx: &mut Context<AppView>,
 ) -> impl IntoElement {
-    let status = crate::app::cli_tools::status(kind);
+    // Never call cli_tools::status() here — it shells out and froze Settings every frame.
+    let status = match kind {
+        CliToolKind::Cursor => view.cli_status_cursor.as_ref(),
+        CliToolKind::Codex => view.cli_status_codex.as_ref(),
+    };
+    let probing = view.cli_status_task.is_some() && status.is_none();
     let title = kind.label().to_string();
     let cursor_key = matches!(kind, CliToolKind::Cursor)
         && view
             .commit_ai
             .provider_by_id(crate::app::ai_provider::BUILTIN_CURSOR_ID)
             .is_some_and(|p| p.resolve_api_key().is_some());
-    let status_text = match kind {
-        CliToolKind::Cursor => match (&status.binary, cursor_key, status.source) {
-            (None, false, _) => t.commit_ai_cli_status_missing.to_string(),
-            (None, true, _) => "API key set — install agent CLI".into(),
-            (Some(path), true, Some(source)) => {
-                let ready = t.commit_ai_cli_status_ready.replace("{source}", source);
-                format!("{ready} · key · {path}")
-            }
-            (Some(path), false, Some(source)) => {
-                let ready = t.commit_ai_cli_status_ready.replace("{source}", source);
-                format!("{ready} · set CURSOR_API_KEY · {path}")
-            }
-            (Some(path), _, _) => path.clone(),
-        },
-        CliToolKind::Codex => match (&status.binary, status.logged_in, status.source) {
-            (None, _, _) => t.commit_ai_cli_status_missing.to_string(),
-            (Some(_), Some(false), _) => t.commit_ai_cli_status_needs_login.to_string(),
-            (Some(path), _, Some(source)) => {
-                let ready = t.commit_ai_cli_status_ready.replace("{source}", source);
-                format!("{ready} · {path}")
-            }
-            (Some(path), _, None) => path.clone(),
-        },
+    let status_text = if probing {
+        "…".into()
+    } else {
+        match kind {
+            CliToolKind::Cursor => match (
+                status.and_then(|s| s.binary.as_ref()),
+                cursor_key,
+                status.and_then(|s| s.source),
+            ) {
+                (None, false, _) => t.commit_ai_cli_status_missing.to_string(),
+                (None, true, _) => "API key set — install agent CLI".into(),
+                (Some(path), true, Some(source)) => {
+                    let ready = t.commit_ai_cli_status_ready.replace("{source}", source);
+                    format!("{ready} · key · {path}")
+                }
+                (Some(path), false, Some(source)) => {
+                    let ready = t.commit_ai_cli_status_ready.replace("{source}", source);
+                    format!("{ready} · set CURSOR_API_KEY · {path}")
+                }
+                (Some(path), _, _) => path.clone(),
+            },
+            CliToolKind::Codex => match (
+                status.and_then(|s| s.binary.as_ref()),
+                status.and_then(|s| s.logged_in),
+                status.and_then(|s| s.source),
+            ) {
+                (None, _, _) => t.commit_ai_cli_status_missing.to_string(),
+                (Some(_), Some(false), _) => t.commit_ai_cli_status_needs_login.to_string(),
+                (Some(path), _, Some(source)) => {
+                    let ready = t.commit_ai_cli_status_ready.replace("{source}", source);
+                    format!("{ready} · {path}")
+                }
+                (Some(path), _, None) => path.clone(),
+            },
+        }
     };
     let id = match kind {
         CliToolKind::Cursor => "builtin-cli-cursor",
@@ -1737,7 +1754,7 @@ fn system_font_picker_list(
             let family_owned = family.to_string();
             let selected_row = selected == family;
             let family_for_click = family_owned.clone();
-            // Preview the face in the row label when the platform can resolve it.
+            // Do not set .font_family per row — loading ~120 faces twice stalls Settings.
             display_btn(SharedString::from(format!("{id_prefix}:{family}")))
                 .ghost()
                 .w_full()
@@ -1753,7 +1770,6 @@ fn system_font_picker_list(
                         .overflow_hidden()
                         .text_ellipsis()
                         .whitespace_nowrap()
-                        .font_family(family_owned.clone())
                         .child(family_owned),
                 )
                 .on_click(cx.listener(move |this, _, window, cx| {
