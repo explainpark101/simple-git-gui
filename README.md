@@ -22,7 +22,22 @@ Binary: `target/release/sgg` (or `sgg.exe` on Windows).
 
 ### macOS installable package (`.app` + `.dmg`)
 
-On macOS, from the repo root:
+**Install from GitHub Releases** (avoids browser Gatekeeper quarantine):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/explainpark101/simple-git-gui/main/packaging/macos/install-from-github.sh | bash
+```
+
+If you already downloaded the DMG in a browser and macOS says it cannot verify the file:
+
+```bash
+xattr -cr ~/Downloads/simple-git-gui_*.dmg
+open ~/Downloads/simple-git-gui_*.dmg
+```
+
+Then double-click **Install sgg.command** (or drag the `.app` to Applications).
+
+On macOS, from the repo root (local package build):
 
 ```bash
 bash build-dmg.sh
@@ -31,11 +46,9 @@ bash build-dmg.sh
 Artifacts land in `dist/`:
 
 - `simple-git-gui.app`
-- `simple-git-gui_<version>_aarch64.dmg` (Apple Silicon) — open the DMG, then either:
-  - double-click **Install sgg.command** (copies to Applications, puts `sgg` on `PATH`, registers Finder Services), or
-  - drag the `.app` to **Applications** and launch once (auto-registers `sgg` on `PATH`).
+- `simple-git-gui_<version>_aarch64.dmg` (Apple Silicon)
 
-First launch may require **System Settings → Privacy & Security → Open Anyway** because the bundle is **ad-hoc signed** (no Apple Developer ID / notarization yet).
+With Apple Developer ID + notary secrets configured in CI, the DMG is notarized and opens without Gatekeeper warnings. Without those secrets, builds are **ad-hoc signed** — use the `xattr` or `install-from-github.sh` path above.
 
 `sgg` is symlinked to `/usr/local/bin/sgg` when writable, otherwise `~/.local/bin/sgg` (with a PATH snippet in `~/.zprofile`). Open a **new** terminal tab after install.
 
@@ -59,7 +72,13 @@ sgg install-shell
 
 # Remove shell integration
 sgg uninstall-shell
+
+# Check / apply update from GitHub Releases (latest.json)
+sgg check-update
+sgg update
 ```
+
+Settings → **Updates** can also check for a newer release and download the installer.
 
 The Windows NSIS installer (`./build-exe.sh`) adds the install directory to the **user** `PATH`, so `sgg` is available in new terminals after setup. Uninstall removes that entry. On macOS, DMG install / first `.app` launch (or `install-shell`) registers a `sgg` symlink on `PATH` the same way.
 

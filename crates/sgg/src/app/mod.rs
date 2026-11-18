@@ -14,6 +14,7 @@ mod render;
 mod sort;
 mod terminal;
 mod terminal_shell;
+pub(crate) mod update;
 mod view;
 mod widgets;
 

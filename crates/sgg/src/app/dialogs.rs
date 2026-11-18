@@ -103,6 +103,38 @@ pub fn open_busy_confirm(
     });
 }
 
+/// Update-available confirm: OK downloads; Later persists `skipped_update_version`.
+///
+/// Do **not** wrap download in [`BusyConfirmOk`] / `run_busy`: download is async and
+/// manages its own `BusyKind::DownloadUpdate` + Progress dock. `run_busy` would clear
+/// busy and finish the Running line as soon as the spawn returns.
+pub fn open_update_confirm(
+    window: &mut Window,
+    cx: &mut App,
+    app: Entity<AppView>,
+    title: impl Into<SharedString>,
+    description: impl Into<SharedString>,
+    ok_text: impl Into<SharedString>,
+    later_text: impl Into<SharedString>,
+    skip_version: String,
+) {
+    let title = title.into();
+    let description = description.into();
+    let ok = UpdatePromptDownload::mount(cx, app.clone(), ok_text.into());
+    let later = UpdatePromptLater::mount(cx, app, later_text.into(), skip_version);
+
+    window.open_alert_dialog(cx, move |alert, _, _| {
+        alert
+            .title(title.clone())
+            .description(description.clone())
+            .footer(
+                DialogFooter::new()
+                    .child(later.clone())
+                    .child(ok.clone()),
+            )
+    });
+}
+
 pub(super) struct BusyConfirmOk {
     app: Entity<AppView>,
     kind: BusyKind,
@@ -193,6 +225,90 @@ impl Render for BusyConfirmCancel {
                 if !loading {
                     window.close_dialog(cx);
                 }
+            })
+    }
+}
+
+/// "Download & open" on the update dialog — starts async download (own busy/progress).
+pub(super) struct UpdatePromptDownload {
+    app: Entity<AppView>,
+    label: SharedString,
+}
+
+impl UpdatePromptDownload {
+    pub(super) fn mount(
+        cx: &mut App,
+        app: Entity<AppView>,
+        label: SharedString,
+    ) -> Entity<Self> {
+        cx.new(|cx| {
+            cx.observe(&app, |_, _, cx| cx.notify()).detach();
+            Self { app, label }
+        })
+    }
+}
+
+impl Render for UpdatePromptDownload {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let busy = self.app.read(cx).busy;
+        let loading = busy == Some(BusyKind::DownloadUpdate);
+        let blocked = busy.is_some();
+        let app = self.app.clone();
+
+        with_busy(
+            confirm_btn("update-prompt-download", AssetIcon::CloudDownload, cx)
+                .label(self.label.clone())
+                .disabled(blocked && !loading)
+                .on_click(move |_, window, cx| {
+                    window.close_dialog(cx);
+                    app.update(cx, |this, cx| {
+                        this.download_available_update(cx);
+                    });
+                }),
+            busy,
+            BusyKind::DownloadUpdate,
+        )
+    }
+}
+
+/// "Later" on the update dialog — remember this version so silent checks stay quiet.
+pub(super) struct UpdatePromptLater {
+    app: Entity<AppView>,
+    label: SharedString,
+    version: String,
+}
+
+impl UpdatePromptLater {
+    pub(super) fn mount(
+        cx: &mut App,
+        app: Entity<AppView>,
+        label: SharedString,
+        version: String,
+    ) -> Entity<Self> {
+        cx.new(|cx| {
+            cx.observe(&app, |_, _, cx| cx.notify()).detach();
+            Self { app, label, version }
+        })
+    }
+}
+
+impl Render for UpdatePromptLater {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let loading = self.app.read(cx).busy == Some(BusyKind::DownloadUpdate);
+        let app = self.app.clone();
+        let version = self.version.clone();
+        btn("update-prompt-later")
+            .outline()
+            .label(self.label.clone())
+            .disabled(loading)
+            .on_click(move |_, window, cx| {
+                if loading {
+                    return;
+                }
+                app.update(cx, |this, cx| {
+                    this.skip_update_version(version.clone(), cx);
+                });
+                window.close_dialog(cx);
             })
     }
 }

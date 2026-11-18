@@ -31,4 +31,6 @@ pub enum BusyKind {
     ResetSoft,
     ResetMixed,
     ResetHard,
+    CheckUpdate,
+    DownloadUpdate,
 }

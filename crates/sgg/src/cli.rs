@@ -20,4 +20,8 @@ pub enum Commands {
     InstallShell,
     /// Remove file-manager integration
     UninstallShell,
+    /// Fetch GitHub latest.json and print whether an update is available
+    CheckUpdate,
+    /// Download and open the latest installer for this platform (if newer)
+    Update,
 }
