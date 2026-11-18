@@ -1,9 +1,9 @@
 # Auto-update specification
 
-Status on **`main` (this branch):** **not merged**.  
-Implementation exists on **`origin/feat/auto-update`** (`bc53f8a`, `cdf961c`) but is absent from `main` as of this document (workspace `version` still `1.4.1`; no `crates/sgg/src/app/update.rs`, no `packaging/generate-latest-json.sh`).
+Status: implemented on **`feat/auto-update`** (landing on `main` via PR).  
+Workspace version for the first auto-update release: **`1.4.2`**.
 
-This spec is the source of truth for finishing / re-landing the feature.
+This spec is the source of truth for the feature.
 
 ## Goal
 
@@ -91,7 +91,7 @@ Owned by `.github/workflows/release.yml` publish job, after artifacts are downlo
    - `VERSION` = workspace version from prepare job
    - `TAG` = `v${VERSION}`
    - `REPO` = `${{ github.repository }}`
-2. Script scans `release-assets/*`, maps known filenames → keys, writes `release-assets/latest.json`.
+2. Script scans `release-assets/*` (and one nested level), maps known filenames → keys, writes `release-assets/latest.json`.
 3. Fail if zero recognized assets.
 4. Upload **all** of `release-assets/**` (including `latest.json`) via `softprops/action-gh-release`.
 5. Release body should mention the manifest URL and:
@@ -124,7 +124,8 @@ Responsibilities:
 
 ### Preferences
 
-`AppPrefs.auto_check_updates: bool` (default `true`, serde `default = true`).
+`AppPrefs.auto_check_updates: bool` (default `true`, serde `default = true`).  
+`AppPrefs.skipped_update_version: String` — set when the user chooses **Later**.
 
 ### UI (Settings → Updates)
 
@@ -132,12 +133,12 @@ Responsibilities:
 - Toggle “Check on launch”.
 - Button **Check for updates** (`BusyKind::CheckUpdate`).
 - When newer: show available version + **Download & open** (`BusyKind::DownloadUpdate`).
-- Confirm dialog: title/desc with `{latest}` / `{current}`; OK downloads; Cancel = Later.
+- Confirm dialog: title/desc with `{latest}` / `{current}`; OK downloads (async busy owned by download); Later skips that version on silent launch checks.
 - i18n: English + Korean strings for all update labels/errors.
 
 ### Launch
 
-If `auto_check_updates`, defer a **silent** check after window host is ready. Silent mode only opens the update dialog when a newer version exists (no error toast on network failure).
+If `auto_check_updates`, defer a **silent** check after window host is ready. Silent mode only opens the update dialog when a newer version exists (no error toast on network failure; skipped version stays quiet).
 
 ### CLI
 
@@ -158,21 +159,20 @@ Attach parent console on Windows for these subcommands (same pattern as `install
 
 ## Related macOS distribution notes
 
-Browser-downloaded DMGs may hit Gatekeeper when builds are ad-hoc signed. Separate from auto-update, but download-and-open should strip quarantine (`xattr -cr`) on macOS before `open`. See `docs/github-release.md` and `packaging/macos/install-from-github.sh` on the feature branch.
+Browser-downloaded DMGs may hit Gatekeeper when builds are ad-hoc signed. Separate from auto-update, but download-and-open should strip quarantine (`xattr -cr`) on macOS before `open`. See `docs/github-release.md` and `packaging/macos/install-from-github.sh`.
 
 ## Acceptance checklist
 
-- [ ] `main` includes `packaging/generate-latest-json.sh` and Release job generates + uploads `latest.json`.
+- [x] `packaging/generate-latest-json.sh` and Release job generate + upload `latest.json`.
 - [ ] After a release, `…/releases/latest/download/latest.json` returns valid JSON with `version` and at least one `downloads` entry for that release’s real assets.
-- [ ] `crates/sgg/src/app/update.rs` fetches manifest (API fallback OK).
-- [ ] Settings Updates UI: check, silent launch check, download & open.
-- [ ] `sgg check-update` / `sgg update` work from PATH-installed CLI.
-- [ ] Hotfix / feature release bumps workspace `version` so clients detect newer builds.
-- [ ] i18n EN/KO complete; no Gatekeeper-only “fix” claimed without notarization.
+- [x] `crates/sgg/src/app/update.rs` fetches manifest (API fallback OK).
+- [x] Settings Updates UI: check, silent launch check, download & open.
+- [x] `sgg check-update` / `sgg update` CLI wired.
+- [x] Workspace version bumped to `1.4.2` so clients on `1.4.1` detect the first release.
+- [x] i18n EN/KO complete; Gatekeeper notes do not claim notarization without secrets.
 
 ## Merge plan
 
-1. Land / re-apply `origin/feat/auto-update` onto `main` (or open PR from that branch).
-2. Bump version if needed so the first release after merge produces a newer `latest.json` than installed clients.
-3. Verify Actions upload includes `latest.json`.
-4. Smoke: `sgg check-update` against that release.
+1. Merge `feat/auto-update` → `main` (this PR).
+2. Push to `main` so Release workflow builds `v1.4.2` and uploads `latest.json`.
+3. Smoke: `sgg check-update` / Settings → Updates against that release.

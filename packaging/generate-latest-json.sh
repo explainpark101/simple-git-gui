@@ -35,10 +35,12 @@ key_for_name() {
 
 entries=""
 count=0
-# Portable directory listing (no mapfile / assoc arrays — works on bash 3 + Git Bash).
-# shellcheck disable=SC2045
-for path in "${OUT_DIR}"/*; do
-  [[ -e "${path}" ]] || continue
+# Top-level + one nested level (download-artifact layouts). Avoid `find` /
+# process substitution so Git Bash on Windows stays reliable.
+shopt -s nullglob
+candidate_paths=("${OUT_DIR}"/* "${OUT_DIR}"/*/*)
+shopt -u nullglob
+for path in "${candidate_paths[@]}"; do
   [[ -f "${path}" ]] || continue
   name="$(basename "${path}")"
   [[ "${name}" == "latest.json" ]] && continue

@@ -104,6 +104,10 @@ pub fn open_busy_confirm(
 }
 
 /// Update-available confirm: OK downloads; Later persists `skipped_update_version`.
+///
+/// Do **not** wrap download in [`BusyConfirmOk`] / `run_busy`: download is async and
+/// manages its own `BusyKind::DownloadUpdate` + Progress dock. `run_busy` would clear
+/// busy and finish the Running line as soon as the spawn returns.
 pub fn open_update_confirm(
     window: &mut Window,
     cx: &mut App,
@@ -113,18 +117,10 @@ pub fn open_update_confirm(
     ok_text: impl Into<SharedString>,
     later_text: impl Into<SharedString>,
     skip_version: String,
-    work: impl Fn(&mut AppView, &mut Window, &mut Context<AppView>) + 'static,
 ) {
     let title = title.into();
     let description = description.into();
-    let ok = BusyConfirmOk::mount(
-        cx,
-        app.clone(),
-        BusyKind::DownloadUpdate,
-        ok_text.into(),
-        AssetIcon::CloudDownload,
-        Rc::new(work),
-    );
+    let ok = UpdatePromptDownload::mount(cx, app.clone(), ok_text.into());
     let later = UpdatePromptLater::mount(cx, app, later_text.into(), skip_version);
 
     window.open_alert_dialog(cx, move |alert, _, _| {
@@ -230,6 +226,48 @@ impl Render for BusyConfirmCancel {
                     window.close_dialog(cx);
                 }
             })
+    }
+}
+
+/// "Download & open" on the update dialog — starts async download (own busy/progress).
+pub(super) struct UpdatePromptDownload {
+    app: Entity<AppView>,
+    label: SharedString,
+}
+
+impl UpdatePromptDownload {
+    pub(super) fn mount(
+        cx: &mut App,
+        app: Entity<AppView>,
+        label: SharedString,
+    ) -> Entity<Self> {
+        cx.new(|cx| {
+            cx.observe(&app, |_, _, cx| cx.notify()).detach();
+            Self { app, label }
+        })
+    }
+}
+
+impl Render for UpdatePromptDownload {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let busy = self.app.read(cx).busy;
+        let loading = busy == Some(BusyKind::DownloadUpdate);
+        let blocked = busy.is_some();
+        let app = self.app.clone();
+
+        with_busy(
+            confirm_btn("update-prompt-download", AssetIcon::CloudDownload, cx)
+                .label(self.label.clone())
+                .disabled(blocked && !loading)
+                .on_click(move |_, window, cx| {
+                    window.close_dialog(cx);
+                    app.update(cx, |this, cx| {
+                        this.download_available_update(cx);
+                    });
+                }),
+            busy,
+            BusyKind::DownloadUpdate,
+        )
     }
 }
 

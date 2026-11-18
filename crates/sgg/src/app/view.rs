@@ -2013,9 +2013,6 @@ impl AppView {
             ok,
             cancel,
             skip_version,
-            move |this, _window, cx| {
-                this.download_available_update(cx);
-            },
         );
     }
 
@@ -2026,6 +2023,9 @@ impl AppView {
     }
 
     pub(super) fn download_available_update(&mut self, cx: &mut Context<Self>) {
+        if self.update_task.is_some() || self.busy == Some(BusyKind::DownloadUpdate) {
+            return;
+        }
         let Some(info) = self.update_available.clone() else {
             self.set_error(self.t().update_no_asset.into(), cx);
             return;
