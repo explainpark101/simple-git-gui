@@ -163,13 +163,14 @@ jobs:
         env:
           MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
           MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
-          KEYCHAIN_PASSWORD: sgg-ci-keychain
         run: |
           set -euo pipefail
           if [[ -z "${MACOS_CERTIFICATE}" ]]; then
             echo "No MACOS_CERTIFICATE secret — ad-hoc sign only."
             exit 0
           fi
+          # Ephemeral runner keychain PIN (not a long-lived secret).
+          KEYCHAIN_PASSWORD="$(openssl rand -base64 32)"
           CERTIFICATE_PATH="${RUNNER_TEMP}/build_certificate.p12"
           KEYCHAIN_PATH="${RUNNER_TEMP}/app-signing.keychain-db"
           echo -n "${MACOS_CERTIFICATE}" | base64 --decode -o "${CERTIFICATE_PATH}"
