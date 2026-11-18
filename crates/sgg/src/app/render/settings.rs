@@ -51,24 +51,30 @@ pub fn render(view: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
         .unwrap_or_else(|_| "(unavailable)".into());
 
     let settings_scroll = view.settings_scroll.clone();
+    // Do not use items_center on this scroll column: with overflow_y_scroll it
+    // can shrink-wrap / mis-measure the content height so cards below UI font
+    // never enter the scroll extent (Theme + Status Colors + UI Font only).
     div()
         .id("settings-scroll")
         .flex()
         .flex_col()
         .flex_1()
         .min_h_0()
-        .items_center()
-        .p_6()
+        .w_full()
         .overflow_y_scroll()
         .track_scroll(&settings_scroll)
         .vertical_scrollbar(&settings_scroll)
         .child(
             div()
+                .id("settings-column")
                 .w_full()
                 .max_w(px(720.))
+                .mx_auto()
+                .flex_shrink_0()
                 .flex()
                 .flex_col()
                 .gap_6()
+                .p_6()
                 .child(div().text_lg().font_semibold().text_left().child(t.settings))
                 .child(
                     div()
@@ -1976,15 +1982,23 @@ fn terminal_shell_section(
         })
 }
 
-const FONT_PICKER_MATCH_LIMIT: usize = 120;
+/// Cap when the user is filtering — enough to browse, not enough to thrash layout.
+const FONT_PICKER_MATCH_LIMIT: usize = 80;
+/// Idle (empty query): keep the settings column light so cards below stay laid out.
+const FONT_PICKER_IDLE_LIMIT: usize = 16;
 
 fn filtered_system_fonts<'a>(fonts: &'a [String], query: &str) -> Vec<&'a str> {
     let q = query.trim().to_lowercase();
+    let limit = if q.is_empty() {
+        FONT_PICKER_IDLE_LIMIT
+    } else {
+        FONT_PICKER_MATCH_LIMIT
+    };
     fonts
         .iter()
         .map(String::as_str)
         .filter(|name| q.is_empty() || name.to_lowercase().contains(&q))
-        .take(FONT_PICKER_MATCH_LIMIT)
+        .take(limit)
         .collect()
 }
 
@@ -2008,79 +2022,98 @@ fn system_font_picker_list(
     let selected_empty = selected.trim().is_empty();
     let is_ui = id_prefix == "ui-font";
 
-    // Do NOT use overflow_y_scrollbar here. Kit Scrollable wraps with
-    // size_full(); in this content-sized settings column that expands the
-    // list and clips every card below UI font (blame, terminal, AI, …).
-    // Fixed height + native overflow_y_scroll keeps siblings laid out.
+    // Hard clip + definite height. Never use overflow_y_scrollbar (kit
+    // Scrollable size_full) inside the settings column — it expanded and
+    // clipped every card below UI font. Outer overflow_hidden owns the
+    // 220px slot; the inner scroll only moves rows inside that slot.
     div()
-        .id(SharedString::from(format!("{id_prefix}-font-picker")))
+        .id(SharedString::from(format!("{id_prefix}-font-picker-slot")))
         .h(px(220.))
         .w_full()
         .min_w_0()
         .flex_shrink_0()
-        .overflow_y_scroll()
-        .flex()
-        .flex_col()
-        .gap_1()
+        .overflow_hidden()
         .border_1()
         .border_color(cx.theme().border)
         .rounded_md()
-        .p_2()
-        .when(show_default, |this| {
-            this.child(
-                list_row_btn(
-                    SharedString::from(format!("{id_prefix}:theme-default")),
-                    t.font_theme_default,
-                )
-                .selected(selected_empty)
-                .on_click(cx.listener(move |this, _, window, cx| {
-                    if is_ui {
-                        this.set_ui_font_family(String::new(), window, cx);
-                    }
-                })),
-            )
-        })
-        .when(matches.is_empty() && !show_default, |this| {
-            this.child(
-                div()
-                    .text_xs()
-                    .text_color(cx.theme().muted_foreground)
-                    .text_left()
-                    .py_1()
-                    .child(t.font_list_empty),
-            )
-        })
-        .children(matches.into_iter().map(|family| {
-            let family_owned = family.to_string();
-            let selected_row = selected == family;
-            let family_for_click = family_owned.clone();
-            // Do not set .font_family per row — loading ~120 faces twice stalls Settings.
-            display_btn(SharedString::from(format!("{id_prefix}:{family}")))
-                .ghost()
+        .child(
+            div()
+                .id(SharedString::from(format!("{id_prefix}-font-picker")))
+                // Prefer definite h over size_full: size_full inside a
+                // content-sized ancestor is what clipped cards below UI font.
+                .h(px(220.))
                 .w_full()
-                .selected(selected_row)
-                .child(
-                    div()
+                .overflow_y_scroll()
+                .flex()
+                .flex_col()
+                .gap_1()
+                .p_2()
+                .when(show_default, |this| {
+                    this.child(
+                        list_row_btn(
+                            SharedString::from(format!("{id_prefix}:theme-default")),
+                            t.font_theme_default,
+                        )
+                        .selected(selected_empty)
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            if is_ui {
+                                this.set_ui_font_family(String::new(), window, cx);
+                            }
+                        })),
+                    )
+                })
+                .when(matches.is_empty() && !show_default, |this| {
+                    this.child(
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .text_left()
+                            .py_1()
+                            .child(t.font_list_empty),
+                    )
+                })
+                .when(q.is_empty() && fonts.len() > FONT_PICKER_IDLE_LIMIT, |this| {
+                    this.child(
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .text_left()
+                            .py_1()
+                            .child(t.tip_font_search),
+                    )
+                })
+                .children(matches.into_iter().map(|family| {
+                    let family_owned = family.to_string();
+                    let selected_row = selected == family;
+                    let family_for_click = family_owned.clone();
+                    // Do not set .font_family per row — loading many faces stalls Settings.
+                    display_btn(SharedString::from(format!("{id_prefix}:{family}")))
+                        .ghost()
                         .w_full()
-                        .min_w_0()
-                        .py_1()
-                        .text_left()
-                        .text_sm()
-                        .line_height(relative(1.35))
-                        .overflow_hidden()
-                        .text_ellipsis()
-                        .whitespace_nowrap()
-                        .child(family_owned),
-                )
-                .on_click(cx.listener(move |this, _, window, cx| {
-                    if is_ui {
-                        this.set_ui_font_family(family_for_click.clone(), window, cx);
-                    } else {
-                        this.set_terminal_font_family(family_for_click.clone(), window, cx);
-                    }
-                }))
-                .into_any_element()
-        }))
+                        .selected(selected_row)
+                        .child(
+                            div()
+                                .w_full()
+                                .min_w_0()
+                                .py_1()
+                                .text_left()
+                                .text_sm()
+                                .line_height(relative(1.35))
+                                .overflow_hidden()
+                                .text_ellipsis()
+                                .whitespace_nowrap()
+                                .child(family_owned),
+                        )
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            if is_ui {
+                                this.set_ui_font_family(family_for_click.clone(), window, cx);
+                            } else {
+                                this.set_terminal_font_family(family_for_click.clone(), window, cx);
+                            }
+                        }))
+                        .into_any_element()
+                })),
+        )
 }
 
 fn terminal_font_section(
