@@ -51,16 +51,15 @@ pub fn render(view: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
         .unwrap_or_else(|_| "(unavailable)".into());
 
     let settings_scroll = view.settings_scroll.clone();
-    // Do not use items_center on this scroll column: with overflow_y_scroll it
-    // can shrink-wrap / mis-measure the content height so cards below UI font
-    // never enter the scroll extent (Theme + Status Colors + UI Font only).
+    // Parent main pane is size_full (not a flex column), so flex_1 here does
+    // nothing — the scroll box grew with its content and never overflowed.
+    // size_full bounds the viewport; do not put flex() on this same node
+    // (GPUI can then ignore wheel scroll). Column stays flex_shrink_0 so
+    // cards below UI font remain in the scroll extent.
     div()
         .id("settings-scroll")
-        .flex()
-        .flex_col()
-        .flex_1()
+        .size_full()
         .min_h_0()
-        .w_full()
         .overflow_y_scroll()
         .track_scroll(&settings_scroll)
         .vertical_scrollbar(&settings_scroll)
@@ -608,8 +607,8 @@ pub fn render(view: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
                         .child(t.recent_projects),
                 )
                 .child(
-                    // Same as font pickers: avoid overflow_y_scrollbar size_full
-                    // clip in the settings column (see system_font_picker_list).
+                    // Fixed height + overflow_y_scroll; keep flex off the
+                    // scroll node (GPUI wheel scroll can fail with flex).
                     div()
                         .id("settings-recent-repos")
                         .h(px(200.))
@@ -617,34 +616,39 @@ pub fn render(view: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
                         .min_w_0()
                         .flex_shrink_0()
                         .overflow_y_scroll()
-                        .flex()
-                        .flex_col()
-                        .gap_1()
-                        .when(view.recent_repos.is_empty(), |this| {
-                            this.child(
-                                div()
-                                    .text_xs()
-                                    .text_color(cx.theme().muted_foreground)
-                                    .text_left()
-                                    .child(t.recent_projects_empty),
-                            )
-                        })
-                        .children(view.recent_repos.iter().enumerate().map(|(i, repo)| {
-                            let open_path = repo.clone();
-                            let tip = t.tip_open_recent;
-                            list_row_btn(
-                                SharedString::from(format!("settings-recent:{i}")),
-                                repo.clone(),
-                            )
-                            .tooltip(tip)
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.open_repo_path(
-                                    std::path::PathBuf::from(open_path.clone()),
-                                    cx,
-                                );
-                            }))
-                            .into_any_element()
-                        })),
+                        .child(
+                            div()
+                                .flex()
+                                .flex_col()
+                                .gap_1()
+                                .when(view.recent_repos.is_empty(), |this| {
+                                    this.child(
+                                        div()
+                                            .text_xs()
+                                            .text_color(cx.theme().muted_foreground)
+                                            .text_left()
+                                            .child(t.recent_projects_empty),
+                                    )
+                                })
+                                .children(view.recent_repos.iter().enumerate().map(
+                                    |(i, repo)| {
+                                        let open_path = repo.clone();
+                                        let tip = t.tip_open_recent;
+                                        list_row_btn(
+                                            SharedString::from(format!("settings-recent:{i}")),
+                                            repo.clone(),
+                                        )
+                                        .tooltip(tip)
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            this.open_repo_path(
+                                                std::path::PathBuf::from(open_path.clone()),
+                                                cx,
+                                            );
+                                        }))
+                                        .into_any_element()
+                                    },
+                                )),
+                        ),
                 ),
         )
                 .child(updates_section(view, t, cx))
@@ -2022,28 +2026,21 @@ fn system_font_picker_list(
     let selected_empty = selected.trim().is_empty();
     let is_ui = id_prefix == "ui-font";
 
-    // Hard clip + definite height. Never use overflow_y_scrollbar (kit
-    // Scrollable size_full) inside the settings column — it expanded and
-    // clipped every card below UI font. Outer overflow_hidden owns the
-    // 220px slot; the inner scroll only moves rows inside that slot.
+    // Definite height + overflow_y_scroll. Never use overflow_y_scrollbar
+    // (kit Scrollable size_full) here — it expanded and clipped cards below
+    // UI font. Keep flex off the scroll node so wheel scroll works.
     div()
-        .id(SharedString::from(format!("{id_prefix}-font-picker-slot")))
+        .id(SharedString::from(format!("{id_prefix}-font-picker")))
         .h(px(220.))
         .w_full()
         .min_w_0()
         .flex_shrink_0()
-        .overflow_hidden()
+        .overflow_y_scroll()
         .border_1()
         .border_color(cx.theme().border)
         .rounded_md()
         .child(
             div()
-                .id(SharedString::from(format!("{id_prefix}-font-picker")))
-                // Prefer definite h over size_full: size_full inside a
-                // content-sized ancestor is what clipped cards below UI font.
-                .h(px(220.))
-                .w_full()
-                .overflow_y_scroll()
                 .flex()
                 .flex_col()
                 .gap_1()
