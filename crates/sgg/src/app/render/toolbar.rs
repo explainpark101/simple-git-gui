@@ -52,7 +52,9 @@ pub fn render(view: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
                         .label(t.tab_git)
                         .selected(view.page == AppPage::Git)
                         .tooltip(t.tip_tab_git)
-                        .on_click(cx.listener(|this, _, _, cx| this.set_page(AppPage::Git, cx))),
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.set_page(AppPage::Git, window, cx)
+                        })),
                 )
                 .child(
                     btn("tab-history")
@@ -63,7 +65,7 @@ pub fn render(view: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
                         .tooltip(t.tip_tab_history)
                         .disabled(!view.has_repo())
                         .on_click(cx.listener(|this, _, window, cx| {
-                            this.set_page(AppPage::History, cx);
+                            this.set_page(AppPage::History, window, cx);
                             this.reload_history(window, cx);
                         })),
                 )
@@ -74,7 +76,9 @@ pub fn render(view: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
                         .label(t.tab_files)
                         .selected(view.page == AppPage::Files)
                         .tooltip(t.tip_tab_files)
-                        .on_click(cx.listener(|this, _, _, cx| this.set_page(AppPage::Files, cx))),
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.set_page(AppPage::Files, window, cx)
+                        })),
                 )
                 .child(
                     btn("tab-settings")
@@ -83,8 +87,8 @@ pub fn render(view: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
                         .label(t.tab_settings)
                         .selected(view.page == AppPage::Settings)
                         .tooltip(t.tip_tab_settings)
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.set_page(AppPage::Settings, cx)
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.set_page(AppPage::Settings, window, cx)
                         })),
                 ),
         )
@@ -93,6 +97,17 @@ pub fn render(view: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
                 .flex()
                 .items_center()
                 .gap_1()
+                .child(
+                    action_btn("toolbar-close-project", AssetIcon::Close)
+                        .danger()
+                        .small()
+                        .label(t.close_project)
+                        .tooltip(t.tip_close_project)
+                        .disabled(!view.has_repo())
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.close_project(window, cx)
+                        })),
+                )
                 .child(
                     action_btn("toolbar-terminal", AssetIcon::SquareTerminal)
                         .outline()
@@ -103,20 +118,6 @@ pub fn render(view: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
                         .on_click(cx.listener(|this, _, window, cx| {
                             this.toggle_terminal(window, cx)
                         })),
-                )
-                .child(
-                    with_busy(
-                        action_btn("toolbar-open-folder", AssetIcon::FolderOpen)
-                            .outline()
-                            .small()
-                            .label(t.open_other_project)
-                            .tooltip(t.tip_open_other_project)
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.open_folder(window, cx)
-                            })),
-                        view.busy,
-                        BusyKind::OpenFolder,
-                    ),
                 )
                 .child(
                     with_busy(

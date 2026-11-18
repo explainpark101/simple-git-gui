@@ -4,10 +4,13 @@
 //! in list order. Never commits — fills the commit textarea for review.
 
 use std::fs;
-use std::io::Write;
+use std::io::{BufRead, BufReader, Read, Write};
 use std::path::Path;
 use std::process::{Command, Stdio};
-use std::time::Duration;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+use std::thread;
+use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, bail, Context, Result};
 use serde::{Deserialize, Serialize};
@@ -16,8 +19,21 @@ use sgg_core::{prepare_commit_context, CommitMessageContext};
 use super::ai_provider::{AiAuthKind, AiProvider, AiProviderKind};
 use super::prefs::{CommitAiPrefs, CommitAiStyle};
 
-const HTTP_TIMEOUT_SECS: u64 = 120;
-const CLI_TIMEOUT_SECS: u64 = 180;
+/// Connect timeout stays short even when read/wait timeout is unlimited.
+const CONNECT_TIMEOUT_SECS: u64 = 15;
+
+pub type AbortFlag = Arc<AtomicBool>;
+
+pub fn check_aborted(abort: Option<&AbortFlag>) -> Result<()> {
+    if abort.is_some_and(|a| a.load(Ordering::Relaxed)) {
+        bail!("aborted");
+    }
+    Ok(())
+}
+
+pub fn is_abort_error(err: &anyhow::Error) -> bool {
+    format!("{err:#}").contains("aborted")
+}
 
 #[derive(Debug, Clone)]
 pub struct GeneratedCommitMessage {
@@ -36,34 +52,43 @@ impl GeneratedCommitMessage {
 }
 
 /// Build git context + call the configured provider(s).
+///
+/// `on_partial` receives the accumulated assistant text during HTTP streaming.
 pub fn generate_for_repo(
     repo: &Path,
     user_hint: Option<&str>,
     prefs: &CommitAiPrefs,
+    abort: Option<&AbortFlag>,
+    mut on_partial: impl FnMut(&str),
 ) -> Result<GeneratedCommitMessage> {
+    check_aborted(abort)?;
     let ctx = prepare_commit_context(repo, user_hint).context("prepare commit context")?;
     if ctx.is_empty() {
-        bail!("no staged or unstaged changes to describe");
+        bail!("no staged, unstaged, or untracked changes to describe");
     }
-    generate_from_context(repo, &ctx, prefs)
+    generate_from_context(repo, &ctx, prefs, abort, &mut on_partial)
 }
 
 fn generate_from_context(
     repo: &Path,
     ctx: &CommitMessageContext,
     prefs: &CommitAiPrefs,
+    abort: Option<&AbortFlag>,
+    on_partial: &mut dyn FnMut(&str),
 ) -> Result<GeneratedCommitMessage> {
     let prompt = build_prompt(ctx, prefs.style);
     if prefs.is_auto() {
         let mut errors = Vec::new();
         let mut tried = 0usize;
         for provider in prefs.providers.iter().filter(|p| p.enabled) {
+            check_aborted(abort)?;
             if !provider_usable(provider, prefs) {
                 continue;
             }
             tried += 1;
-            match generate_with_provider(repo, &prompt, provider, prefs) {
+            match generate_with_provider(repo, &prompt, provider, prefs, abort, on_partial) {
                 Ok(msg) => return Ok(msg),
+                Err(err) if is_abort_error(&err) => return Err(err),
                 Err(err) => errors.push(format!("{}: {err:#}", provider.title)),
             }
         }
@@ -86,7 +111,7 @@ fn generate_from_context(
     if !provider.enabled {
         bail!("provider `{}` is disabled", provider.title);
     }
-    generate_with_provider(repo, &prompt, provider, prefs)
+    generate_with_provider(repo, &prompt, provider, prefs, abort, on_partial)
 }
 
 fn provider_usable(provider: &AiProvider, prefs: &CommitAiPrefs) -> bool {
@@ -102,20 +127,24 @@ fn generate_with_provider(
     prompt: &str,
     provider: &AiProvider,
     prefs: &CommitAiPrefs,
+    abort: Option<&AbortFlag>,
+    on_partial: &mut dyn FnMut(&str),
 ) -> Result<GeneratedCommitMessage> {
     match provider.kind {
-        AiProviderKind::OpenAiCompatible => generate_http(prompt, provider),
+        AiProviderKind::OpenAiCompatible => {
+            generate_http(prompt, provider, prefs, abort, on_partial)
+        }
         AiProviderKind::CursorCli => {
             let bin = resolve_cursor_bin(provider, prefs).or_else(|_| {
                 super::cli_tools::ensure_cursor().context("install Cursor Agent CLI")
             })?;
-            generate_cursor_with_bin(repo, prompt, provider, &bin)
+            generate_cursor_with_bin(repo, prompt, provider, &bin, prefs, abort)
         }
         AiProviderKind::CodexCli => {
             let bin = resolve_codex_bin(provider, prefs).or_else(|_| {
                 super::cli_tools::ensure_codex().context("install Codex CLI")
             })?;
-            generate_codex_with_bin(repo, prompt, provider, &bin)
+            generate_codex_with_bin(repo, prompt, provider, &bin, prefs, abort)
         }
     }
 }
@@ -239,7 +268,27 @@ fn strip_fences(raw: &str) -> String {
 
 // --- HTTP (OpenAI-compatible) -------------------------------------------------
 
-fn generate_http(prompt: &str, provider: &AiProvider) -> Result<GeneratedCommitMessage> {
+fn http_agent(prefs: &CommitAiPrefs) -> ureq::Agent {
+    let mut builder = ureq::AgentBuilder::new()
+        .timeout_connect(Duration::from_secs(CONNECT_TIMEOUT_SECS))
+        .user_agent(&format!("simple-git-gui/{}", env!("CARGO_PKG_VERSION")));
+    // Empty / None timeout → do not enforce a read deadline (week-long stand-in).
+    if let Some(secs) = prefs.timeout_secs.filter(|s| *s > 0) {
+        builder = builder.timeout_read(Duration::from_secs(secs));
+    } else {
+        builder = builder.timeout_read(Duration::from_secs(60 * 60 * 24 * 7));
+    }
+    builder.build()
+}
+
+fn generate_http(
+    prompt: &str,
+    provider: &AiProvider,
+    prefs: &CommitAiPrefs,
+    abort: Option<&AbortFlag>,
+    on_partial: &mut dyn FnMut(&str),
+) -> Result<GeneratedCommitMessage> {
+    check_aborted(abort)?;
     if provider.base_url.trim().is_empty() {
         bail!("base URL is empty");
     }
@@ -261,9 +310,11 @@ fn generate_http(prompt: &str, provider: &AiProvider) -> Result<GeneratedCommitM
         url = format!("{url}{sep}{param}={}", urlencoding_minimal(key));
     }
 
+    let stream = prefs.http_mode.is_streaming();
     let body = ChatRequest {
         model: provider.model.trim().to_string(),
         temperature: 0.2,
+        stream,
         messages: vec![
             ChatMessage {
                 role: "system".into(),
@@ -275,12 +326,11 @@ fn generate_http(prompt: &str, provider: &AiProvider) -> Result<GeneratedCommitM
             },
         ],
     };
-    let agent = ureq::AgentBuilder::new()
-        .timeout_connect(Duration::from_secs(15))
-        .timeout_read(Duration::from_secs(HTTP_TIMEOUT_SECS))
-        .user_agent(&format!("simple-git-gui/{}", env!("CARGO_PKG_VERSION")))
-        .build();
+    let agent = http_agent(prefs);
     let mut req = agent.post(&url).set("Content-Type", "application/json");
+    if stream {
+        req = req.set("Accept", "text/event-stream");
+    }
     match provider.auth {
         AiAuthKind::None | AiAuthKind::Query => {}
         AiAuthKind::Bearer => {
@@ -301,19 +351,75 @@ fn generate_http(prompt: &str, provider: &AiProvider) -> Result<GeneratedCommitM
             req = req.set(header, key);
         }
     }
+    check_aborted(abort)?;
     let response = req
         .send_json(&body)
         .with_context(|| format!("POST {url}"))?;
-    let parsed: ChatResponse = response.into_json().context("parse chat completions JSON")?;
-    let content = parsed
-        .choices
-        .into_iter()
-        .next()
-        .and_then(|c| c.message)
-        .map(|m| m.content)
-        .filter(|s| !s.trim().is_empty())
-        .ok_or_else(|| anyhow!("empty model response"))?;
-    Ok(parse_message(&content))
+    if stream {
+        read_chat_sse(response, abort, on_partial)
+    } else {
+        let parsed: ChatResponse = response.into_json().context("parse chat completions JSON")?;
+        let content = parsed
+            .choices
+            .into_iter()
+            .next()
+            .and_then(|c| c.message)
+            .map(|m| m.content)
+            .filter(|s| !s.trim().is_empty())
+            .ok_or_else(|| anyhow!("empty model response"))?;
+        on_partial(&content);
+        Ok(parse_message(&content))
+    }
+}
+
+fn read_chat_sse(
+    response: ureq::Response,
+    abort: Option<&AbortFlag>,
+    on_partial: &mut dyn FnMut(&str),
+) -> Result<GeneratedCommitMessage> {
+    let reader = response.into_reader();
+    let mut lines = BufReader::new(reader);
+    let mut line = String::new();
+    let mut accumulated = String::new();
+    loop {
+        check_aborted(abort)?;
+        line.clear();
+        let n = lines.read_line(&mut line).context("read SSE line")?;
+        if n == 0 {
+            break;
+        }
+        let trimmed = line.trim_end();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let Some(data) = trimmed.strip_prefix("data:") else {
+            continue;
+        };
+        let data = data.trim();
+        if data.is_empty() {
+            continue;
+        }
+        if data == "[DONE]" {
+            break;
+        }
+        let Ok(chunk) = serde_json::from_str::<StreamChunk>(data) else {
+            continue;
+        };
+        for choice in chunk.choices {
+            if let Some(delta) = choice.delta.and_then(|d| d.content) {
+                if delta.is_empty() {
+                    continue;
+                }
+                accumulated.push_str(&delta);
+                on_partial(&accumulated);
+            }
+        }
+    }
+    check_aborted(abort)?;
+    if accumulated.trim().is_empty() {
+        bail!("empty streamed model response");
+    }
+    Ok(parse_message(&accumulated))
 }
 
 /// Minimal query escaping (keys rarely need more).
@@ -334,6 +440,8 @@ fn urlencoding_minimal(s: &str) -> String {
 struct ChatRequest {
     model: String,
     temperature: f32,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    stream: bool,
     messages: Vec<ChatMessage>,
 }
 
@@ -361,6 +469,24 @@ struct ChatMessageOut {
     content: String,
 }
 
+#[derive(Deserialize)]
+struct StreamChunk {
+    #[serde(default)]
+    choices: Vec<StreamChoice>,
+}
+
+#[derive(Deserialize)]
+struct StreamChoice {
+    #[serde(default)]
+    delta: Option<StreamDelta>,
+}
+
+#[derive(Deserialize)]
+struct StreamDelta {
+    #[serde(default)]
+    content: Option<String>,
+}
+
 // --- Cursor / Codex (T3-aligned commit text generation) -----------------------
 
 const COMMIT_OUTPUT_SCHEMA: &str = r#"{
@@ -378,7 +504,10 @@ fn generate_cursor_with_bin(
     prompt: &str,
     provider: &AiProvider,
     bin: &str,
+    prefs: &CommitAiPrefs,
+    abort: Option<&AbortFlag>,
 ) -> Result<GeneratedCommitMessage> {
+    check_aborted(abort)?;
     // T3 V2 uses @cursor/sdk in-process; Rust can't load that. Auth matches T3
     // (CURSOR_API_KEY / provider key). Invocation uses Cursor's documented
     // headless CLI: `agent -p` with the key in the environment.
@@ -412,7 +541,8 @@ fn generate_cursor_with_bin(
         Some(repo),
         None,
         &env_refs,
-        CLI_TIMEOUT_SECS,
+        prefs.timeout_secs,
+        abort,
     )?;
     if output.trim().is_empty() {
         bail!("cursor agent returned empty output (sign in or set CURSOR_API_KEY)");
@@ -425,7 +555,10 @@ fn generate_codex_with_bin(
     prompt: &str,
     provider: &AiProvider,
     bin: &str,
+    prefs: &CommitAiPrefs,
+    abort: Option<&AbortFlag>,
 ) -> Result<GeneratedCommitMessage> {
+    check_aborted(abort)?;
     // Same one-shot path as T3 CodexTextGeneration: exec + schema + last-message file.
     let tmp = std::env::temp_dir().join(format!(
         "sgg-codex-{}-{}",
@@ -478,7 +611,8 @@ fn generate_codex_with_bin(
         Some(repo),
         Some(prompt),
         &[],
-        CLI_TIMEOUT_SECS,
+        prefs.timeout_secs,
+        abort,
     );
     let file_raw = fs::read_to_string(&output_path).unwrap_or_default();
     let _ = fs::remove_dir_all(&tmp);
@@ -628,8 +762,10 @@ fn run_command_capture(
     cwd: Option<&Path>,
     stdin_text: Option<&str>,
     env: &[(&str, &str)],
-    _timeout_secs: u64,
+    timeout_secs: Option<u64>,
+    abort: Option<&AbortFlag>,
 ) -> Result<String> {
+    check_aborted(abort)?;
     let mut cmd = Command::new(program);
     cmd.args(args)
         .stdout(Stdio::piped())
@@ -655,13 +791,74 @@ fn run_command_capture(
                 .context("write prompt to stdin")?;
         }
     }
-    let output = child
-        .wait_with_output()
-        .with_context(|| format!("wait {program}"))?;
-    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-    if !output.status.success() {
-        let code = output.status.code().unwrap_or(-1);
+
+    let stdout_buf = Arc::new(Mutex::new(Vec::new()));
+    let stderr_buf = Arc::new(Mutex::new(Vec::new()));
+    let out_h = child.stdout.take().map(|pipe| {
+        let buf = stdout_buf.clone();
+        thread::spawn(move || {
+            let mut pipe = pipe;
+            let mut tmp = [0u8; 4096];
+            while let Ok(n) = pipe.read(&mut tmp) {
+                if n == 0 {
+                    break;
+                }
+                if let Ok(mut g) = buf.lock() {
+                    g.extend_from_slice(&tmp[..n]);
+                }
+            }
+        })
+    });
+    let err_h = child.stderr.take().map(|pipe| {
+        let buf = stderr_buf.clone();
+        thread::spawn(move || {
+            let mut pipe = pipe;
+            let mut tmp = [0u8; 4096];
+            while let Ok(n) = pipe.read(&mut tmp) {
+                if n == 0 {
+                    break;
+                }
+                if let Ok(mut g) = buf.lock() {
+                    g.extend_from_slice(&tmp[..n]);
+                }
+            }
+        })
+    });
+
+    let started = Instant::now();
+    let limit = timeout_secs.filter(|s| *s > 0).map(Duration::from_secs);
+    let status = loop {
+        check_aborted(abort).map_err(|err| {
+            let _ = child.kill();
+            let _ = child.wait();
+            err
+        })?;
+        if let Some(limit) = limit {
+            if started.elapsed() >= limit {
+                let _ = child.kill();
+                let _ = child.wait();
+                bail!("{program} timed out after {}s", limit.as_secs());
+            }
+        }
+        match child.try_wait().with_context(|| format!("wait {program}"))? {
+            Some(status) => break status,
+            None => thread::sleep(Duration::from_millis(50)),
+        }
+    };
+    if let Some(h) = out_h {
+        let _ = h.join();
+    }
+    if let Some(h) = err_h {
+        let _ = h.join();
+    }
+    let stdout = String::from_utf8_lossy(&stdout_buf.lock().unwrap_or_else(|e| e.into_inner()))
+        .trim()
+        .to_string();
+    let stderr = String::from_utf8_lossy(&stderr_buf.lock().unwrap_or_else(|e| e.into_inner()))
+        .trim()
+        .to_string();
+    if !status.success() {
+        let code = status.code().unwrap_or(-1);
         bail!("{program} exited {code}: {stderr}");
     }
     if stdout.is_empty() && !stderr.is_empty() {

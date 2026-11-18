@@ -492,7 +492,7 @@ fn progress_header(
     cx: &mut Context<AppView>,
 ) -> impl IntoElement {
     let t = view.t();
-    let busy = view.busy.is_some();
+    let busy = view.busy.is_some() || view.is_generating_commit_message();
     let chevron = if collapsed {
         IconName::ChevronUp
     } else {
@@ -568,12 +568,16 @@ fn progress_panel(view: &AppView, cx: &mut Context<AppView>) -> AnyElement {
                             .child(t.progress_empty),
                     )
                 })
-                .children(view.progress_log.iter().rev().map(|entry| {
+                .children(view.progress_log.iter().rev().enumerate().map(|(idx, entry)| {
                     let (color, mark) = match entry.state {
                         ProgressState::Running => (cx.theme().accent, "…"),
                         ProgressState::Done => (cx.theme().success, "✓"),
                         ProgressState::Failed => (cx.theme().danger, "✗"),
                     };
+                    let title = entry.title.clone();
+                    let detail = entry.detail.clone();
+                    let title_copy = title.clone();
+                    let detail_copy = detail.clone();
                     div()
                         .w_full()
                         .flex()
@@ -584,25 +588,51 @@ fn progress_panel(view: &AppView, cx: &mut Context<AppView>) -> AnyElement {
                         .rounded(cx.theme().radius)
                         .child(
                             div()
+                                .w_full()
                                 .flex()
                                 .items_center()
+                                .justify_between()
                                 .gap_1()
+                                .min_w_0()
                                 .child(
                                     div()
-                                        .text_xs()
-                                        .font_semibold()
-                                        .text_color(color)
-                                        .child(mark),
+                                        .flex()
+                                        .items_center()
+                                        .gap_1()
+                                        .min_w_0()
+                                        .flex_1()
+                                        .child(
+                                            div()
+                                                .text_xs()
+                                                .font_semibold()
+                                                .text_color(color)
+                                                .child(mark),
+                                        )
+                                        .child(
+                                            div()
+                                                .text_xs()
+                                                .font_semibold()
+                                                .text_left()
+                                                .min_w_0()
+                                                .overflow_hidden()
+                                                .text_ellipsis()
+                                                .whitespace_nowrap()
+                                                .child(title),
+                                        ),
                                 )
                                 .child(
-                                    div()
-                                        .text_xs()
-                                        .font_semibold()
-                                        .text_left()
-                                        .min_w_0()
-                                        .overflow_hidden()
-                                        .text_ellipsis()
-                                        .child(entry.title.clone()),
+                                    icon_btn(
+                                        SharedString::from(format!("progress-copy-{idx}")),
+                                        AssetIcon::Copy,
+                                    )
+                                    .tooltip(t.tip_copy_progress)
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        this.copy_progress_entry(
+                                            title_copy.as_ref(),
+                                            detail_copy.as_ref(),
+                                            cx,
+                                        );
+                                    })),
                                 ),
                         )
                         .child(
@@ -612,7 +642,7 @@ fn progress_panel(view: &AppView, cx: &mut Context<AppView>) -> AnyElement {
                                 .font_family(".GitHub Mono, Cascadia Mono, Consolas, monospace")
                                 .text_color(cx.theme().muted_foreground)
                                 .whitespace_normal()
-                                .child(entry.detail.clone()),
+                                .child(detail),
                         )
                         .into_any_element()
                 })),

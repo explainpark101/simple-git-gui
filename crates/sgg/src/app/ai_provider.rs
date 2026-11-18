@@ -109,6 +109,13 @@ fn default_chat_path() -> String {
     "/chat/completions".into()
 }
 
+/// Quick-pick chat paths for the Settings provider form.
+pub const CHAT_PATH_PRESETS: &[&str] = &[
+    "/chat/completions",
+    "/v1/chat/completions",
+    "/completions",
+];
+
 fn default_auth_header() -> String {
     "x-api-key".into()
 }

@@ -781,6 +781,129 @@ impl AppView {
         }
     }
 
+    /// Close the working repository and show the welcome screen.
+    pub(super) fn close_project(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        use super::page::AppPage;
+        if !self.has_repo() && self.start_path.is_none() {
+            return;
+        }
+        self.start_path = None;
+        self.fetch_prompted_root = None;
+        self.reload_task = None;
+        self.selected.clear();
+        self.clear_all_page_previews(window, cx);
+        if self.page == AppPage::History || self.page == AppPage::Files {
+            self.set_page(AppPage::Git, window, cx);
+        }
+        self.reload(cx);
+        self.sync_auto_refresh(cx);
+        self.set_ok_status(self.t().close_project);
+        cx.notify();
+    }
+
+    /// Wipe Git / History / Files preview sessions (project close, repo switch).
+    pub(super) fn clear_all_page_previews(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.git_preview_path = None;
+        self.history_file_preview = None;
+        self.preview_tabs.clear();
+        self.preview_tab_index = 0;
+        self.preview_path = None;
+        self.clear_shared_preview_buffers(window, cx);
+    }
+
+    /// Empty the shared preview editors without touching per-page sessions.
+    pub(super) fn clear_shared_preview_buffers(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.clear_blame_state();
+        self.clear_preview_diff_gutter(cx);
+        self.preview_input.update(cx, |input, cx| {
+            input.set_line_number(true, window, cx);
+            input.set_value("", window, cx);
+        });
+        self.preview_input_old.update(cx, |input, cx| {
+            input.set_line_number(true, window, cx);
+            input.set_value("", window, cx);
+        });
+        self.history_diff.update(cx, |state, cx| {
+            state.set_files([], cx);
+        });
+        self.history_aligned_split = None;
+    }
+
+    /// Reload the current page's retained preview into the shared editors.
+    pub(super) fn restore_page_preview(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        use super::page::AppPage;
+
+        match self.page {
+            AppPage::Git => {
+                if let Some(path) = self.git_preview_path.clone() {
+                    self.load_git_preview(&path, window, cx);
+                } else {
+                    self.preview_path = None;
+                    self.clear_shared_preview_buffers(window, cx);
+                }
+            }
+            AppPage::History => {
+                if self.history_file_preview.is_some() {
+                    if let Some(path) = self
+                        .history_file_preview
+                        .as_ref()
+                        .map(|p| p.path.clone())
+                    {
+                        self.preview_path = Some(path);
+                    }
+                    self.load_history_file_into_preview(window, cx);
+                    self.refresh_inline_blame(cx);
+                } else {
+                    self.preview_path = None;
+                    self.clear_shared_preview_buffers(window, cx);
+                }
+            }
+            AppPage::Files => {
+                if self.preview_tabs.is_empty() {
+                    self.preview_path = None;
+                    self.clear_shared_preview_buffers(window, cx);
+                    return;
+                }
+                let idx = self
+                    .preview_tab_index
+                    .min(self.preview_tabs.len().saturating_sub(1));
+                self.preview_tab_index = idx;
+                let path = self.preview_tabs[idx].path.clone();
+                let content = self.preview_tabs[idx].content.clone();
+                self.preview_input.update(cx, |input, cx| {
+                    input.set_line_number(true, window, cx);
+                    input.set_value(&content, window, cx);
+                });
+                self.preview_input_old.update(cx, |input, cx| {
+                    input.set_line_number(true, window, cx);
+                    input.set_value("", window, cx);
+                });
+                self.history_diff.update(cx, |state, cx| {
+                    state.set_files([], cx);
+                });
+                self.history_aligned_split = None;
+                self.preview_path = Some(path);
+                self.clear_blame_state();
+                self.clear_preview_diff_gutter(cx);
+                self.refresh_inline_blame(cx);
+                self.refresh_preview_diff_gutter(cx);
+            }
+            AppPage::Settings => {}
+        }
+    }
+
     pub(super) fn open_folder(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let paths = cx.prompt_for_paths(PathPromptOptions {
             files: false,
@@ -990,7 +1113,8 @@ impl AppView {
         // Git page: single preview pane (no tab strip).
         // Same path in File mode: keep scroll/caret. Diff mode reloads so a
         // re-click after stage/unstage picks up a fresh patch.
-        if self.preview_path.as_deref() == Some(rel_path.as_str())
+        if self.git_preview_path.as_deref() == Some(rel_path.as_str())
+            && self.preview_path.as_deref() == Some(rel_path.as_str())
             && self.changes_file_view_mode == super::view::ChangesFileViewMode::File
         {
             return;
@@ -1011,7 +1135,7 @@ impl AppView {
             return;
         }
         self.changes_file_view_mode = mode;
-        if let Some(path) = self.preview_path.clone() {
+        if let Some(path) = self.git_preview_path.clone() {
             self.load_git_preview(&path, window, cx);
         }
         cx.notify();
@@ -1030,7 +1154,7 @@ impl AppView {
             return;
         }
         self.changes_diff_layout = layout;
-        if let Some(path) = self.preview_path.clone() {
+        if let Some(path) = self.git_preview_path.clone() {
             self.load_git_preview(&path, window, cx);
         }
         cx.notify();
@@ -1289,6 +1413,9 @@ impl AppView {
                 if self.preview_path.as_deref() == Some(from) {
                     self.preview_path = Some(to.to_string());
                 }
+                if self.git_preview_path.as_deref() == Some(from) {
+                    self.git_preview_path = Some(to.to_string());
+                }
                 for tab in &mut self.preview_tabs {
                     if tab.path == from {
                         tab.path = to.to_string();
@@ -1317,12 +1444,19 @@ impl AppView {
                 {
                     self.preview_tab_index = self.preview_tabs.len() - 1;
                 }
+                if self.git_preview_path.as_deref() == Some(path) {
+                    self.git_preview_path = None;
+                }
                 if self.preview_path.as_deref() == Some(path) {
-                    if let Some(tab) = self.preview_tabs.get(self.preview_tab_index) {
-                        self.preview_path = Some(tab.path.clone());
-                    } else {
+                    if self.page == super::page::AppPage::Files {
+                        if let Some(tab) = self.preview_tabs.get(self.preview_tab_index) {
+                            self.preview_path = Some(tab.path.clone());
+                        } else {
+                            self.preview_path = None;
+                            self.preview_tab_index = 0;
+                        }
+                    } else if self.git_preview_path.is_none() {
                         self.preview_path = None;
-                        self.preview_tab_index = 0;
                     }
                 }
                 self.set_ok_status(format!("Deleted {path}"));
@@ -1405,6 +1539,7 @@ impl AppView {
                             state.set_files([], cx);
                         });
                         self.history_aligned_split = None;
+                        self.git_preview_path = Some(rel_path.to_string());
                         self.preview_path = Some(rel_path.to_string());
                         self.error = None;
                         self.clear_blame_state();
@@ -1415,6 +1550,7 @@ impl AppView {
                 }
             }
             super::view::ChangesFileViewMode::Diff => {
+                self.git_preview_path = Some(rel_path.to_string());
                 self.preview_path = Some(rel_path.to_string());
                 self.load_changes_diff_into_preview(rel_path, window, cx);
                 self.refresh_inline_blame(cx);
@@ -1747,7 +1883,7 @@ impl AppView {
         self.history_selected = None;
         self.history_detail = None;
         self.close_history_file_preview(window, cx);
-        self.set_page(super::page::AppPage::History, cx);
+        self.set_page(super::page::AppPage::History, window, cx);
         self.reload_history(window, cx);
     }
 
@@ -1770,6 +1906,7 @@ impl AppView {
             mode,
             diff_layout,
         });
+        // Display path only — do not touch git_preview_path / Files tabs.
         self.preview_path = Some(path);
         self.clear_preview_diff_gutter(cx);
         self.load_history_file_into_preview(window, cx);
@@ -1823,21 +1960,11 @@ impl AppView {
             return;
         }
         self.history_file_preview = None;
-        self.preview_path = None;
-        self.clear_blame_state();
-        self.clear_preview_diff_gutter(cx);
-        self.preview_input.update(cx, |input, cx| {
-            input.set_line_number(true, window, cx);
-            input.set_value("", window, cx);
-        });
-        self.preview_input_old.update(cx, |input, cx| {
-            input.set_line_number(true, window, cx);
-            input.set_value("", window, cx);
-        });
-        self.history_diff.update(cx, |state, cx| {
-            state.set_files([], cx);
-        });
-        self.history_aligned_split = None;
+        // Only clear shared editors while History is showing them.
+        if self.page == super::page::AppPage::History {
+            self.preview_path = None;
+            self.clear_shared_preview_buffers(window, cx);
+        }
         cx.notify();
     }
 
@@ -1994,7 +2121,7 @@ impl AppView {
     }
 
     pub(super) fn save_preview(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.history_file_preview.is_some() {
+        if self.page == super::page::AppPage::History && self.history_file_preview.is_some() {
             self.set_error("History preview is read-only".into(), cx);
             return;
         }

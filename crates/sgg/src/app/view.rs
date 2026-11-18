@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::mpsc;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -181,6 +182,10 @@ pub struct AppView {
     pub(super) history_split_scroll_new: ScrollHandle,
     /// Shared handle when scroll-sync is on (both panes track this).
     pub(super) history_split_scroll_shared: ScrollHandle,
+    /// Settings page vertical scroll (so we can jump to Commit AI).
+    pub(super) settings_scroll: ScrollHandle,
+    /// Anchor on the Commit AI settings card.
+    pub(super) settings_commit_ai_anchor: ScrollAnchor,
     /// VS Code-style SCM bars beside the preview gutter (line numbers).
     preview_diff_gutter: GutterDecorationCollection,
     preview_diff_ruler: OverviewRulerDecorationCollection,
@@ -235,7 +240,10 @@ pub struct AppView {
     /// Blinking caret phase for the focused terminal.
     pub(super) terminal_caret_on: bool,
     terminal_caret_ticks: u32,
+    /// Path currently loaded into the shared preview editors (active page only).
     pub(super) preview_path: Option<String>,
+    /// Git page preview path (kept when switching away so History/Files cannot wipe it).
+    pub(super) git_preview_path: Option<String>,
     /// Open preview tabs on the Files page (Git uses a single `preview_path`).
     pub(super) preview_tabs: Vec<PreviewTab>,
     pub(super) preview_tab_index: usize,
@@ -248,7 +256,7 @@ pub struct AppView {
     /// Precomputed virtualized body rows per section (same order as `changes_sections`).
     pub(super) changes_flat_rows: Vec<Vec<ChangeFlatRow>>,
     /// Coalesce in-flight background reloads.
-    reload_task: Option<Task<()>>,
+    pub(super) reload_task: Option<Task<()>>,
     pub(super) preferred_editor: ExternalEditor,
     pub(super) theme_pref: ThemePreference,
     pub(super) locale: Locale,
@@ -271,6 +279,15 @@ pub struct AppView {
     pub(super) commit_ai_auth_query_input: Entity<InputState>,
     pub(super) commit_ai_key_env_input: Entity<InputState>,
     pub(super) commit_ai_cli_bin_input: Entity<InputState>,
+    /// Seconds; empty = no timeout (see [`CommitAiPrefs::timeout_secs`]).
+    pub(super) commit_ai_timeout_input: Entity<InputState>,
+    /// Quick-set field on the built-in Cursor card (T3-style CURSOR_API_KEY paste).
+    pub(super) cursor_api_key_input: Entity<InputState>,
+    /// Set while AI commit generation runs; flipped to abort in-flight work.
+    generate_commit_abort: Option<Arc<AtomicBool>>,
+    /// Last T3 import summary shown under the Cursor card.
+    pub(super) t3_import_status: Option<SharedString>,
+    pub(super) t3_available: bool,
     pub(super) commit_ai_models: Vec<String>,
     pub(super) commit_ai_models_error: Option<String>,
     pub(super) commit_ai_models_task: Option<Task<()>>,
@@ -412,6 +429,12 @@ impl AppView {
             cx.new(|cx| InputState::new(window, cx).placeholder("OPENAI_API_KEY"));
         let commit_ai_cli_bin_input =
             cx.new(|cx| InputState::new(window, cx).placeholder("CLI path"));
+        let commit_ai_timeout_input = cx.new(|cx| {
+            InputState::new(window, cx).placeholder("seconds (empty = no timeout)")
+        });
+        let cursor_api_key_input = cx.new(|cx| {
+            InputState::new(window, cx).placeholder("CURSOR_API_KEY (paste from Dashboard)")
+        });
         let terminal_shell_input = cx.new(|cx| {
             InputState::new(window, cx)
                 .placeholder(super::terminal_shell::custom_command_placeholder())
@@ -482,6 +505,8 @@ impl AppView {
         } else {
             t.no_folder_open.into()
         };
+        let settings_scroll = ScrollHandle::new();
+        let settings_commit_ai_anchor = ScrollAnchor::for_handle(settings_scroll.clone());
         let mut view = Self {
             start_path,
             snapshot: None,
@@ -507,6 +532,8 @@ impl AppView {
             history_split_scroll_old: ScrollHandle::new(),
             history_split_scroll_new: ScrollHandle::new(),
             history_split_scroll_shared: ScrollHandle::new(),
+            settings_scroll,
+            settings_commit_ai_anchor,
             preview_diff_gutter,
             preview_diff_ruler,
             preview_diff_line_bg,
@@ -543,6 +570,7 @@ impl AppView {
             terminal_caret_on: true,
             terminal_caret_ticks: 0,
             preview_path: None,
+            git_preview_path: None,
             preview_tabs: Vec::new(),
             preview_tab_index: 0,
             error: None,
@@ -572,6 +600,11 @@ impl AppView {
             commit_ai_auth_query_input,
             commit_ai_key_env_input,
             commit_ai_cli_bin_input,
+            commit_ai_timeout_input,
+            cursor_api_key_input,
+            generate_commit_abort: None,
+            t3_import_status: None,
+            t3_available: super::t3_bridge::t3_available(),
             commit_ai_models: Vec::new(),
             commit_ai_models_error: None,
             commit_ai_models_task: None,
@@ -637,6 +670,8 @@ impl AppView {
         view.wire_commit_input(window, cx);
         view.wire_preview_blame(cx);
         view.wire_window_bounds(window, cx);
+        view.sync_cursor_api_key_input(window, cx);
+        view.sync_commit_ai_timeout_input(window, cx);
         view.start_terminal_poll(cx);
         if view.start_path.is_some() {
             view.reload(cx);
@@ -677,7 +712,15 @@ impl AppView {
     pub(super) fn current_nav_entry(&self) -> NavEntry {
         NavEntry {
             page: self.page,
-            preview: self.preview_path.clone(),
+            preview: match self.page {
+                AppPage::Git => self.git_preview_path.clone(),
+                AppPage::Files => self.preview_path.clone(),
+                AppPage::History => self
+                    .history_file_preview
+                    .as_ref()
+                    .map(|p| p.path.clone()),
+                AppPage::Settings => None,
+            },
         }
     }
 
@@ -704,21 +747,44 @@ impl AppView {
         cx: &mut Context<Self>,
     ) {
         self.navigating_history = true;
+        if self.page == AppPage::Files {
+            self.stash_active_preview_tab(cx);
+        }
         self.page = entry.page;
-        match entry.preview {
-            Some(path) => {
-                self.ensure_parents_expanded(&path);
-                self.load_preview_into(&path, window, cx);
-            }
-            None => {
-                self.preview_path = None;
-                if self.page != AppPage::Files {
-                    // Leave Files tabs alone when history clears a Git-only preview.
-                } else {
+        match entry.page {
+            AppPage::Git => match entry.preview {
+                Some(path) => {
+                    self.git_preview_path = Some(path.clone());
+                    self.ensure_parents_expanded(&path);
+                    self.load_preview_into(&path, window, cx);
+                }
+                None => {
+                    self.git_preview_path = None;
+                    self.preview_path = None;
+                    self.clear_shared_preview_buffers(window, cx);
+                }
+            },
+            AppPage::Files => match entry.preview {
+                Some(path) => {
+                    self.ensure_parents_expanded(&path);
+                    if let Some(idx) = self.preview_tabs.iter().position(|t| t.path == path) {
+                        self.select_preview_tab(idx, window, cx);
+                    } else {
+                        self.preview_file(path, window, cx);
+                    }
+                }
+                None => {
                     self.preview_tabs.clear();
                     self.preview_tab_index = 0;
+                    self.preview_path = None;
+                    self.clear_shared_preview_buffers(window, cx);
                 }
+            },
+            AppPage::History => {
+                // Nav only stores the path; restore the retained History session if any.
+                self.restore_page_preview(window, cx);
             }
+            AppPage::Settings => {}
         }
         self.navigating_history = false;
     }
@@ -1000,9 +1066,17 @@ impl AppView {
         cx.notify();
     }
 
-    pub(super) fn set_page(&mut self, page: AppPage, cx: &mut Context<Self>) {
+    pub(super) fn set_page(
+        &mut self,
+        page: AppPage,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if page == self.page {
             return;
+        }
+        if self.page == AppPage::Files {
+            self.stash_active_preview_tab(cx);
         }
         self.page = page;
         // Auto-refresh may skip the files tree while on Git; rebuild when opening Files.
@@ -1013,8 +1087,24 @@ impl AppView {
             self.ensure_system_fonts(cx);
             self.refresh_cli_status(cx);
         }
+        self.restore_page_preview(window, cx);
         self.push_nav_entry(self.current_nav_entry());
         cx.notify();
+    }
+
+    /// Open Settings and scroll to the Commit AI card.
+    pub(super) fn open_commit_ai_settings(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.page != AppPage::Settings {
+            self.set_page(AppPage::Settings, window, cx);
+        }
+        cx.defer_in(window, |this, window, cx| {
+            this.settings_commit_ai_anchor.scroll_to(window, cx);
+            cx.notify();
+        });
     }
 
     /// Probe Cursor/Codex CLI on a background thread; Settings reads the cache only.
@@ -1090,26 +1180,27 @@ impl AppView {
     }
 
     pub(super) fn close_preview(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.history_file_preview.is_some() {
-            self.close_history_file_preview(window, cx);
-            return;
+        match self.page {
+            AppPage::History => {
+                self.close_history_file_preview(window, cx);
+            }
+            AppPage::Files => {
+                if !self.preview_tabs.is_empty() {
+                    self.close_preview_tab(self.preview_tab_index, window, cx);
+                }
+            }
+            AppPage::Git => {
+                if self.git_preview_path.is_none() {
+                    return;
+                }
+                self.git_preview_path = None;
+                self.preview_path = None;
+                self.clear_shared_preview_buffers(window, cx);
+                self.push_nav_entry(self.current_nav_entry());
+                cx.notify();
+            }
+            AppPage::Settings => {}
         }
-        if self.page == AppPage::Files && !self.preview_tabs.is_empty() {
-            self.close_preview_tab(self.preview_tab_index, window, cx);
-            return;
-        }
-        if self.preview_path.is_none() {
-            return;
-        }
-        self.preview_path = None;
-        self.history_aligned_split = None;
-        self.history_diff.update(cx, |state, cx| {
-            state.set_files([], cx);
-        });
-        self.clear_blame_state();
-        self.clear_preview_diff_gutter(cx);
-        self.push_nav_entry(self.current_nav_entry());
-        cx.notify();
     }
 
     pub(super) fn stash_active_preview_tab(&mut self, cx: &App) {
@@ -1369,6 +1460,9 @@ impl AppView {
 
     /// Revision for blame of the open preview (`None` = working tree).
     pub(super) fn blame_revision(&self) -> Option<String> {
+        if self.page != AppPage::History {
+            return None;
+        }
         let hp = self.history_file_preview.as_ref()?;
         if sgg_core::is_uncommitted_oid(&hp.oid) {
             None
@@ -1496,7 +1590,7 @@ impl AppView {
     }
 
     pub(super) fn is_history_preview(&self) -> bool {
-        self.history_file_preview.is_some()
+        self.page == AppPage::History && self.history_file_preview.is_some()
     }
 
     pub(super) fn rebuild_history_graph(&mut self) {
@@ -1542,7 +1636,8 @@ impl AppView {
 
     /// Active Split Diff target `(oid, path)`, if the preview is showing one.
     pub(super) fn split_diff_target(&self) -> Option<(String, String)> {
-        if let Some(preview) = &self.history_file_preview {
+        if self.page == AppPage::History {
+            let preview = self.history_file_preview.as_ref()?;
             if preview.mode == HistoryFileViewMode::Diff
                 && preview.diff_layout == HistoryDiffLayout::Split
             {
@@ -1555,8 +1650,9 @@ impl AppView {
             && self.changes_diff_layout == HistoryDiffLayout::Split
         {
             return self
-                .preview_path
+                .git_preview_path
                 .clone()
+                .or_else(|| self.preview_path.clone())
                 .map(|path| (sgg_core::UNCOMMITTED_OID.to_string(), path));
         }
         None
@@ -1564,7 +1660,8 @@ impl AppView {
 
     /// Whether the preview body should render Unified / Split Diff (not the file editor).
     pub(super) fn preview_diff_layout(&self) -> Option<HistoryDiffLayout> {
-        if let Some(preview) = &self.history_file_preview {
+        if self.page == AppPage::History {
+            let preview = self.history_file_preview.as_ref()?;
             return if preview.mode == HistoryFileViewMode::Diff {
                 Some(preview.diff_layout)
             } else {
@@ -1579,7 +1676,7 @@ impl AppView {
 
     /// VS Code-style SCM bars: added / modified lines + deletion pills in the gutter.
     pub(super) fn refresh_preview_diff_gutter(&mut self, cx: &mut Context<Self>) {
-        if self.history_file_preview.is_some() {
+        if self.page == AppPage::History && self.history_file_preview.is_some() {
             self.refresh_history_diff_decorations(cx);
             return;
         }
@@ -2412,6 +2509,69 @@ impl AppView {
         cx.notify();
     }
 
+    pub(super) fn set_commit_ai_http_mode(
+        &mut self,
+        mode: super::prefs::CommitAiHttpMode,
+        cx: &mut Context<Self>,
+    ) {
+        self.commit_ai.http_mode = mode;
+        self.persist_prefs(cx);
+        cx.notify();
+    }
+
+    pub(super) fn sync_commit_ai_timeout_input(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let value = self
+            .commit_ai
+            .timeout_secs
+            .map(|s| s.to_string())
+            .unwrap_or_default();
+        self.commit_ai_timeout_input.update(cx, |input, cx| {
+            input.set_value(&value, window, cx);
+        });
+    }
+
+    pub(super) fn apply_commit_ai_timeout_from_input(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let raw = self.commit_ai_timeout_input.read(cx).value().to_string();
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            self.commit_ai.timeout_secs = None;
+        } else {
+            match trimmed.parse::<u64>() {
+                Ok(0) => self.commit_ai.timeout_secs = None,
+                Ok(secs) => self.commit_ai.timeout_secs = Some(secs),
+                Err(_) => {
+                    self.set_error(self.t().commit_ai_timeout_invalid.into(), cx);
+                    self.sync_commit_ai_timeout_input(window, cx);
+                    return;
+                }
+            }
+        }
+        self.persist_prefs(cx);
+        self.set_ok_status(self.t().commit_ai_timeout_saved);
+        cx.notify();
+    }
+
+    pub(super) fn set_commit_ai_chat_path(
+        &mut self,
+        path: impl Into<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let path = path.into();
+        self.commit_ai_path_input.update(cx, |input, cx| {
+            input.set_value(&path, window, cx);
+        });
+        cx.notify();
+    }
+
     pub(super) fn set_commit_ai_active_provider(
         &mut self,
         id: impl Into<String>,
@@ -2792,6 +2952,111 @@ impl AppView {
         cx.notify();
     }
 
+    pub(super) fn sync_cursor_api_key_input(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.commit_ai.ensure_builtin_cli_providers();
+        let key = self
+            .commit_ai
+            .provider_by_id(super::ai_provider::BUILTIN_CURSOR_ID)
+            .map(|p| p.api_key.clone())
+            .unwrap_or_default();
+        self.cursor_api_key_input.update(cx, |input, cx| {
+            input.set_value(&key, window, cx);
+        });
+    }
+
+    pub(super) fn save_cursor_api_key(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.commit_ai.ensure_builtin_cli_providers();
+        let key = self
+            .cursor_api_key_input
+            .read(cx)
+            .value()
+            .to_string()
+            .trim()
+            .to_string();
+        if let Some(p) = self
+            .commit_ai
+            .provider_by_id_mut(super::ai_provider::BUILTIN_CURSOR_ID)
+        {
+            p.api_key = key.clone();
+            if p.api_key_env.trim().is_empty() {
+                p.api_key_env = "CURSOR_API_KEY".into();
+            }
+            p.enabled = true;
+        }
+        // Keep the edit-form key field in sync when that form is open on Cursor.
+        self.commit_ai_key_input.update(cx, |input, cx| {
+            input.set_value(&key, window, cx);
+        });
+        self.persist_prefs(cx);
+        if key.is_empty() {
+            self.set_ok_status(self.t().commit_ai_cursor_api_key_cleared);
+        } else {
+            self.set_ok_status(self.t().commit_ai_cursor_api_key_saved);
+        }
+        cx.notify();
+    }
+
+    pub(super) fn open_cursor_api_keys_dashboard(&mut self, cx: &mut Context<Self>) {
+        cx.open_url(super::t3_bridge::CURSOR_API_KEYS_URL);
+    }
+
+    pub(super) fn import_t3_agents(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.t3_available = super::t3_bridge::t3_available();
+        if !self.t3_available {
+            self.set_error(self.t().commit_ai_t3_not_found.into(), cx);
+            cx.notify();
+            return;
+        }
+        let result = super::t3_bridge::import_agents(&mut self.commit_ai);
+        if !result.cursor_models.is_empty() {
+            self.commit_ai_models = result.cursor_models.clone();
+            self.commit_ai_models_error = None;
+        }
+        if let Some(model) = result.preferred_cursor_model.clone() {
+            if model != "default" {
+                self.commit_ai_model_input.update(cx, |input, cx| {
+                    if input.value().trim().is_empty() {
+                        input.set_value(&model, window, cx);
+                    }
+                });
+            }
+        }
+        // Prefer env key already present under T3; otherwise leave the paste field as-is.
+        if result.used_env_cursor_key {
+            // Ensure env fallback is wired; do not overwrite a user-pasted key.
+            if let Some(p) = self
+                .commit_ai
+                .provider_by_id_mut(super::ai_provider::BUILTIN_CURSOR_ID)
+            {
+                if p.api_key_env.trim().is_empty() {
+                    p.api_key_env = "CURSOR_API_KEY".into();
+                }
+            }
+        }
+        self.sync_cursor_api_key_input(window, cx);
+        self.t3_import_status = Some(SharedString::from(result.summary.clone()));
+        self.persist_prefs(cx);
+        let msg = self
+            .t()
+            .commit_ai_t3_import_done
+            .replace("{summary}", &result.summary);
+        self.set_ok_status(msg);
+        self.refresh_cli_status(cx);
+        cx.notify();
+    }
+
     pub(super) fn login_commit_ai_cli(
         &mut self,
         kind: super::cli_tools::CliToolKind,
@@ -2959,15 +3224,76 @@ impl AppView {
         cx.notify();
     }
 
-    /// Fill the commit textarea from AI (staged diff preferred). Never commits.
+    /// True while an AI commit-message task is in flight (does not use [`Self::busy`],
+    /// so Stage / Unstage stay available).
+    pub(super) fn is_generating_commit_message(&self) -> bool {
+        self.generate_commit_task.is_some()
+    }
+
+    /// Fill the commit textarea from AI (staged-only when staged exists; otherwise
+    /// unstaged + untracked). Never commits. Does **not** take [`Self::busy`] so
+    /// staging/unstaging can continue while generation runs.
+    ///
+    /// Re-clicking while a run is active opens a confirm dialog, then aborts.
     pub(super) fn generate_commit_message(
         &mut self,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.generate_commit_task.is_some()
-            || self.busy == Some(BusyKind::GenerateCommitMessage)
+        if self.generate_commit_task.is_some() {
+            self.confirm_abort_generate_commit_message(window, cx);
+            return;
+        }
+        self.start_generate_commit_message(window, cx);
+    }
+
+    pub(super) fn confirm_abort_generate_commit_message(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let t = self.t();
+        let title = t.confirm_abort_generate_commit;
+        let description = t.desc_abort_generate_commit;
+        let ok = t.abort_generate_commit;
+        let cancel = t.cancel;
+        let view = cx.entity();
+        super::dialogs::open_confirm(
+            window,
+            cx,
+            title,
+            description,
+            ok,
+            cancel,
+            true,
+            move |_, _, cx| {
+                view.update(cx, |this, cx| {
+                    this.abort_generate_commit_message(cx);
+                });
+                true
+            },
+        );
+    }
+
+    pub(super) fn abort_generate_commit_message(&mut self, cx: &mut Context<Self>) {
+        if let Some(flag) = self.generate_commit_abort.take() {
+            flag.store(true, Ordering::SeqCst);
+        }
+        self.generate_commit_task = None;
+        if self
+            .progress_log
+            .last()
+            .is_some_and(|e| e.state == super::progress::ProgressState::Running)
         {
+            self.finish_progress(false, self.t().generate_commit_aborted.into());
+        } else {
+            self.set_ok_status(self.t().generate_commit_aborted);
+        }
+        cx.notify();
+    }
+
+    fn start_generate_commit_message(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.generate_commit_task.is_some() {
             return;
         }
         if !self.has_repo() {
@@ -2989,46 +3315,113 @@ impl AppView {
             }
         };
         let prefs = self.commit_ai.clone();
-        self.busy = Some(BusyKind::GenerateCommitMessage);
+        let abort = Arc::new(AtomicBool::new(false));
+        self.generate_commit_abort = Some(abort.clone());
+        // Progress only — leave `busy` free for Stage / Unstage / Commit.
         self.begin_progress(BusyKind::GenerateCommitMessage);
         cx.notify();
+
+        enum GenEvent {
+            Partial(String),
+            Done(Result<super::commit_ai::GeneratedCommitMessage, String>),
+        }
+
+        let (tx, rx) = mpsc::channel::<GenEvent>();
+        let abort_bg = abort.clone();
         self.generate_commit_task = Some(cx.spawn_in(window, async move |this, cx| {
-            let result = cx
-                .background_spawn(async move {
-                    super::commit_ai::generate_for_repo(&root, hint.as_deref(), &prefs)
-                })
-                .await;
-            let _ = cx.update(|window, cx| {
-                this.update(cx, |this, cx| {
-                    this.generate_commit_task = None;
-                    this.busy = None;
-                    match result {
-                        Ok(msg) => {
-                            let text = msg.combined();
-                            this.commit_input.update(cx, |input, cx| {
-                                input.set_value(&text, window, cx);
-                            });
-                            this.set_ok_status(this.t().generate_commit_done);
-                        }
-                        Err(err) => {
-                            let msg = this
-                                .t()
-                                .generate_commit_failed
-                                .replace("{error}", &format!("{err:#}"));
-                            this.set_error(msg.into(), cx);
-                        }
-                    }
-                    if this
-                        .progress_log
-                        .last()
-                        .is_some_and(|e| e.state == super::progress::ProgressState::Running)
-                    {
-                        let done = this.status_line.clone();
-                        this.finish_progress(this.error.is_none(), done);
-                    }
-                    cx.notify();
-                })
+            let worker = cx.background_spawn(async move {
+                let tx_partial = tx.clone();
+                let result = super::commit_ai::generate_for_repo(
+                    &root,
+                    hint.as_deref(),
+                    &prefs,
+                    Some(&abort_bg),
+                    |partial| {
+                        let _ = tx_partial.send(GenEvent::Partial(partial.to_string()));
+                    },
+                );
+                let _ = tx.send(GenEvent::Done(result.map_err(|e| format!("{e:#}"))));
             });
+
+            loop {
+                match rx.try_recv() {
+                    Ok(GenEvent::Partial(text)) => {
+                        let _ = cx.update(|window, cx| {
+                            this.update(cx, |this, cx| {
+                                if this.generate_commit_abort.as_ref().is_some_and(|a| {
+                                    a.load(Ordering::Relaxed)
+                                }) {
+                                    return;
+                                }
+                                this.commit_input.update(cx, |input, cx| {
+                                    input.set_value(&text, window, cx);
+                                });
+                                cx.notify();
+                            })
+                        });
+                    }
+                    Ok(GenEvent::Done(result)) => {
+                        let _ = worker.await;
+                        let _ = cx.update(|window, cx| {
+                            this.update(cx, |this, cx| {
+                                this.generate_commit_task = None;
+                                this.generate_commit_abort = None;
+                                match result {
+                                    Ok(msg) => {
+                                        let text = msg.combined();
+                                        this.commit_input.update(cx, |input, cx| {
+                                            input.set_value(&text, window, cx);
+                                        });
+                                        this.set_ok_status(this.t().generate_commit_done);
+                                    }
+                                    Err(err) if err.contains("aborted") => {
+                                        this.set_ok_status(this.t().generate_commit_aborted);
+                                    }
+                                    Err(err) => {
+                                        let msg = this
+                                            .t()
+                                            .generate_commit_failed
+                                            .replace("{error}", &err);
+                                        this.set_error(msg.into(), cx);
+                                    }
+                                }
+                                if this.progress_log.last().is_some_and(|e| {
+                                    e.state == super::progress::ProgressState::Running
+                                }) {
+                                    let done = this.status_line.clone();
+                                    this.finish_progress(this.error.is_none(), done);
+                                }
+                                cx.notify();
+                            })
+                        });
+                        break;
+                    }
+                    Err(mpsc::TryRecvError::Empty) => {
+                        cx.background_executor()
+                            .timer(Duration::from_millis(40))
+                            .await;
+                    }
+                    Err(mpsc::TryRecvError::Disconnected) => {
+                        let _ = worker.await;
+                        let _ = cx.update(|_, cx| {
+                            this.update(cx, |this, cx| {
+                                this.generate_commit_task = None;
+                                this.generate_commit_abort = None;
+                                if this.progress_log.last().is_some_and(|e| {
+                                    e.state == super::progress::ProgressState::Running
+                                }) {
+                                    this.finish_progress(
+                                        false,
+                                        this.t().generate_commit_aborted.into(),
+                                    );
+                                }
+                                cx.notify();
+                            })
+                        });
+                        break;
+                    }
+                }
+            }
         }));
     }
 
@@ -3245,6 +3638,31 @@ impl AppView {
         if self.error.take().is_some() {
             cx.notify();
         }
+    }
+
+    pub(super) fn copy_error(&mut self, cx: &mut Context<Self>) {
+        let Some(err) = self.error.clone() else {
+            return;
+        };
+        cx.write_to_clipboard(ClipboardItem::new_string(err.to_string()));
+        self.set_ok_status(self.t().copy_error_done);
+        cx.notify();
+    }
+
+    pub(super) fn copy_progress_entry(
+        &mut self,
+        title: &str,
+        detail: &str,
+        cx: &mut Context<Self>,
+    ) {
+        let text = if detail.trim().is_empty() {
+            title.to_string()
+        } else {
+            format!("{title}\n{detail}")
+        };
+        cx.write_to_clipboard(ClipboardItem::new_string(text));
+        self.set_ok_status(self.t().copy_progress_done);
+        cx.notify();
     }
 
     pub(super) fn toggle_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) {

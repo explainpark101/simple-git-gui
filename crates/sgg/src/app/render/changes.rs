@@ -5,6 +5,7 @@ use gpui_kit::base::StyledExt as _;
 use gpui_kit::component::button::ButtonVariants as _;
 use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::input::Textarea;
+use gpui_kit::component::menu::ContextMenuExt as _;
 use gpui_kit::component::switch::Switch;
 use gpui_kit::component::{
     ActiveTheme as _, Disableable as _, IconName, Sizable as _, h_resizable, resizable_panel,
@@ -20,8 +21,8 @@ use crate::app::i18n::UiText;
 use crate::app::sort::{ChangeFlatRow, ChangeSort};
 use crate::app::view::AppView;
 use crate::app::widgets::{
-    confirm_btn, display_btn, icon_btn, icon_danger_btn, pane_body, pane_header, pane_toolbar,
-    raised_action_btn, with_busy,
+    confirm_btn, display_btn, icon_btn, icon_danger_btn, menu_item_with_icon, pane_body, pane_header,
+    pane_toolbar, raised_action_btn, with_busy,
 };
 
 pub fn render(view: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
@@ -73,28 +74,70 @@ pub fn render(view: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
                         .border_color(cx.theme().border)
                         // Input surface — distinct from secondary/toolbar action chips.
                         .bg(cx.theme().input_background())
+                        .overflow_hidden()
                         .flex()
                         .flex_col()
-                        .child(
+                        .child({
+                            let entity = cx.entity();
+                            let has_repo = view.has_repo();
                             div()
                                 .flex()
                                 .items_center()
                                 .justify_end()
                                 .px_1()
                                 .pt_1()
-                                .child(with_busy(
-                                    icon_btn("generate-commit-ai", AssetIcon::Sparkles)
-                                        .accessibility_label(t.generate_commit_message)
-                                        .tooltip(t.tip_generate_commit_message)
-                                        .disabled(!view.has_repo())
-                                        .on_click(cx.listener(|this, _, window, cx| {
-                                            this.generate_commit_message(window, cx);
-                                        })),
-                                    view.busy,
-                                    BusyKind::GenerateCommitMessage,
-                                )),
-                        )
-                        .child(Textarea::new(&view.commit_input).appearance(false)),
+                                .child(
+                                    div()
+                                        .context_menu(move |menu, _, _| {
+                                            let entity_gen = entity.clone();
+                                            let entity_settings = entity.clone();
+                                            menu.item(menu_item_with_icon(
+                                                t.commit_ai_menu_generate,
+                                                AssetIcon::Sparkles,
+                                                move |_, window, cx| {
+                                                    entity_gen.update(cx, |this, cx| {
+                                                        this.generate_commit_message(window, cx);
+                                                    });
+                                                },
+                                            ))
+                                            .item(menu_item_with_icon(
+                                                t.commit_ai_open_settings,
+                                                AssetIcon::Settings,
+                                                move |_, window, cx| {
+                                                    entity_settings.update(cx, |this, cx| {
+                                                        this.open_commit_ai_settings(window, cx);
+                                                    });
+                                                },
+                                            ))
+                                        })
+                                        .child(with_busy(
+                                            icon_btn("generate-commit-ai", AssetIcon::Sparkles)
+                                                .accessibility_label(t.generate_commit_message)
+                                                .tooltip(t.tip_generate_commit_message)
+                                                .disabled(!has_repo)
+                                                .on_click(cx.listener(|this, _, window, cx| {
+                                                    this.generate_commit_message(window, cx);
+                                                })),
+                                            view
+                                                .is_generating_commit_message()
+                                                .then_some(BusyKind::GenerateCommitMessage),
+                                            BusyKind::GenerateCommitMessage,
+                                        )),
+                                )
+                        })
+                        .child(
+                            div()
+                                .w_full()
+                                .px_2()
+                                .pb_2()
+                                .child(
+                                    Textarea::new(&view.commit_input)
+                                        .appearance(true)
+                                        .border_1()
+                                        .border_color(cx.theme().border)
+                                        .rounded(cx.theme().radius),
+                                ),
+                        ),
                 )
                 .child(
                     with_busy(
@@ -839,7 +882,7 @@ fn change_row(
     let show_unstage = change.kind == ChangeKind::Staged;
     let selected = view.selected.contains(&change.path);
     let previewing = view
-        .preview_path
+        .git_preview_path
         .as_ref()
         .is_some_and(|p| p == &change.path);
     let status = if compact {

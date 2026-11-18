@@ -158,6 +158,32 @@ impl CommitAiStyle {
     }
 }
 
+/// How OpenAI-compatible HTTP providers request a commit message.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum CommitAiHttpMode {
+    /// SSE `stream: true` (default). Can abort between chunks.
+    #[default]
+    Streaming,
+    /// Single JSON completion response.
+    Completion,
+}
+
+impl CommitAiHttpMode {
+    pub const ALL: [Self; 2] = [Self::Streaming, Self::Completion];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Streaming => "Streaming",
+            Self::Completion => "Completion",
+        }
+    }
+
+    pub fn is_streaming(self) -> bool {
+        matches!(self, Self::Streaming)
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct CommitAiPrefs {
     #[serde(default)]
@@ -175,6 +201,12 @@ pub struct CommitAiPrefs {
     /// Legacy global Codex CLI path (fallback when a provider has empty `cli_bin`).
     #[serde(default)]
     pub codex_bin: String,
+    /// HTTP/CLI wait limit in seconds. `None` = never time out.
+    #[serde(default)]
+    pub timeout_secs: Option<u64>,
+    /// OpenAI-compatible request mode (streaming vs completion).
+    #[serde(default)]
+    pub http_mode: CommitAiHttpMode,
 }
 
 fn default_active_provider() -> String {
@@ -189,6 +221,8 @@ impl Default for CommitAiPrefs {
             providers: Vec::new(),
             cursor_bin: String::new(),
             codex_bin: String::new(),
+            timeout_secs: None,
+            http_mode: CommitAiHttpMode::Streaming,
         };
         prefs.ensure_builtin_cli_providers();
         prefs

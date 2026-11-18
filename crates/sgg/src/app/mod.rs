@@ -15,6 +15,7 @@ mod reload;
 mod remote_url;
 mod render;
 mod sort;
+mod t3_bridge;
 mod terminal;
 mod terminal_shell;
 pub(crate) mod update;

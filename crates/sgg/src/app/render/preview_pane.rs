@@ -31,9 +31,13 @@ pub fn render(
 ) -> impl IntoElement {
     let t = view.t();
     let has_path = view.preview_path.is_some();
-    let history_preview = view.history_file_preview.clone();
+    let history_preview = if view.page == AppPage::History {
+        view.history_file_preview.clone()
+    } else {
+        None
+    };
     let is_history = history_preview.is_some();
-    let is_changes = !is_history && view.page == AppPage::Git;
+    let is_changes = view.page == AppPage::Git;
     let changes_mode = view.changes_file_view_mode;
     let changes_layout = view.changes_diff_layout;
     let selected_tab = view.preview_tab_index;

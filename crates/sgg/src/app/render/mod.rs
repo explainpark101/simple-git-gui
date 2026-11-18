@@ -44,7 +44,7 @@ impl Render for AppView {
             .map(|s| s.remotes.as_slice())
             .unwrap_or(empty_remotes);
         let focus = self.focus_handle(cx);
-        let preview_open = self.preview_path.is_some();
+        let preview_open = self.git_preview_path.is_some();
         let sidebar_collapsed = self.sidebar_collapsed;
         let terminal_visible = self.terminal.visible;
 
@@ -104,6 +104,13 @@ impl Render for AppView {
                                 .text_left()
                                 .line_height(relative(1.35))
                                 .child(err),
+                        )
+                        .child(
+                            icon_btn("copy-error", AssetIcon::Copy)
+                                .tooltip(self.t().tip_copy_error)
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.copy_error(cx);
+                                })),
                         )
                         .child(
                             icon_btn("dismiss-error", AssetIcon::Close)

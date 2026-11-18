@@ -153,13 +153,16 @@ pub fn render(view: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
                         .into_any_element(),
                 ),
         )
-        .when(!view.preview_tabs.is_empty(), |this| {
-            this.child(
-                resizable_panel().child(
-                    preview_pane::render(view, true, true, cx).into_any_element(),
-                ),
-            )
-        })
+        .child(
+            // Keep a second panel (and drag handle) even with no open file.
+            resizable_panel().child(
+                if view.preview_tabs.is_empty() {
+                    pane_body(cx).flex_1().min_w_0().into_any_element()
+                } else {
+                    preview_pane::render(view, true, true, cx).into_any_element()
+                },
+            ),
+        )
 }
 
 const TREE_INDENT_BASE: f32 = 8.0;
