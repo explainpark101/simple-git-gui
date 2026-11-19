@@ -17,6 +17,9 @@ use crate::app::widgets::{
     action_btn, display_btn, icon_btn, pane_body, pane_header, with_busy,
 };
 
+/// Two-line list row (title + meta). Button default `h_8` + overflow clips glyphs.
+const ACTIONS_ROW_HEIGHT: f32 = 56.0;
+
 pub fn render(view: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
     let t = view.t();
     let selected_wf = view.selected_workflow;
@@ -157,8 +160,8 @@ pub fn render(view: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
                         .ghost()
                         .selected(is_selected)
                         .w_full()
+                        .h(px(ACTIONS_ROW_HEIGHT))
                         .px_2()
-                        .py_1()
                         .on_click(cx.listener(move |this, _, _, cx| {
                             this.select_workflow(id, cx);
                         }))
@@ -166,9 +169,12 @@ pub fn render(view: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
                             div()
                                 .flex()
                                 .flex_col()
+                                .justify_center()
                                 .gap_2()
                                 .w_full()
                                 .min_w_0()
+                                .overflow_hidden()
+                                .py_1()
                                 .text_left()
                                 .child(
                                     div()
@@ -371,8 +377,8 @@ fn runs_list(
                 .ghost()
                 .selected(is_selected)
                 .w_full()
+                .h(px(ACTIONS_ROW_HEIGHT))
                 .px_2()
-                .py_1()
                 .on_click(cx.listener(move |this, _, _, cx| {
                     this.select_workflow_run(id, cx);
                 }))
@@ -380,9 +386,12 @@ fn runs_list(
                     div()
                         .flex()
                         .flex_col()
+                        .justify_center()
                         .gap_2()
                         .w_full()
                         .min_w_0()
+                        .overflow_hidden()
+                        .py_1()
                         .text_left()
                         .child(
                             div()
