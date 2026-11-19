@@ -140,6 +140,16 @@ pub(super) enum RemoteForm {
     },
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub(super) enum TagForm {
+    #[default]
+    Hidden,
+    /// Create a tag; `target` is an optional commit oid (HEAD when None).
+    Create {
+        target: Option<String>,
+    },
+}
+
 /// One open file tab in the Files preview pane.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct PreviewTab {
@@ -334,6 +344,13 @@ pub struct AppView {
     pub(super) branch_form: BranchForm,
     pub(super) file_op_form: FileOpForm,
     pub(super) remote_form: RemoteForm,
+    pub(super) tag_form: TagForm,
+    pub(super) tag_input: Entity<InputState>,
+    pub(super) tags: Vec<sgg_core::TagInfo>,
+    pub(super) stashes: Vec<sgg_core::StashEntry>,
+    pub(super) stash_include_untracked: bool,
+    pub(super) stash_panel_open: bool,
+    pub(super) tags_panel_open: bool,
     pub(super) sidebar_collapsed: bool,
     pub(super) busy: Option<BusyKind>,
     /// Bottom Progress dock: activity lines for fetch/pull/push and other busy work.
@@ -400,6 +417,8 @@ impl AppView {
             cx.new(|cx| InputState::new(window, cx).placeholder(t.remote_name_placeholder));
         let remote_url_input =
             cx.new(|cx| InputState::new(window, cx).placeholder(t.remote_url_placeholder));
+        let tag_input =
+            cx.new(|cx| InputState::new(window, cx).placeholder(t.tag_name_placeholder));
         let custom_editor_input = cx.new(|cx| {
             InputState::new(window, cx).placeholder(r#"e.g. "C:\path\to\editor.exe" --wait"#)
         });
@@ -642,6 +661,13 @@ impl AppView {
             branch_form: BranchForm::Hidden,
             file_op_form: FileOpForm::Hidden,
             remote_form: RemoteForm::Hidden,
+            tag_form: TagForm::Hidden,
+            tag_input,
+            tags: Vec::new(),
+            stashes: Vec::new(),
+            stash_include_untracked: prefs.stash_include_untracked,
+            stash_panel_open: false,
+            tags_panel_open: true,
             sidebar_collapsed: false,
             busy: None,
             progress_log: Vec::new(),
@@ -846,6 +872,8 @@ impl AppView {
             self.changes_sections.clear();
             self.changes_flat_rows.clear();
             self.files_status_index = TreeStatusIndex::default();
+            self.tags.clear();
+            self.stashes.clear();
             self.clear_history_state();
             self.clear_blame_state();
             self.error = None;
@@ -898,6 +926,8 @@ impl AppView {
                     self.persist_prefs(cx);
                 }
                 self.snapshot = Some(loaded.snap);
+                self.tags = loaded.tags;
+                self.stashes = loaded.stashes;
                 self.rebuild_changes_sections();
                 self.rebuild_files_status_index();
                 if build_files_tree {
@@ -931,6 +961,8 @@ impl AppView {
                 self.changes_sections.clear();
                 self.changes_flat_rows.clear();
                 self.files_status_index = TreeStatusIndex::default();
+                self.tags.clear();
+                self.stashes.clear();
             }
             Err(LoadRepoError::NoRepo(err)) => {
                 self.snapshot = None;
@@ -939,6 +971,8 @@ impl AppView {
                 self.changes_sections.clear();
                 self.changes_flat_rows.clear();
                 self.files_status_index = TreeStatusIndex::default();
+                self.tags.clear();
+                self.stashes.clear();
                 self.error = Some(err.into());
                 self.status_line = self.t().no_folder_open.into();
             }
@@ -3472,6 +3506,7 @@ impl AppView {
             show_diff_line_background: self.show_diff_line_background,
             ui_font_family: self.ui_font_family.clone(),
             commit_ai: self.commit_ai.clone(),
+            stash_include_untracked: self.stash_include_untracked,
         };
         if let Err(err) = prefs.save() {
             self.error = Some(format!("Failed to save settings: {err:#}").into());

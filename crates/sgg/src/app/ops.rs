@@ -437,6 +437,10 @@ impl AppView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.repo_operation() != sgg_core::RepoOperation::Clean {
+            self.set_error(self.t().desc_op_in_progress.into(), cx);
+            return;
+        }
         let t = self.t();
         let title = t.confirm_switch_branch;
         let ok = t.branch_confirm;
@@ -1890,6 +1894,12 @@ impl AppView {
                 true,
             ),
         };
+        if matches!(mode, sgg_core::ResetMode::Hard)
+            && self.repo_operation() != sgg_core::RepoOperation::Clean
+        {
+            self.set_error(self.t().desc_op_in_progress.into(), cx);
+            return;
+        }
         let ok = match mode {
             sgg_core::ResetMode::Soft => t.reset_soft,
             sgg_core::ResetMode::Mixed => t.reset_mixed,

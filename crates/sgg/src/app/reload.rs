@@ -3,7 +3,7 @@
 use std::collections::HashSet;
 use std::path::PathBuf;
 
-use sgg_core::{RepoSnapshot, RepoState};
+use sgg_core::{RepoSnapshot, RepoState, StashEntry, TagInfo};
 
 use super::files::{list_tree_opts, FsNode};
 use super::perf::snapshot_fingerprint;
@@ -15,6 +15,8 @@ pub struct LoadedRepo {
     pub fingerprint: u64,
     pub files_tree: Vec<FsNode>,
     pub status_line: String,
+    pub tags: Vec<TagInfo>,
+    pub stashes: Vec<StashEntry>,
 }
 
 #[derive(Debug)]
@@ -54,10 +56,14 @@ pub fn load_repo(
     } else {
         Vec::new()
     };
+    let tags = repo.list_tags().unwrap_or_default();
+    let stashes = repo.stash_list().unwrap_or_default();
     Ok(LoadedRepo {
         snap,
         fingerprint,
         files_tree,
         status_line,
+        tags,
+        stashes,
     })
 }

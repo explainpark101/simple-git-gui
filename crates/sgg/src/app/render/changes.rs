@@ -152,6 +152,7 @@ pub fn render(view: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
                 ),
         )
         .child(stage_filter_row(view, sort, group_by_status, t, cx))
+        .when(view.stash_panel_open, |this| this.child(stash_panel(view, t, cx)))
         .child({
             let entity = cx.entity();
             let compact = view.changes_list_compact;
@@ -508,6 +509,144 @@ fn render_flat_range(
         .collect()
 }
 
+fn stash_panel(
+    view: &AppView,
+    t: UiText,
+    cx: &mut Context<AppView>,
+) -> impl IntoElement {
+    div()
+        .id("stash-panel")
+        .flex()
+        .flex_col()
+        .gap_2()
+        .px_3()
+        .py_2()
+        .border_b_1()
+        .border_color(cx.theme().border)
+        .child(
+            hoverable_switch(
+                "stash-include-untracked",
+                Switch::new("stash-include-untracked")
+                    .small()
+                    .label(t.stash_include_untracked)
+                    .checked(view.stash_include_untracked)
+                    .tooltip(t.tip_stash_include_untracked)
+                    .on_click(cx.listener(|this, checked, _, cx| {
+                        this.set_stash_include_untracked(*checked, cx);
+                    })),
+                cx,
+            ),
+        )
+        .child(
+            div()
+                .id("stash-list")
+                .h(px(160.))
+                .w_full()
+                .min_w_0()
+                .overflow_y_scroll()
+                .flex()
+                .flex_col()
+                .gap_1()
+                .when(view.stashes.is_empty(), |this| {
+                    this.child(
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .text_left()
+                            .child(t.stash_list_empty),
+                    )
+                })
+                .children(view.stashes.iter().map(|entry| {
+                    let idx = entry.index;
+                    let msg = entry.message.clone();
+                    let entity = cx.entity();
+                    div()
+                        .w_full()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .min_w_0()
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .flex()
+                                .flex_col()
+                                .gap_1()
+                                .child(
+                                    div()
+                                        .text_sm()
+                                        .line_height(relative(1.35))
+                                        .overflow_hidden()
+                                        .text_ellipsis()
+                                        .whitespace_nowrap()
+                                        .text_left()
+                                        .child(format!("stash@{{{idx}}}")),
+                                )
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .line_height(relative(1.35))
+                                        .text_color(cx.theme().muted_foreground)
+                                        .overflow_hidden()
+                                        .text_ellipsis()
+                                        .whitespace_nowrap()
+                                        .text_left()
+                                        .child(msg),
+                                ),
+                        )
+                        .child(
+                            icon_btn(
+                                SharedString::from(format!("stash-apply:{idx}")),
+                                AssetIcon::Download,
+                            )
+                            .accessibility_label(t.stash_apply)
+                            .tooltip(t.tip_stash_apply)
+                            .on_click({
+                                let entity = entity.clone();
+                                move |_, window, cx| {
+                                    entity.update(cx, |this, cx| {
+                                        this.confirm_stash_apply(Some(idx), window, cx);
+                                    });
+                                }
+                            }),
+                        )
+                        .child(
+                            icon_btn(
+                                SharedString::from(format!("stash-pop:{idx}")),
+                                AssetIcon::ArrowDownToLine,
+                            )
+                            .accessibility_label(t.stash_pop)
+                            .tooltip(t.tip_stash_pop)
+                            .on_click({
+                                let entity = entity.clone();
+                                move |_, window, cx| {
+                                    entity.update(cx, |this, cx| {
+                                        this.confirm_stash_pop(Some(idx), window, cx);
+                                    });
+                                }
+                            }),
+                        )
+                        .child(
+                            icon_danger_btn(
+                                SharedString::from(format!("stash-drop:{idx}")),
+                                AssetIcon::Trash,
+                            )
+                            .accessibility_label(t.stash_drop)
+                            .tooltip(t.tip_stash_drop)
+                            .on_click({
+                                let entity = entity.clone();
+                                move |_, window, cx| {
+                                    entity.update(cx, |this, cx| {
+                                        this.confirm_stash_drop(idx, window, cx);
+                                    });
+                                }
+                            }),
+                        )
+                })),
+        )
+}
+
 fn stage_filter_row(
     view: &AppView,
     sort: ChangeSort,
@@ -551,6 +690,48 @@ fn stage_filter_row(
                 view.busy,
                 BusyKind::UnstageAll,
             ),
+        )
+        .child(
+            with_busy(
+                raised_action_btn("filter-stash-push", AssetIcon::Save, cx)
+                    .small()
+                    .label(t.stash_push)
+                    .tooltip(t.tip_stash_push)
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.confirm_stash_push(window, cx);
+                    })),
+                view.busy,
+                BusyKind::StashPush,
+            ),
+        )
+        .child(
+            with_busy(
+                raised_action_btn("filter-stash-pop", AssetIcon::Download, cx)
+                    .small()
+                    .label(t.stash_pop)
+                    .tooltip(t.tip_stash_pop)
+                    .disabled(view.stashes.is_empty())
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.confirm_stash_pop(None, window, cx);
+                    })),
+                view.busy,
+                BusyKind::StashPop,
+            ),
+        )
+        .child(
+            display_btn("filter-stash-list")
+                .small()
+                .outline()
+                .icon(if view.stash_panel_open {
+                    AssetIcon::ChevronDown
+                } else {
+                    AssetIcon::ChevronRight
+                })
+                .label(format!("{} ({})", t.stash_list, view.stashes.len()))
+                .tooltip(t.tip_stash_list)
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.toggle_stash_panel(cx);
+                })),
         )
         .child(
             hoverable_switch(
@@ -737,6 +918,26 @@ fn section_header(
                         )
                     },
                 )
+                .when(title == "Conflicted", |this| {
+                    this.child({
+                        use crate::app::widgets::action_btn;
+                        with_busy(
+                            section_action_label(
+                                action_btn("section-stage-conflicted", AssetIcon::Plus)
+                                    .outline()
+                                    .small(),
+                                t.stage,
+                                t.tip_stage,
+                                hide_labels,
+                            )
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.stage_selected(window, cx);
+                            })),
+                            view.busy,
+                            BusyKind::Stage,
+                        )
+                    })
+                })
                 .when(title == "Untracked", |this| {
                     this.child({
                         use crate::app::widgets::action_btn;

@@ -7,6 +7,7 @@ mod editor;
 mod files;
 mod i18n;
 mod ops;
+mod ops_vcs;
 mod page;
 mod perf;
 mod prefs;

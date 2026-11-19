@@ -58,6 +58,23 @@ impl BusyKind {
             Self::DownloadUpdate => t.download_update,
             Self::GenerateCommitMessage => t.generate_commit_message,
             Self::InstallCli => t.commit_ai_install_cli,
+            Self::Rebase => t.rebase_onto,
+            Self::RebaseContinue => t.rebase_continue,
+            Self::RebaseAbort => t.rebase_abort,
+            Self::RebaseSkip => t.rebase_skip,
+            Self::Merge => t.merge_branch,
+            Self::MergeContinue => t.merge_continue,
+            Self::MergeAbort => t.merge_abort,
+            Self::CherryPick => t.cherry_pick,
+            Self::CherryPickContinue => t.cherry_pick_continue,
+            Self::CherryPickAbort => t.cherry_pick_abort,
+            Self::TagCreate => t.create_tag,
+            Self::TagDelete => t.delete_tag,
+            Self::TagPush => t.push_tag,
+            Self::StashPush => t.stash_push,
+            Self::StashPop => t.stash_pop,
+            Self::StashApply => t.stash_apply,
+            Self::StashDrop => t.stash_drop,
         }
     }
 }

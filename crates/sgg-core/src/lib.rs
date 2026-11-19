@@ -5,6 +5,7 @@
 //! SSH agents, and hooks behave like a normal developer toolchain.
 
 mod branch;
+mod cherry_pick;
 mod commit_ai;
 mod error;
 mod find;
@@ -12,10 +13,14 @@ mod graph;
 mod history;
 mod index_ops;
 mod line_diff;
+mod merge;
+mod rebase;
 mod remote;
 mod shell;
+mod stash;
 mod state;
 mod status;
+mod tag;
 mod types;
 
 pub use commit_ai::{prepare_commit_context, CommitMessageContext};
@@ -37,7 +42,9 @@ pub use line_diff::{
     UnifiedDiffLineKind,
 };
 pub use shell::{GitCliError, run_git};
+pub use stash::StashEntry;
 pub use state::RepoState;
+pub use tag::TagInfo;
 pub use types::{
     BranchInfo, ChangeKind, FileChange, RemoteInfo, RepoOperation, RepoSnapshot,
 };

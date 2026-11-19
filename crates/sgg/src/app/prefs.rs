@@ -155,6 +155,9 @@ pub struct AppPrefs {
     /// AI commit-message generator (Changes view sparkle button).
     #[serde(default)]
     pub commit_ai: CommitAiPrefs,
+    /// Include untracked files when stashing (`git stash push -u`).
+    #[serde(default)]
+    pub stash_include_untracked: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -384,6 +387,7 @@ impl Default for AppPrefs {
             auto_check_updates: true,
             skipped_update_version: String::new(),
             commit_ai: CommitAiPrefs::default(),
+            stash_include_untracked: false,
         }
     }
 }

@@ -560,6 +560,36 @@ fn detail_pane(view: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
                                     view.busy,
                                     BusyKind::ResetHard,
                                 ),
+                            )
+                            .child(
+                                with_busy(
+                                    display_btn("hist-cherry-pick")
+                                        .outline()
+                                        .small()
+                                        .label(t.cherry_pick)
+                                        .tooltip(t.tip_cherry_pick)
+                                        .on_click(cx.listener({
+                                            let oid = oid.clone();
+                                            move |this, _, window, cx| {
+                                                this.confirm_cherry_pick(oid.clone(), window, cx);
+                                            }
+                                        })),
+                                    view.busy,
+                                    BusyKind::CherryPick,
+                                ),
+                            )
+                            .child(
+                                display_btn("hist-create-tag")
+                                    .outline()
+                                    .small()
+                                    .label(t.create_tag)
+                                    .tooltip(t.tip_create_tag)
+                                    .on_click(cx.listener({
+                                        let oid = oid.clone();
+                                        move |this, _, window, cx| {
+                                            this.start_create_tag(Some(oid.clone()), window, cx);
+                                        }
+                                    })),
                             ),
                     )
                 }),

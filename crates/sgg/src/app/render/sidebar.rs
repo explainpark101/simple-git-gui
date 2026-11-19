@@ -20,7 +20,7 @@ use crate::app::i18n::UiText;
 use crate::app::ops::RemoteAction;
 use crate::app::progress::{ProgressState, PROGRESS_MAX_HEIGHT, PROGRESS_MIN_HEIGHT};
 use crate::app::remote_url::remote_browse_url;
-use crate::app::view::{AppView, BranchForm, RemoteForm};
+use crate::app::view::{AppView, BranchForm, RemoteForm, TagForm};
 use crate::app::widgets::{
     action_btn, action_row, confirm_btn, display_btn, hoverable_switch, icon_btn, icon_danger_btn,
     list_row_btn, menu_item_with_icon, pane_body, pane_header, with_busy,
@@ -336,7 +336,7 @@ fn remote_sync_chip(
             ))
         })
         .when(operation != RepoOperation::Clean, |this| {
-            this.child(operation_badge(operation, t, cx))
+            this.child(operation_actions(operation, view, t, cx))
         })
 }
 
@@ -437,6 +437,73 @@ fn branch_sync_counts(
                 changes_count,
                 t.tip_branch_dirty,
                 theme.warning,
+            ))
+        })
+}
+
+fn operation_actions(
+    operation: RepoOperation,
+    view: &AppView,
+    t: UiText,
+    cx: &mut Context<AppView>,
+) -> impl IntoElement {
+    let show_sequencer = matches!(
+        operation,
+        RepoOperation::Merge | RepoOperation::Rebase | RepoOperation::CherryPick
+    );
+    let show_skip = operation == RepoOperation::Rebase;
+    div()
+        .flex()
+        .items_center()
+        .gap_1()
+        .flex_shrink_0()
+        .child(operation_badge(operation, t, cx))
+        .when(show_sequencer, |this| {
+            this.child(with_busy(
+                display_btn("op-continue")
+                    .outline()
+                    .small()
+                    .label(t.op_continue)
+                    .tooltip(t.tip_op_continue)
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.confirm_continue_operation(window, cx);
+                    })),
+                view.busy,
+                match operation {
+                    RepoOperation::Rebase => BusyKind::RebaseContinue,
+                    RepoOperation::Merge => BusyKind::MergeContinue,
+                    _ => BusyKind::CherryPickContinue,
+                },
+            ))
+            .child(with_busy(
+                display_btn("op-abort")
+                    .outline()
+                    .small()
+                    .label(t.op_abort)
+                    .tooltip(t.tip_op_abort)
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.confirm_abort_operation(window, cx);
+                    })),
+                view.busy,
+                match operation {
+                    RepoOperation::Rebase => BusyKind::RebaseAbort,
+                    RepoOperation::Merge => BusyKind::MergeAbort,
+                    _ => BusyKind::CherryPickAbort,
+                },
+            ))
+        })
+        .when(show_skip, |this| {
+            this.child(with_busy(
+                display_btn("op-skip")
+                    .outline()
+                    .small()
+                    .label(t.op_skip)
+                    .tooltip(t.tip_op_skip)
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.confirm_rebase_skip(window, cx);
+                    })),
+                view.busy,
+                BusyKind::RebaseSkip,
             ))
         })
 }
@@ -1113,18 +1180,204 @@ fn branches_panel(
                         .map(|b| branch_row(b, changes_count, view, cx)),
                 ),
         )
+        .child(tags_panel(view, cx))
         .into_any_element()
+}
+
+fn tags_panel(view: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
+    let t = view.t();
+    let open = view.tags_panel_open;
+    let form_open = !matches!(view.tag_form, TagForm::Hidden);
+    div()
+        .flex()
+        .flex_col()
+        .flex_shrink_0()
+        .border_t_1()
+        .border_color(cx.theme().sidebar_border)
+        .child(
+            pane_header(cx)
+                .flex()
+                .items_center()
+                .gap_2()
+                .px_3()
+                .py_2()
+                .child(
+                    icon_btn(
+                        "tags-toggle",
+                        if open {
+                            AssetIcon::ChevronDown
+                        } else {
+                            AssetIcon::ChevronRight
+                        },
+                    )
+                    .accessibility_label(t.tip_tags_section)
+                    .tooltip(t.tip_tags_section)
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.toggle_tags_panel(cx);
+                    })),
+                )
+                .child(
+                    div()
+                        .font_semibold()
+                        .text_sm()
+                        .text_left()
+                        .flex_1()
+                        .min_w_0()
+                        .child(format!("{} ({})", t.tags_section, view.tags.len())),
+                )
+                .child(
+                    icon_btn("tag-create", AssetIcon::Plus)
+                        .accessibility_label(t.create_tag)
+                        .tooltip(t.tip_create_tag)
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.start_create_tag(None, window, cx);
+                        })),
+                ),
+        )
+        .when(form_open, |this| {
+            this.child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_2()
+                    .px_3()
+                    .pb_2()
+                    .child(Input::new(&view.tag_input))
+                    .child(
+                        action_row()
+                            .child(
+                                action_btn("tag-form-cancel", AssetIcon::Close)
+                                    .ghost()
+                                    .small()
+                                    .label(t.branch_cancel)
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.close_tag_form(window, cx);
+                                    })),
+                            )
+                            .child(with_busy(
+                                confirm_btn("tag-form-confirm", AssetIcon::Plus, cx)
+                                    .small()
+                                    .label(t.create_tag)
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.confirm_tag_form(window, cx);
+                                    })),
+                                view.busy,
+                                BusyKind::TagCreate,
+                            )),
+                    ),
+            )
+        })
+        .when(open, |this| {
+            this.child(
+                div()
+                    .id("tags-list")
+                    .h(px(140.))
+                    .w_full()
+                    .min_w_0()
+                    .overflow_y_scroll()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .px_2()
+                    .pb_2()
+                    .when(view.tags.is_empty(), |this| {
+                        this.child(
+                            div()
+                                .text_xs()
+                                .text_color(cx.theme().muted_foreground)
+                                .text_left()
+                                .px_1()
+                                .py_1()
+                                .child(t.tags_empty),
+                        )
+                    })
+                    .children(view.tags.iter().map(|tag| {
+                        let name = tag.name.clone();
+                        let name_del = tag.name.clone();
+                        let name_push = tag.name.clone();
+                        let target = tag.target.clone();
+                        let entity = cx.entity();
+                        div()
+                            .w_full()
+                            .flex()
+                            .items_center()
+                            .gap_1()
+                            .min_w_0()
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .flex()
+                                    .flex_col()
+                                    .gap_1()
+                                    .child(
+                                        div()
+                                            .text_sm()
+                                            .line_height(relative(1.35))
+                                            .overflow_hidden()
+                                            .text_ellipsis()
+                                            .whitespace_nowrap()
+                                            .text_left()
+                                            .child(name.clone()),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_xs()
+                                            .line_height(relative(1.35))
+                                            .text_color(cx.theme().muted_foreground)
+                                            .text_left()
+                                            .child(target),
+                                    ),
+                            )
+                            .child(
+                                icon_btn(
+                                    SharedString::from(format!("tag-push:{name}")),
+                                    AssetIcon::CloudUpload,
+                                )
+                                .accessibility_label(t.push_tag)
+                                .tooltip(t.tip_push_tag)
+                                .on_click({
+                                    let entity = entity.clone();
+                                    move |_, window, cx| {
+                                        entity.update(cx, |this, cx| {
+                                            this.confirm_push_tag(name_push.clone(), window, cx);
+                                        });
+                                    }
+                                }),
+                            )
+                            .child(
+                                icon_danger_btn(
+                                    SharedString::from(format!("tag-del:{name}")),
+                                    AssetIcon::Trash,
+                                )
+                                .accessibility_label(t.delete_tag)
+                                .tooltip(t.tip_delete_tag)
+                                .on_click({
+                                    let entity = entity.clone();
+                                    move |_, window, cx| {
+                                        entity.update(cx, |this, cx| {
+                                            this.confirm_delete_tag(name_del.clone(), window, cx);
+                                        });
+                                    }
+                                }),
+                            )
+                    })),
+            )
+        })
 }
 
 fn branch_context_menu(
     menu: gpui_kit::component::menu::PopupMenu,
     entity: &Entity<AppView>,
     name: &str,
+    is_head: bool,
     can_rename: bool,
     can_delete: bool,
     rename_label: &'static str,
     delete_label: &'static str,
     history_label: &'static str,
+    rebase_label: &'static str,
+    merge_label: &'static str,
 ) -> gpui_kit::component::menu::PopupMenu {
     let name_hist = name.to_string();
     let entity_hist = entity.clone();
@@ -1137,6 +1390,31 @@ fn branch_context_menu(
             });
         },
     ));
+
+    if !is_head {
+        let name_rb = name.to_string();
+        let entity_rb = entity.clone();
+        menu = menu.item(menu_item_with_icon(
+            rebase_label,
+            AssetIcon::Redo2,
+            move |_, window, cx| {
+                entity_rb.update(cx, |this, cx| {
+                    this.confirm_rebase_onto(name_rb.clone(), window, cx);
+                });
+            },
+        ));
+        let name_mg = name.to_string();
+        let entity_mg = entity.clone();
+        menu = menu.item(menu_item_with_icon(
+            merge_label,
+            AssetIcon::GitMerge,
+            move |_, window, cx| {
+                entity_mg.update(cx, |this, cx| {
+                    this.confirm_merge_branch(name_mg.clone(), window, cx);
+                });
+            },
+        ));
+    }
 
     if can_rename {
         let name_ren = name.to_string();
@@ -1261,6 +1539,7 @@ fn branch_row(
     let can_checkout_remote = branch.is_remote && !branch.name.ends_with("/HEAD");
     let can_rename = !branch.is_remote;
     let can_delete = !branch.is_remote && !branch.is_head;
+    let is_head = branch.is_head;
     let name_remote = name.clone();
     let head_color = if has_changes {
         cx.theme().warning
@@ -1277,17 +1556,20 @@ fn branch_row(
         .justify_between()
         .gap_1()
         .rounded(cx.theme().radius)
-        .when(branch.is_head, |this| this.bg(cx.theme().accent.opacity(0.28)))
+        .when(is_head, |this| this.bg(cx.theme().accent.opacity(0.28)))
         .context_menu(move |menu, _, _| {
             branch_context_menu(
                 menu,
                 &entity,
                 &name_history,
+                is_head,
                 can_rename,
                 can_delete,
                 t.rename_branch,
                 t.delete_branch,
                 t.open_branch_history,
+                t.rebase_onto,
+                t.merge_branch,
             )
         })
         .child(
