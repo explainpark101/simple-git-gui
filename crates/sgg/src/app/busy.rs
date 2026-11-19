@@ -35,6 +35,7 @@ pub enum BusyKind {
     DownloadUpdate,
     GenerateCommitMessage,
     InstallCli,
+    InstallGh,
     Rebase,
     RebaseContinue,
     RebaseAbort,
@@ -52,4 +53,8 @@ pub enum BusyKind {
     StashPop,
     StashApply,
     StashDrop,
+    PrList,
+    PrMerge,
+    PrCreate,
+    PrView,
 }

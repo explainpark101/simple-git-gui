@@ -116,6 +116,135 @@ pub fn detect_codex_bin() -> Option<String> {
     detect_codex().map(|(p, _)| p)
 }
 
+fn managed_gh_bin() -> PathBuf {
+    #[cfg(windows)]
+    {
+        tools_root().join("gh").join("gh.exe")
+    }
+    #[cfg(not(windows))]
+    {
+        tools_root().join("gh").join("gh")
+    }
+}
+
+/// Find GitHub CLI (`gh`) — PATH first, then app-managed install.
+pub fn detect_gh_bin() -> Option<String> {
+    if let Some(p) = which_first(&["gh"]) {
+        return Some(p);
+    }
+    path_if_bin(&managed_gh_bin())
+}
+
+/// Download the official portable `gh` release into `{tools}/gh/` and return its path.
+pub fn install_gh(progress: Option<InstallProgressFn>) -> Result<String> {
+    install_gh_with_progress(progress.as_ref())
+}
+
+fn install_gh_with_progress(progress: Option<&InstallProgressFn>) -> Result<String> {
+    report(progress, 0.02);
+    let (tag, version) = lookup_gh_latest_version().unwrap_or_else(|_| {
+        ("v2.105.0".into(), "2.105.0".into())
+    });
+    let asset = platform_gh_asset(&version)?;
+    let url = format!("https://github.com/cli/cli/releases/download/{tag}/{asset}");
+    let root = tools_root().join("gh");
+    let version_dir = root.join(&version);
+    if version_dir.exists() {
+        let _ = fs::remove_dir_all(&version_dir);
+    }
+    fs::create_dir_all(&version_dir)
+        .with_context(|| format!("create {}", version_dir.display()))?;
+    let archive = version_dir.join(&asset);
+    download_file(&url, &archive, progress, 0.05, 0.78)?;
+    report(progress, 0.8);
+    extract_archive(&archive, &version_dir)?;
+    let _ = fs::remove_file(&archive);
+    report(progress, 0.88);
+
+    #[cfg(windows)]
+    let exe_name = "gh.exe";
+    #[cfg(not(windows))]
+    let exe_name = "gh";
+
+    let found = find_named_bin(&version_dir, exe_name)
+        .ok_or_else(|| anyhow!("gh archive missing {exe_name}"))?;
+    let dest = managed_gh_bin();
+    mirror_bin_to(&found, &dest)?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = fs::metadata(&dest)?.permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&dest, perms)?;
+    }
+
+    // Keep a small pointer so we can find the active managed binary later.
+    let _ = fs::write(
+        root.join("active.json"),
+        serde_json::to_string_pretty(&ActiveRelease {
+            version: version.clone(),
+        })?,
+    );
+
+    report(progress, 1.0);
+    path_if_bin(&dest).ok_or_else(|| anyhow!("installed gh missing at {}", dest.display()))
+}
+
+fn lookup_gh_latest_version() -> Result<(String, String)> {
+    #[derive(Deserialize)]
+    struct GhRelease {
+        tag_name: String,
+    }
+    let release: GhRelease = http_agent(30)
+        .get("https://api.github.com/repos/cli/cli/releases/latest")
+        .set("Accept", "application/vnd.github+json")
+        .call()
+        .context("GET cli/cli latest release")?
+        .into_json()
+        .context("parse cli/cli release JSON")?;
+    let tag = release.tag_name.trim().to_string();
+    if tag.is_empty() {
+        bail!("empty gh release tag");
+    }
+    let version = tag.trim_start_matches('v').to_string();
+    if version.is_empty() {
+        bail!("empty gh version");
+    }
+    Ok((tag, version))
+}
+
+fn platform_gh_asset(version: &str) -> Result<String> {
+    #[cfg(all(windows, target_arch = "x86_64"))]
+    {
+        return Ok(format!("gh_{version}_windows_amd64.zip"));
+    }
+    #[cfg(all(windows, target_arch = "aarch64"))]
+    {
+        return Ok(format!("gh_{version}_windows_arm64.zip"));
+    }
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    {
+        return Ok(format!("gh_{version}_macOS_arm64.zip"));
+    }
+    #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
+    {
+        return Ok(format!("gh_{version}_macOS_amd64.zip"));
+    }
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    {
+        return Ok(format!("gh_{version}_linux_amd64.tar.gz"));
+    }
+    #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+    {
+        return Ok(format!("gh_{version}_linux_arm64.tar.gz"));
+    }
+    #[allow(unreachable_code)]
+    {
+        bail!("unsupported platform for managed gh install")
+    }
+}
+
 pub fn status(kind: CliToolKind) -> CliStatus {
     let (binary, source) = match kind {
         CliToolKind::Cursor => detect_cursor()
@@ -718,7 +847,18 @@ fn extract_archive(archive: &Path, out_dir: &Path) -> Result<()> {
     let out_s = out_dir
         .to_str()
         .ok_or_else(|| anyhow!("non-utf8 out dir"))?;
-    let status = run_hidden(&tar, &["-xzf", archive_s, "-C", out_s])?;
+    // bsdtar: .zip → -xf; .tar.gz → -xzf
+    let name = archive
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    let flags: &[&str] = if name.ends_with(".zip") {
+        &["-xf", archive_s, "-C", out_s]
+    } else {
+        &["-xzf", archive_s, "-C", out_s]
+    };
+    let status = run_hidden(&tar, flags)?;
     if !status.success() {
         bail!("tar extract failed ({})", status.code().unwrap_or(-1));
     }
@@ -817,7 +957,7 @@ fn which_bin(name: &str) -> Option<String> {
 }
 
 fn run_capture(program: &str, args: &[&str]) -> Result<String> {
-    let mut cmd = Command::new(program);
+    let mut cmd = command_for(program);
     cmd.args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -837,7 +977,7 @@ fn run_capture(program: &str, args: &[&str]) -> Result<String> {
 }
 
 fn run_hidden(program: &str, args: &[&str]) -> Result<std::process::ExitStatus> {
-    let mut cmd = Command::new(program);
+    let mut cmd = command_for(program);
     cmd.args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -860,7 +1000,7 @@ fn spawn_interactive_login(bin: &str, subcommand: &str) -> Result<()> {
     {
         use std::os::windows::process::CommandExt;
         const CREATE_NEW_CONSOLE: u32 = 0x0000_0010;
-        let mut cmd = Command::new(bin);
+        let mut cmd = command_for(bin);
         cmd.arg(subcommand).creation_flags(CREATE_NEW_CONSOLE);
         cmd.spawn()
             .with_context(|| format!("spawn interactive {bin} {subcommand}"))?;
@@ -903,6 +1043,64 @@ fn hide_console(cmd: &mut Command) {
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
         cmd.creation_flags(CREATE_NO_WINDOW);
     }
+}
+
+/// Build a [`Command`] that can run Windows `.cmd` / `.bat` / `.ps1` wrappers.
+///
+/// `CreateProcess` cannot pass arguments to batch files directly ("batch file
+/// arguments are invalid"). Cursor Agent's `cursor-agent.cmd` forwards to a
+/// sibling `.ps1`, so prefer that; otherwise run via `cmd.exe /C`.
+pub(crate) fn command_for(program: &str) -> Command {
+    #[cfg(windows)]
+    {
+        let path = Path::new(program);
+        let ext = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        if ext == "cmd" || ext == "bat" {
+            let ps1 = path.with_extension("ps1");
+            if ps1.is_file() {
+                let mut cmd = Command::new(powershell_exe());
+                cmd.arg("-NoProfile")
+                    .arg("-ExecutionPolicy")
+                    .arg("Bypass")
+                    .arg("-File")
+                    .arg(ps1);
+                return cmd;
+            }
+            let mut cmd = Command::new("cmd.exe");
+            cmd.arg("/D").arg("/C").arg(program);
+            return cmd;
+        }
+        if ext == "ps1" {
+            let mut cmd = Command::new(powershell_exe());
+            cmd.arg("-NoProfile")
+                .arg("-ExecutionPolicy")
+                .arg("Bypass")
+                .arg("-File")
+                .arg(program);
+            return cmd;
+        }
+    }
+    Command::new(program)
+}
+
+#[cfg(windows)]
+fn powershell_exe() -> PathBuf {
+    std::env::var_os("SystemRoot")
+        .or_else(|| std::env::var_os("windir"))
+        .map(|root| {
+            PathBuf::from(root)
+                .join("System32")
+                .join("WindowsPowerShell")
+                .join("v1.0")
+                .join("powershell.exe")
+        })
+        .unwrap_or_else(|| {
+            PathBuf::from(r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe")
+        })
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

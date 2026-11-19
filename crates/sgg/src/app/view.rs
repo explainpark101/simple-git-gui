@@ -301,8 +301,8 @@ pub struct AppView {
     pub(super) commit_ai_models: Vec<String>,
     pub(super) commit_ai_models_error: Option<String>,
     pub(super) commit_ai_models_task: Option<Task<()>>,
-    commit_ai_install_cli_task: Option<Task<()>>,
-    /// 0.0..=1.0 while [`BusyKind::InstallCli`] runs (bottom-border progress).
+    pub(super) commit_ai_install_cli_task: Option<Task<()>>,
+    /// 0.0..=1.0 while [`BusyKind::InstallCli`] / [`BusyKind::InstallGh`] runs.
     pub(super) cli_install_progress: Option<f32>,
     /// Cached CLI probe results for Settings (never refresh on the UI thread).
     pub(super) cli_status_cursor: Option<super::cli_tools::CliStatus>,
@@ -312,6 +312,8 @@ pub struct AppView {
     /// Latest release from `latest.json` when newer than this build.
     pub(super) update_available: Option<super::update::LatestInfo>,
     update_task: Option<Task<()>>,
+    /// In-flight fetch/pull/push (and similar) so git CLI never blocks the UI thread.
+    pub(super) network_task: Option<Task<()>>,
     pub(super) show_remote_branches: bool,
     pub(super) branch_sync_display: BranchSyncDisplay,
     pub(super) ask_fetch_on_open: bool,
@@ -351,6 +353,12 @@ pub struct AppView {
     pub(super) stash_include_untracked: bool,
     pub(super) stash_panel_open: bool,
     pub(super) tags_panel_open: bool,
+    pub(super) pr_panel_open: bool,
+    pub(super) pull_requests: Vec<super::github_pr::PullRequestInfo>,
+    pub(super) pr_list_error: Option<String>,
+    /// True when the last PR list failed because `gh` was missing.
+    pub(super) pr_gh_missing: bool,
+    pub(super) pr_merge_method: super::github_pr::PrMergeMethod,
     pub(super) sidebar_collapsed: bool,
     pub(super) busy: Option<BusyKind>,
     /// Bottom Progress dock: activity lines for fetch/pull/push and other busy work.
@@ -636,6 +644,7 @@ impl AppView {
             generate_commit_task: None,
             update_available: None,
             update_task: None,
+            network_task: None,
             show_remote_branches: prefs.show_remote_branches,
             branch_sync_display: prefs.branch_sync_display,
             ask_fetch_on_open: prefs.ask_fetch_on_open,
@@ -668,6 +677,11 @@ impl AppView {
             stash_include_untracked: prefs.stash_include_untracked,
             stash_panel_open: false,
             tags_panel_open: true,
+            pr_panel_open: false,
+            pull_requests: Vec::new(),
+            pr_list_error: None,
+            pr_gh_missing: false,
+            pr_merge_method: super::github_pr::PrMergeMethod::Merge,
             sidebar_collapsed: false,
             busy: None,
             progress_log: Vec::new(),
@@ -874,6 +888,9 @@ impl AppView {
             self.files_status_index = TreeStatusIndex::default();
             self.tags.clear();
             self.stashes.clear();
+            self.pull_requests.clear();
+            self.pr_list_error = None;
+            self.pr_gh_missing = false;
             self.clear_history_state();
             self.clear_blame_state();
             self.error = None;
@@ -963,6 +980,9 @@ impl AppView {
                 self.files_status_index = TreeStatusIndex::default();
                 self.tags.clear();
                 self.stashes.clear();
+                self.pull_requests.clear();
+                self.pr_list_error = None;
+                self.pr_gh_missing = false;
             }
             Err(LoadRepoError::NoRepo(err)) => {
                 self.snapshot = None;
@@ -973,6 +993,9 @@ impl AppView {
                 self.files_status_index = TreeStatusIndex::default();
                 self.tags.clear();
                 self.stashes.clear();
+                self.pull_requests.clear();
+                self.pr_list_error = None;
+                self.pr_gh_missing = false;
                 self.error = Some(err.into());
                 self.status_line = self.t().no_folder_open.into();
             }
@@ -2872,6 +2895,7 @@ impl AppView {
 
         if self.commit_ai_install_cli_task.is_some()
             || self.busy == Some(BusyKind::InstallCli)
+            || self.busy == Some(BusyKind::InstallGh)
         {
             return;
         }
@@ -3142,6 +3166,7 @@ impl AppView {
     ) {
         if self.commit_ai_install_cli_task.is_some()
             || self.busy == Some(BusyKind::InstallCli)
+            || self.busy == Some(BusyKind::InstallGh)
         {
             return;
         }

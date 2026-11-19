@@ -64,8 +64,12 @@ pub fn open_confirm(
     });
 }
 
-/// Confirm alert that keeps the dialog open, shows a spinner on OK while
-/// `kind` is busy, then closes after `work` finishes.
+/// Confirm alert for long / network git ops (fetch, pull, push).
+///
+/// Closes the dialog immediately and runs `work`, which must manage its own
+/// [`BusyKind`] + Progress dock (typically via a background `git` spawn).
+/// Do **not** wrap `work` in [`AppView::run_busy`]: that runs on the UI thread
+/// and would freeze the app for the duration of `git push` / credential prompts.
 pub fn open_busy_confirm(
     window: &mut Window,
     cx: &mut App,
@@ -180,12 +184,11 @@ impl Render for BusyConfirmOk {
                 .disabled(blocked && !loading)
                 .on_click(move |_, window, cx| {
                     // Close confirm immediately; progress continues in the sidebar Progress dock.
+                    // `work` owns busy lifecycle (async network git) — do not call run_busy.
+                    let _ = kind;
                     window.close_dialog(cx);
                     app.update(cx, |this, cx| {
-                        let work = work.clone();
-                        this.run_busy(kind, window, cx, move |this, window, cx| {
-                            work(this, window, cx);
-                        });
+                        work(this, window, cx);
                     });
                 }),
             busy,

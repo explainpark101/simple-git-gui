@@ -766,7 +766,8 @@ fn run_command_capture(
     abort: Option<&AbortFlag>,
 ) -> Result<String> {
     check_aborted(abort)?;
-    let mut cmd = Command::new(program);
+    // Windows: .cmd/.bat cannot take args via CreateProcess — use command_for.
+    let mut cmd = super::cli_tools::command_for(program);
     cmd.args(args)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());

@@ -58,6 +58,7 @@ impl BusyKind {
             Self::DownloadUpdate => t.download_update,
             Self::GenerateCommitMessage => t.generate_commit_message,
             Self::InstallCli => t.commit_ai_install_cli,
+            Self::InstallGh => t.pr_install_gh,
             Self::Rebase => t.rebase_onto,
             Self::RebaseContinue => t.rebase_continue,
             Self::RebaseAbort => t.rebase_abort,
@@ -75,6 +76,10 @@ impl BusyKind {
             Self::StashPop => t.stash_pop,
             Self::StashApply => t.stash_apply,
             Self::StashDrop => t.stash_drop,
+            Self::PrList => t.pr_refresh,
+            Self::PrMerge => t.pr_merge,
+            Self::PrCreate => t.pr_create,
+            Self::PrView => t.pr_open,
         }
     }
 }

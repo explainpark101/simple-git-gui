@@ -555,13 +555,11 @@ impl AppView {
             t.push_tag,
             t.branch_cancel,
             false,
-            move |_, window, cx| {
+            move |_, _, cx| {
                 let name = name.clone();
                 let remote = remote.clone();
                 view.update(cx, |this, cx| {
-                    this.run_busy(BusyKind::TagPush, window, cx, move |this, _, cx| {
-                        this.push_tag_now(remote, name, cx);
-                    });
+                    this.push_tag_now(remote, name, cx);
                 });
                 true
             },
@@ -574,17 +572,53 @@ impl AppView {
         name: String,
         cx: &mut Context<Self>,
     ) {
-        match self.with_repo(|repo| repo.push_tag(&remote, &name)) {
-            Ok(out) => {
-                self.set_ok_status(if out.is_empty() {
-                    format!("Pushed tag {name} → {remote}")
-                } else {
-                    out
-                });
-                self.reload(cx);
-            }
-            Err(err) => self.set_error(err, cx),
+        // Tag push is network-bound; run off the UI thread (same as push/pull/fetch).
+        if self.busy.is_some() || self.network_task.is_some() {
+            return;
         }
+        let root = self.repo_root();
+        if root.as_os_str().is_empty() {
+            self.set_error(self.t().no_folder_open.into(), cx);
+            return;
+        }
+        let remote_ok = remote.clone();
+        let name_ok = name.clone();
+        self.busy = Some(BusyKind::TagPush);
+        self.begin_progress(BusyKind::TagPush);
+        cx.notify();
+        self.network_task = Some(cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_spawn(async move {
+                    let repo = sgg_core::RepoState::open_nearest(&root)
+                        .map_err(|e| e.to_string())?;
+                    repo.push_tag(&remote, &name).map_err(|e| e.to_string())
+                })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                this.network_task = None;
+                this.busy = None;
+                match result {
+                    Ok(out) => {
+                        this.set_ok_status(if out.is_empty() {
+                            format!("Pushed tag {name_ok} → {remote_ok}")
+                        } else {
+                            out
+                        });
+                        this.reload(cx);
+                    }
+                    Err(err) => this.set_error(err.into(), cx),
+                }
+                if this
+                    .progress_log
+                    .last()
+                    .is_some_and(|e| e.state == super::progress::ProgressState::Running)
+                {
+                    let done = this.status_line.clone();
+                    this.finish_progress(this.error.is_none(), done);
+                }
+                cx.notify();
+            });
+        }));
     }
 
     pub(super) fn toggle_tags_panel(&mut self, cx: &mut Context<Self>) {

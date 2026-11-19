@@ -383,52 +383,115 @@ impl AppView {
         );
     }
 
+    /// Start a network git CLI op off the UI thread. Returns false if already busy.
+    fn begin_network_task(
+        &mut self,
+        kind: BusyKind,
+        cx: &mut Context<Self>,
+        work: impl FnOnce(std::path::PathBuf) -> Result<String, String> + Send + 'static,
+        on_ok: impl FnOnce(&mut Self, String, &mut Context<Self>) + 'static,
+    ) -> bool {
+        if self.busy.is_some() || self.network_task.is_some() {
+            return false;
+        }
+        let root = self.repo_root();
+        if root.as_os_str().is_empty() {
+            self.set_error(self.t().no_folder_open.into(), cx);
+            return false;
+        }
+        self.busy = Some(kind);
+        self.begin_progress(kind);
+        cx.notify();
+        self.network_task = Some(cx.spawn(async move |this, cx| {
+            let result = cx.background_spawn(async move { work(root) }).await;
+            let _ = this.update(cx, |this, cx| {
+                this.network_task = None;
+                this.busy = None;
+                match result {
+                    Ok(out) => on_ok(this, out, cx),
+                    Err(err) => this.set_error(err.into(), cx),
+                }
+                if this
+                    .progress_log
+                    .last()
+                    .is_some_and(|e| e.state == super::progress::ProgressState::Running)
+                {
+                    let done = this.status_line.clone();
+                    this.finish_progress(this.error.is_none(), done);
+                }
+                cx.notify();
+            });
+        }));
+        true
+    }
+
     pub(super) fn push_now(&mut self, cx: &mut Context<Self>) {
         let remote = self.selected_remote.clone();
-        match self.with_repo(|repo| repo.push(Some(&remote))) {
-            Ok(out) => {
+        let remote_ok = remote.clone();
+        let _ = self.begin_network_task(
+            BusyKind::Push,
+            cx,
+            move |root| {
+                let repo = sgg_core::RepoState::open_nearest(&root)
+                    .map_err(|e| e.to_string())?;
+                repo.push(Some(&remote)).map_err(|e| e.to_string())
+            },
+            move |this, out, cx| {
                 let msg = if out.is_empty() {
-                    format!("Push completed → {remote}")
+                    format!("Push completed → {remote_ok}")
                 } else {
                     out
                 };
-                self.set_ok_status(msg);
-                self.reload(cx);
-            }
-            Err(err) => self.set_error(err, cx),
-        }
+                this.set_ok_status(msg);
+                this.reload(cx);
+            },
+        );
     }
 
     pub(super) fn pull_now(&mut self, cx: &mut Context<Self>) {
         let remote = self.selected_remote.clone();
-        match self.with_repo(|repo| repo.pull(Some(&remote))) {
-            Ok(out) => {
+        let remote_ok = remote.clone();
+        let _ = self.begin_network_task(
+            BusyKind::Pull,
+            cx,
+            move |root| {
+                let repo = sgg_core::RepoState::open_nearest(&root)
+                    .map_err(|e| e.to_string())?;
+                repo.pull(Some(&remote)).map_err(|e| e.to_string())
+            },
+            move |this, out, cx| {
                 let msg = if out.is_empty() {
-                    format!("Pull completed ← {remote}")
+                    format!("Pull completed ← {remote_ok}")
                 } else {
                     out
                 };
-                self.set_ok_status(msg);
-                self.reload(cx);
-            }
-            Err(err) => self.set_error(err, cx),
-        }
+                this.set_ok_status(msg);
+                this.reload(cx);
+            },
+        );
     }
 
     pub(super) fn fetch_now(&mut self, cx: &mut Context<Self>) {
         let remote = self.selected_remote.clone();
-        match self.with_repo(|repo| repo.fetch(Some(&remote))) {
-            Ok(out) => {
+        let remote_ok = remote.clone();
+        let _ = self.begin_network_task(
+            BusyKind::Fetch,
+            cx,
+            move |root| {
+                let repo = sgg_core::RepoState::open_nearest(&root)
+                    .map_err(|e| e.to_string())?;
+                repo.fetch(Some(&remote)).map_err(|e| e.to_string())
+            },
+            move |this, out, cx| {
                 let msg = if out.is_empty() {
-                    format!("Fetch completed ← {remote}")
+                    format!("Fetch completed ← {remote_ok}")
                 } else {
                     out
                 };
-                self.set_ok_status(msg);
-                self.reload(cx);
-            }
-            Err(err) => self.set_error(err, cx),
-        }
+                this.set_ok_status(msg);
+                this.reload(cx);
+            },
+        );
     }
 
     pub(super) fn confirm_switch_branch(
@@ -504,12 +567,10 @@ impl AppView {
             ok,
             cancel,
             false,
-            move |_, window, cx| {
+            move |_, _, cx| {
                 let remote_ref = remote_ref.clone();
                 view.update(cx, |this, cx| {
-                    this.run_busy(BusyKind::Fetch, window, cx, move |this, _, cx| {
-                        this.checkout_remote_branch_now(remote_ref, cx);
-                    });
+                    this.checkout_remote_branch_now(remote_ref, cx);
                 });
                 true
             },
@@ -521,14 +582,22 @@ impl AppView {
         remote_ref: String,
         cx: &mut Context<Self>,
     ) {
-        match self.with_repo(|repo| repo.checkout_remote_branch(&remote_ref)) {
-            Ok(local) => {
-                self.error = None;
-                self.set_ok_status(format!("Checked out `{local}` ← {remote_ref}"));
-                self.reload(cx);
-            }
-            Err(err) => self.set_error(err, cx),
-        }
+        let remote_ref_ok = remote_ref.clone();
+        let _ = self.begin_network_task(
+            BusyKind::Fetch,
+            cx,
+            move |root| {
+                let repo = sgg_core::RepoState::open_nearest(&root)
+                    .map_err(|e| e.to_string())?;
+                repo.checkout_remote_branch(&remote_ref)
+                    .map_err(|e| e.to_string())
+            },
+            move |this, local, cx| {
+                this.error = None;
+                this.set_ok_status(format!("Checked out `{local}` ← {remote_ref_ok}"));
+                this.reload(cx);
+            },
+        );
     }
 
     pub(super) fn confirm_branch_form(
