@@ -298,17 +298,6 @@ impl TerminalSession {
                 {
                     let mut snap = snap_bg.lock();
                     snap.exited = true;
-                    snap.lines.push(DisplayLine {
-                        text: "[process exited]".into(),
-                        runs: vec![StyleRun {
-                            len: "[process exited]".len(),
-                            fg: [0xaa, 0xaa, 0xaa],
-                            bg: None,
-                            bold: false,
-                            dim: false,
-                            underline: false,
-                        }],
-                    });
                 }
                 dirty_bg.store(true, Ordering::Release);
             })
@@ -336,6 +325,11 @@ impl TerminalSession {
 
     pub fn cursor_state(&self) -> CursorState {
         self.snapshot.lock().cursor
+    }
+
+    /// True after the PTY reader hits EOF (shell/`exit` closed the session).
+    pub fn has_exited(&self) -> bool {
+        self.snapshot.lock().exited
     }
 
     pub fn write_input(&mut self, bytes: &[u8]) {

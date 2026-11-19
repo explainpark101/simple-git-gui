@@ -13,20 +13,17 @@ use super::github_pr::{self, PrMergeMethod};
 use super::view::AppView;
 
 impl AppView {
-    pub(super) fn toggle_pr_panel(&mut self, cx: &mut Context<Self>) {
-        self.pr_panel_open = !self.pr_panel_open;
-        if self.pr_panel_open && self.pull_requests.is_empty() && self.pr_list_error.is_none() {
-            self.refresh_pull_requests(cx);
-        }
-        cx.notify();
-    }
-
     pub(super) fn set_pr_merge_method(
         &mut self,
         method: PrMergeMethod,
         cx: &mut Context<Self>,
     ) {
         self.pr_merge_method = method;
+        cx.notify();
+    }
+
+    pub(super) fn select_pull_request(&mut self, number: u64, cx: &mut Context<Self>) {
+        self.selected_pr = Some(number);
         cx.notify();
     }
 
@@ -51,7 +48,13 @@ impl AppView {
                 this.busy = None;
                 match result {
                     Ok(prs) => {
+                        let keep = this
+                            .selected_pr
+                            .filter(|n| prs.iter().any(|p| p.number == *n));
                         this.pull_requests = prs;
+                        this.selected_pr = keep.or_else(|| {
+                            this.pull_requests.first().map(|p| p.number)
+                        });
                         this.pr_list_error = None;
                         this.pr_gh_missing = false;
                         let n = this.pull_requests.len();
@@ -59,6 +62,7 @@ impl AppView {
                     }
                     Err(err) => {
                         this.pull_requests.clear();
+                        this.selected_pr = None;
                         this.pr_gh_missing = err.is_not_found();
                         this.pr_list_error = Some(err.to_string());
                         this.set_error(err.to_string().into(), cx);

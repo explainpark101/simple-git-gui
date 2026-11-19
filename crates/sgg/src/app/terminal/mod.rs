@@ -138,6 +138,19 @@ impl TerminalDock {
         self.generation = self.generation.wrapping_add(1);
     }
 
+    /// Close tabs whose shell has exited. Returns whether anything changed.
+    pub fn reap_exited(&mut self) -> bool {
+        let mut closed = false;
+        // Walk high→low so indices stay valid while removing.
+        for idx in (0..self.sessions.len()).rev() {
+            if self.sessions[idx].has_exited() {
+                self.close_at(idx);
+                closed = true;
+            }
+        }
+        closed
+    }
+
     pub fn select(&mut self, index: usize) {
         if index < self.sessions.len() {
             self.active = index;

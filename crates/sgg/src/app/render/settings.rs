@@ -19,8 +19,8 @@ use crate::app::ai_provider::{
     LocalLlmPreset, ACTIVE_AUTO, CHAT_PATH_PRESETS,
 };
 use crate::app::prefs::{
-    settings_path, BranchSyncDisplay, CommitAiHttpMode, CommitAiStyle, StatusColors,
-    TerminalShellKind, ThemePreference, COMFORTABLE_TERMINAL_LINE_HEIGHT,
+    settings_path, BranchSyncDisplay, CommitAiHttpMode, CommitAiStyle, PullStrategy,
+    StatusColors, TerminalShellKind, ThemePreference, COMFORTABLE_TERMINAL_LINE_HEIGHT,
     DEFAULT_TERMINAL_LINE_HEIGHT,
 };
 use crate::app::render::status_style::display_label;
@@ -38,6 +38,58 @@ fn field_label(text: impl Into<SharedString>) -> Div {
         .text_left()
         .line_height(relative(1.35))
         .child(text.into())
+}
+
+fn pull_strategy_card(
+    view: &AppView,
+    t: UiText,
+    cx: &mut Context<AppView>,
+) -> impl IntoElement {
+    let current = view.pull_strategy;
+    div()
+        .flex()
+        .flex_col()
+        .gap_3()
+        .p_4()
+        .rounded_lg()
+        .border_1()
+        .border_color(cx.theme().border)
+        .child(div().font_semibold().text_left().child(t.pull_strategy))
+        .child(
+            div()
+                .text_xs()
+                .text_left()
+                .line_height(relative(1.35))
+                .text_color(cx.theme().muted_foreground)
+                .child(t.pull_strategy_help),
+        )
+        .child(
+            div()
+                .flex()
+                .flex_wrap()
+                .justify_start()
+                .gap_2()
+                .children(PullStrategy::ALL.into_iter().map(|strategy| {
+                    let (label, tip) = match strategy {
+                        PullStrategy::Merge => (t.pull_strategy_merge, t.tip_pull_strategy_merge),
+                        PullStrategy::Rebase => {
+                            (t.pull_strategy_rebase, t.tip_pull_strategy_rebase)
+                        }
+                        PullStrategy::FfOnly => {
+                            (t.pull_strategy_ff_only, t.tip_pull_strategy_ff_only)
+                        }
+                    };
+                    display_btn(SharedString::from(format!("pull-strategy-{:?}", strategy)))
+                        .outline()
+                        .label(label)
+                        .tooltip(tip)
+                        .selected(current == strategy)
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.set_pull_strategy(strategy, cx);
+                        }))
+                        .into_any_element()
+                })),
+        )
 }
 
 pub fn render(view: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
@@ -550,6 +602,7 @@ pub fn render(view: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
                         .into_any_element()
                 })),
         )
+        .child(pull_strategy_card(view, t, cx))
         .child(
             div()
                 .flex()

@@ -1,8 +1,10 @@
+mod actions;
 mod changes;
 mod files_page;
 mod git_graph;
 mod history;
 mod preview_pane;
+mod prs;
 mod settings;
 mod sidebar;
 pub(super) mod status_style;
@@ -174,6 +176,8 @@ impl Render for AppView {
                                 .into_any_element()
                         }
                         AppPage::History => history::render(self, cx).into_any_element(),
+                        AppPage::PullRequests => prs::render(self, cx).into_any_element(),
+                        AppPage::Actions => actions::render(self, cx).into_any_element(),
                         AppPage::Files => files_page::render(self, cx).into_any_element(),
                         AppPage::Settings => settings::render(self, cx).into_any_element(),
                     }

@@ -34,6 +34,31 @@ impl BranchSyncDisplay {
     pub const ALL: [Self; 2] = [Self::Dot, Self::Counts];
 }
 
+/// How `git pull` reconciles divergent local/remote branches.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum PullStrategy {
+    /// `git pull --no-rebase` (create a merge commit when histories diverge).
+    #[default]
+    Merge,
+    /// `git pull --rebase` (replay local commits on top of upstream).
+    Rebase,
+    /// `git pull --ff-only` (fail unless a fast-forward is possible).
+    FfOnly,
+}
+
+impl PullStrategy {
+    pub const ALL: [Self; 3] = [Self::Merge, Self::Rebase, Self::FfOnly];
+
+    pub fn git_flag(self) -> &'static str {
+        match self {
+            Self::Merge => "--no-rebase",
+            Self::Rebase => "--rebase",
+            Self::FfOnly => "--ff-only",
+        }
+    }
+}
+
 /// Per-status color overrides as `#rrggbb` / `#rrggbbaa` hex (None = theme default).
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct StatusColors {
@@ -116,6 +141,9 @@ pub struct AppPrefs {
     /// Ask whether to fetch when opening a repository (unless muted).
     #[serde(default = "default_true")]
     pub ask_fetch_on_open: bool,
+    /// Divergent-branch strategy for Pull (`--no-rebase` / `--rebase` / `--ff-only`).
+    #[serde(default)]
+    pub pull_strategy: PullStrategy,
     /// Absolute repo roots that should skip the fetch-on-open prompt.
     #[serde(default)]
     pub fetch_prompt_muted: Vec<String>,
@@ -374,6 +402,7 @@ impl Default for AppPrefs {
             show_remote_branches: true,
             branch_sync_display: BranchSyncDisplay::default(),
             ask_fetch_on_open: true,
+            pull_strategy: PullStrategy::default(),
             fetch_prompt_muted: Vec::new(),
             recent_repos: Vec::new(),
             status_colors: StatusColors::default(),

@@ -3,6 +3,8 @@ pub enum AppPage {
     #[default]
     Git,
     History,
+    PullRequests,
+    Actions,
     Files,
     Settings,
 }

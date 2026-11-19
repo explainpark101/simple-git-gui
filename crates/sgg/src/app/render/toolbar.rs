@@ -70,6 +70,32 @@ pub fn render(view: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
                         })),
                 )
                 .child(
+                    btn("tab-prs")
+                        .ghost()
+                        .small()
+                        .label(t.tab_prs)
+                        .selected(view.page == AppPage::PullRequests)
+                        .tooltip(t.tip_tab_prs)
+                        .disabled(!view.has_repo())
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.set_page(AppPage::PullRequests, window, cx);
+                            this.refresh_pull_requests(cx);
+                        })),
+                )
+                .child(
+                    btn("tab-actions")
+                        .ghost()
+                        .small()
+                        .label(t.tab_actions)
+                        .selected(view.page == AppPage::Actions)
+                        .tooltip(t.tip_tab_actions)
+                        .disabled(!view.has_repo())
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.set_page(AppPage::Actions, window, cx);
+                            this.refresh_actions(cx);
+                        })),
+                )
+                .child(
                     btn("tab-files")
                         .ghost()
                         .small()

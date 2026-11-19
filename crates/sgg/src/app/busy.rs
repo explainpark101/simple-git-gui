@@ -57,4 +57,10 @@ pub enum BusyKind {
     PrMerge,
     PrCreate,
     PrView,
+    ActionsList,
+    ActionsRun,
+    ActionsRerun,
+    ActionsCancel,
+    ActionsToggle,
+    ActionsView,
 }

@@ -27,6 +27,7 @@ use super::i18n::{Locale, UiText};
 use super::page::{AppPage, NavEntry};
 use super::prefs::{
     absolute_path, display_path, remember_repo, AppPrefs, BranchSyncDisplay, CommitAiPrefs,
+    PullStrategy,
     StatusColors, ThemePreference, DEFAULT_TERMINAL_FONT_FAMILY, DEFAULT_TERMINAL_FONT_SIZE,
     DEFAULT_TERMINAL_LINE_HEIGHT,
 };
@@ -317,6 +318,7 @@ pub struct AppView {
     pub(super) show_remote_branches: bool,
     pub(super) branch_sync_display: BranchSyncDisplay,
     pub(super) ask_fetch_on_open: bool,
+    pub(super) pull_strategy: PullStrategy,
     pub(super) fetch_prompt_muted: Vec<String>,
     /// Absolute repo roots, most recent first (persisted, unbounded).
     pub(super) recent_repos: Vec<String>,
@@ -353,12 +355,17 @@ pub struct AppView {
     pub(super) stash_include_untracked: bool,
     pub(super) stash_panel_open: bool,
     pub(super) tags_panel_open: bool,
-    pub(super) pr_panel_open: bool,
     pub(super) pull_requests: Vec<super::github_pr::PullRequestInfo>,
+    pub(super) selected_pr: Option<u64>,
     pub(super) pr_list_error: Option<String>,
-    /// True when the last PR list failed because `gh` was missing.
+    /// True when the last PR/Actions gh call failed because `gh` was missing.
     pub(super) pr_gh_missing: bool,
     pub(super) pr_merge_method: super::github_pr::PrMergeMethod,
+    pub(super) workflows: Vec<super::github_actions::WorkflowInfo>,
+    pub(super) workflow_runs: Vec<super::github_actions::WorkflowRunInfo>,
+    pub(super) selected_workflow: Option<u64>,
+    pub(super) selected_run: Option<u64>,
+    pub(super) actions_list_error: Option<String>,
     pub(super) sidebar_collapsed: bool,
     pub(super) busy: Option<BusyKind>,
     /// Bottom Progress dock: activity lines for fetch/pull/push and other busy work.
@@ -648,6 +655,7 @@ impl AppView {
             show_remote_branches: prefs.show_remote_branches,
             branch_sync_display: prefs.branch_sync_display,
             ask_fetch_on_open: prefs.ask_fetch_on_open,
+            pull_strategy: prefs.pull_strategy,
             fetch_prompt_muted: prefs.fetch_prompt_muted,
             recent_repos: prefs.recent_repos,
             status_colors,
@@ -677,11 +685,16 @@ impl AppView {
             stash_include_untracked: prefs.stash_include_untracked,
             stash_panel_open: false,
             tags_panel_open: true,
-            pr_panel_open: false,
             pull_requests: Vec::new(),
+            selected_pr: None,
             pr_list_error: None,
             pr_gh_missing: false,
             pr_merge_method: super::github_pr::PrMergeMethod::Merge,
+            workflows: Vec::new(),
+            workflow_runs: Vec::new(),
+            selected_workflow: None,
+            selected_run: None,
+            actions_list_error: None,
             sidebar_collapsed: false,
             busy: None,
             progress_log: Vec::new(),
@@ -761,7 +774,7 @@ impl AppView {
                     .history_file_preview
                     .as_ref()
                     .map(|p| p.path.clone()),
-                AppPage::Settings => None,
+                AppPage::PullRequests | AppPage::Actions | AppPage::Settings => None,
             },
         }
     }
@@ -826,7 +839,7 @@ impl AppView {
                 // Nav only stores the path; restore the retained History session if any.
                 self.restore_page_preview(window, cx);
             }
-            AppPage::Settings => {}
+            AppPage::PullRequests | AppPage::Actions | AppPage::Settings => {}
         }
         self.navigating_history = false;
     }
@@ -889,8 +902,14 @@ impl AppView {
             self.tags.clear();
             self.stashes.clear();
             self.pull_requests.clear();
+            self.selected_pr = None;
             self.pr_list_error = None;
             self.pr_gh_missing = false;
+            self.workflows.clear();
+            self.workflow_runs.clear();
+            self.selected_workflow = None;
+            self.selected_run = None;
+            self.actions_list_error = None;
             self.clear_history_state();
             self.clear_blame_state();
             self.error = None;
@@ -981,8 +1000,14 @@ impl AppView {
                 self.tags.clear();
                 self.stashes.clear();
                 self.pull_requests.clear();
+                self.selected_pr = None;
                 self.pr_list_error = None;
                 self.pr_gh_missing = false;
+                self.workflows.clear();
+                self.workflow_runs.clear();
+                self.selected_workflow = None;
+                self.selected_run = None;
+                self.actions_list_error = None;
             }
             Err(LoadRepoError::NoRepo(err)) => {
                 self.snapshot = None;
@@ -994,8 +1019,14 @@ impl AppView {
                 self.tags.clear();
                 self.stashes.clear();
                 self.pull_requests.clear();
+                self.selected_pr = None;
                 self.pr_list_error = None;
                 self.pr_gh_missing = false;
+                self.workflows.clear();
+                self.workflow_runs.clear();
+                self.selected_workflow = None;
+                self.selected_run = None;
+                self.actions_list_error = None;
                 self.error = Some(err.into());
                 self.status_line = self.t().no_folder_open.into();
             }
@@ -1261,7 +1292,7 @@ impl AppView {
                 self.push_nav_entry(self.current_nav_entry());
                 cx.notify();
             }
-            AppPage::Settings => {}
+            AppPage::PullRequests | AppPage::Actions | AppPage::Settings => {}
         }
     }
 
@@ -3517,6 +3548,7 @@ impl AppView {
             show_remote_branches: self.show_remote_branches,
             branch_sync_display: self.branch_sync_display,
             ask_fetch_on_open: self.ask_fetch_on_open,
+            pull_strategy: self.pull_strategy,
             fetch_prompt_muted: self.fetch_prompt_muted.clone(),
             recent_repos: self.recent_repos.clone(),
             status_colors: self.status_colors.clone(),
@@ -3663,6 +3695,19 @@ impl AppView {
 
     pub(super) fn set_ask_fetch_on_open(&mut self, enabled: bool, cx: &mut Context<Self>) {
         self.ask_fetch_on_open = enabled;
+        self.persist_prefs(cx);
+        cx.notify();
+    }
+
+    pub(super) fn set_pull_strategy(
+        &mut self,
+        strategy: PullStrategy,
+        cx: &mut Context<Self>,
+    ) {
+        if self.pull_strategy == strategy {
+            return;
+        }
+        self.pull_strategy = strategy;
         self.persist_prefs(cx);
         cx.notify();
     }
@@ -3990,9 +4035,20 @@ impl AppView {
                 let cont = this
                     .update(cx, |this, cx| {
                         let mut dirty_ui = false;
-                        if this.terminal.visible && this.terminal.take_dirty() {
-                            this.terminal.refresh_lines();
-                            dirty_ui = true;
+                        // Shell `exit` / EOF → drop the tab (and hide dock if last).
+                        if !this.terminal.sessions.is_empty()
+                            && (this.terminal.take_dirty()
+                                || this.terminal.sessions.iter().any(|s| s.has_exited()))
+                        {
+                            if this.terminal.reap_exited() {
+                                dirty_ui = true;
+                                if !this.terminal.visible {
+                                    this.terminal_focused = false;
+                                }
+                            } else if this.terminal.visible {
+                                this.terminal.refresh_lines();
+                                dirty_ui = true;
+                            }
                         }
                         // ~530ms blink while the terminal pane is focused.
                         if this.terminal.visible && this.terminal_focused {

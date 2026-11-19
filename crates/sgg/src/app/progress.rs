@@ -80,6 +80,12 @@ impl BusyKind {
             Self::PrMerge => t.pr_merge,
             Self::PrCreate => t.pr_create,
             Self::PrView => t.pr_open,
+            Self::ActionsList => t.actions_refresh,
+            Self::ActionsRun => t.actions_run,
+            Self::ActionsRerun => t.actions_rerun,
+            Self::ActionsCancel => t.actions_cancel,
+            Self::ActionsToggle => t.actions_toggle,
+            Self::ActionsView => t.actions_open,
         }
     }
 }

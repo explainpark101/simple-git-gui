@@ -451,13 +451,15 @@ impl AppView {
     pub(super) fn pull_now(&mut self, cx: &mut Context<Self>) {
         let remote = self.selected_remote.clone();
         let remote_ok = remote.clone();
+        let reconcile = self.pull_strategy.git_flag();
         let _ = self.begin_network_task(
             BusyKind::Pull,
             cx,
             move |root| {
                 let repo = sgg_core::RepoState::open_nearest(&root)
                     .map_err(|e| e.to_string())?;
-                repo.pull(Some(&remote)).map_err(|e| e.to_string())
+                repo.pull(Some(&remote), reconcile)
+                    .map_err(|e| e.to_string())
             },
             move |this, out, cx| {
                 let msg = if out.is_empty() {
@@ -929,7 +931,13 @@ impl AppView {
         self.reload_task = None;
         self.selected.clear();
         self.clear_all_page_previews(window, cx);
-        if self.page == AppPage::History || self.page == AppPage::Files {
+        if matches!(
+            self.page,
+            AppPage::History
+                | AppPage::Files
+                | AppPage::PullRequests
+                | AppPage::Actions
+        ) {
             self.set_page(AppPage::Git, window, cx);
         }
         self.reload(cx);
@@ -1037,7 +1045,7 @@ impl AppView {
                 self.refresh_inline_blame(cx);
                 self.refresh_preview_diff_gutter(cx);
             }
-            AppPage::Settings => {}
+            AppPage::PullRequests | AppPage::Actions | AppPage::Settings => {}
         }
     }
 

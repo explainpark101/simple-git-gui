@@ -1,7 +1,7 @@
 //! GitHub Pull Requests via the `gh` CLI (list / open / merge / create).
 
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
 use serde::Deserialize;
 
@@ -61,11 +61,11 @@ impl GhError {
     }
 }
 
-fn run_gh(repo: &Path, args: &[&str]) -> Result<String, GhError> {
+pub(crate) fn run_gh(repo: &Path, args: &[&str]) -> Result<String, GhError> {
     let bin = cli_tools::detect_gh_bin().unwrap_or_else(|| "gh".into());
-    let mut cmd = Command::new(&bin);
-    cmd.arg("-C")
-        .arg(repo)
+    // `gh` has no git-style `-C`; run inside the repo working directory instead.
+    let mut cmd = cli_tools::command_for(&bin);
+    cmd.current_dir(repo)
         .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
