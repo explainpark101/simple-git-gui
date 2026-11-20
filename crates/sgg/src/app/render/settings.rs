@@ -69,7 +69,7 @@ fn middle_drag_scroll(
 ) -> Stateful<Div> {
     let scroll_down = scroll.clone();
     el.when(view.middle_scroll.is_some(), |this| {
-        this.cursor(CursorStyle::ClosedHand)
+        this.cursor(CursorStyle::ResizeUpDown)
     })
     .on_mouse_down(
         MouseButton::Middle,
@@ -213,8 +213,8 @@ pub fn render(view: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
                 ),
         );
 
-    // Sticky search stays outside the scroll viewport. Middle-click drag scrolls
-    // the long settings column (browser-style grab scroll).
+    // Sticky search stays outside the scroll viewport. Middle-button hold
+    // continuously scrolls relative to the press origin (above → up, below → down).
     let scroll_body = middle_drag_scroll(
         div()
             .id("settings-scroll")

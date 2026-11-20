@@ -172,21 +172,40 @@ impl SettingsAnchors {
     }
 }
 
-/// Hold-middle-button drag scroll (browser-style grab scroll).
+/// Hold-middle-button continuous scroll relative to the press origin.
+///
+/// Cursor above origin → scroll up; below → scroll down. Speed scales with
+/// vertical distance from the origin (small dead zone near the press point).
 #[derive(Clone)]
 pub struct MiddleScrollDrag {
     pub scroll: ScrollHandle,
-    pub start_offset: Point<Pixels>,
-    pub start_cursor: Point<Pixels>,
+    pub origin: Point<Pixels>,
+    pub cursor: Point<Pixels>,
 }
 
 impl MiddleScrollDrag {
-    pub fn apply(&self, cursor: Point<Pixels>) {
-        let delta = cursor - self.start_cursor;
-        let mut offset = point(
-            self.start_offset.x + delta.x,
-            self.start_offset.y + delta.y,
-        );
+    const DEAD_ZONE_PX: f32 = 12.;
+    const SPEED_PER_PX: f32 = 0.28;
+    const MIN_STEP_PX: f32 = 2.;
+    const MAX_STEP_PX: f32 = 56.;
+
+    pub fn update_cursor(&mut self, cursor: Point<Pixels>) {
+        self.cursor = cursor;
+    }
+
+    /// Apply one autoscroll step from the latest cursor vs origin.
+    pub fn tick(&self) {
+        let dy = f32::from(self.cursor.y - self.origin.y);
+        let abs = dy.abs();
+        if abs <= Self::DEAD_ZONE_PX {
+            return;
+        }
+        let speed = ((abs - Self::DEAD_ZONE_PX) * Self::SPEED_PER_PX)
+            .clamp(Self::MIN_STEP_PX, Self::MAX_STEP_PX);
+        // ScrollHandle y is ≤ 0; more negative = further down the content.
+        let step = if dy > 0. { -speed } else { speed };
+        let mut offset = self.scroll.offset();
+        offset.y += px(step);
         let max = self.scroll.max_offset();
         offset.x = offset.x.clamp(-max.x, px(0.));
         offset.y = offset.y.clamp(-max.y, px(0.));

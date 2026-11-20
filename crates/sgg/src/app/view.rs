@@ -202,8 +202,10 @@ pub struct AppView {
     pub(super) _settings_search_sub: Option<Subscription>,
     /// Settings right-hand table of contents.
     pub(super) settings_toc_open: bool,
-    /// Active middle-button drag-to-scroll (browser-style).
+    /// Active middle-button continuous scroll (origin-relative autoscroll).
     pub(super) middle_scroll: Option<MiddleScrollDrag>,
+    /// Tick loop while [`Self::middle_scroll`] is active; dropped to stop.
+    middle_scroll_task: Option<Task<()>>,
     /// Per-project panel collapse state (persisted in prefs).
     pub(super) project_ui: HashMap<String, ProjectUiState>,
     /// Last project key whose UI chrome was applied (skip re-apply on refresh).
@@ -586,6 +588,7 @@ impl AppView {
             _settings_search_sub: None,
             settings_toc_open: prefs.settings_toc_open,
             middle_scroll: None,
+            middle_scroll_task: None,
             project_ui: prefs.project_ui.clone(),
             project_ui_applied: None,
             preview_diff_gutter,
@@ -1569,10 +1572,11 @@ impl AppView {
         cx: &mut Context<Self>,
     ) {
         self.middle_scroll = Some(MiddleScrollDrag {
-            start_offset: scroll.offset(),
             scroll,
-            start_cursor: cursor,
+            origin: cursor,
+            cursor,
         });
+        self.start_middle_scroll_task(cx);
         cx.notify();
     }
 
@@ -1583,21 +1587,45 @@ impl AppView {
         cx: &mut Context<Self>,
     ) {
         if pressed != Some(MouseButton::Middle) {
-            if self.middle_scroll.take().is_some() {
-                cx.notify();
-            }
+            self.end_middle_scroll(cx);
             return;
         }
-        if let Some(drag) = self.middle_scroll.clone() {
-            drag.apply(cursor);
+        if let Some(drag) = self.middle_scroll.as_mut() {
+            drag.update_cursor(cursor);
+            drag.clone().tick();
             cx.notify();
         }
     }
 
     pub(super) fn end_middle_scroll(&mut self, cx: &mut Context<Self>) {
-        if self.middle_scroll.take().is_some() {
+        let had = self.middle_scroll.take().is_some();
+        self.middle_scroll_task = None;
+        if had {
             cx.notify();
         }
+    }
+
+    fn start_middle_scroll_task(&mut self, cx: &mut Context<Self>) {
+        self.middle_scroll_task = Some(cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor()
+                    .timer(Duration::from_millis(16))
+                    .await;
+                let cont = this
+                    .update(cx, |this, cx| {
+                        let Some(drag) = this.middle_scroll.clone() else {
+                            return false;
+                        };
+                        drag.tick();
+                        cx.notify();
+                        true
+                    })
+                    .unwrap_or(false);
+                if !cont {
+                    break;
+                }
+            }
+        }));
     }
 
     fn project_ui_key(&self) -> Option<String> {
