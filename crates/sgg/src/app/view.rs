@@ -27,10 +27,10 @@ use super::i18n::{Locale, UiText};
 use super::page::{AppPage, NavEntry};
 use super::prefs::{
     absolute_path, display_path, remember_repo, AppPrefs, BranchSyncDisplay, CommitAiPrefs,
-    PullStrategy,
-    StatusColors, ThemePreference, DEFAULT_TERMINAL_FONT_FAMILY, DEFAULT_TERMINAL_FONT_SIZE,
-    DEFAULT_TERMINAL_LINE_HEIGHT,
+    ProjectUiState, PullStrategy, StatusColors, ThemePreference, DEFAULT_TERMINAL_FONT_FAMILY,
+    DEFAULT_TERMINAL_FONT_SIZE, DEFAULT_TERMINAL_LINE_HEIGHT,
 };
+use super::settings_nav::{MiddleScrollDrag, SettingsAnchors, SettingsSection};
 use super::progress::{
     ProgressEntry, ProgressState, PROGRESS_DEFAULT_HEIGHT, PROGRESS_LOG_LIMIT,
 };
@@ -195,8 +195,19 @@ pub struct AppView {
     pub(super) history_split_scroll_shared: ScrollHandle,
     /// Settings page vertical scroll (so we can jump to Commit AI).
     pub(super) settings_scroll: ScrollHandle,
-    /// Anchor on the Commit AI settings card.
-    pub(super) settings_commit_ai_anchor: ScrollAnchor,
+    /// Per-section scroll anchors for Settings TOC / deep links.
+    pub(super) settings_anchors: SettingsAnchors,
+    /// Settings search filter (sticky header).
+    pub(super) settings_search_input: Entity<InputState>,
+    pub(super) _settings_search_sub: Option<Subscription>,
+    /// Settings right-hand table of contents.
+    pub(super) settings_toc_open: bool,
+    /// Active middle-button drag-to-scroll (browser-style).
+    pub(super) middle_scroll: Option<MiddleScrollDrag>,
+    /// Per-project panel collapse state (persisted in prefs).
+    pub(super) project_ui: HashMap<String, ProjectUiState>,
+    /// Last project key whose UI chrome was applied (skip re-apply on refresh).
+    pub(super) project_ui_applied: Option<String>,
     /// VS Code-style SCM bars beside the preview gutter (line numbers).
     preview_diff_gutter: GutterDecorationCollection,
     preview_diff_ruler: OverviewRulerDecorationCollection,
@@ -541,7 +552,9 @@ impl AppView {
             t.no_folder_open.into()
         };
         let settings_scroll = ScrollHandle::new();
-        let settings_commit_ai_anchor = ScrollAnchor::for_handle(settings_scroll.clone());
+        let settings_anchors = SettingsAnchors::new(&settings_scroll);
+        let settings_search_input =
+            cx.new(|cx| InputState::new(window, cx).placeholder(t.settings_search_placeholder));
         let mut view = Self {
             start_path,
             snapshot: None,
@@ -568,7 +581,13 @@ impl AppView {
             history_split_scroll_new: ScrollHandle::new(),
             history_split_scroll_shared: ScrollHandle::new(),
             settings_scroll,
-            settings_commit_ai_anchor,
+            settings_anchors,
+            settings_search_input,
+            _settings_search_sub: None,
+            settings_toc_open: prefs.settings_toc_open,
+            middle_scroll: None,
+            project_ui: prefs.project_ui.clone(),
+            project_ui_applied: None,
             preview_diff_gutter,
             preview_diff_ruler,
             preview_diff_line_bg,
@@ -720,6 +739,7 @@ impl AppView {
         view.wire_status_color_pickers(window, cx);
         view.wire_branch_search(cx);
         view.wire_history_branch_filter(cx);
+        view.wire_settings_search(cx);
         view.wire_font_search_inputs(cx);
         view.ensure_system_fonts(cx);
         view.wire_commit_input(window, cx);
@@ -992,6 +1012,11 @@ impl AppView {
                 if remember_repo(&mut self.recent_repos, &loaded.snap.root) {
                     self.persist_prefs(cx);
                 }
+                let project_key = display_path(&loaded.snap.root);
+                if self.project_ui_applied.as_deref() != Some(project_key.as_str()) {
+                    self.apply_project_ui(&project_key);
+                    self.project_ui_applied = Some(project_key);
+                }
                 self.snapshot = Some(loaded.snap);
                 self.tags = loaded.tags;
                 self.stashes = loaded.stashes;
@@ -1227,7 +1252,9 @@ impl AppView {
             self.set_page(AppPage::Settings, window, cx);
         }
         cx.defer_in(window, |this, window, cx| {
-            this.settings_commit_ai_anchor.scroll_to(window, cx);
+            this.settings_anchors
+                .get(SettingsSection::CommitAi)
+                .scroll_to(window, cx);
             cx.notify();
         });
     }
@@ -1301,6 +1328,7 @@ impl AppView {
 
     pub(super) fn toggle_sidebar_collapsed(&mut self, cx: &mut Context<Self>) {
         self.sidebar_collapsed = !self.sidebar_collapsed;
+        self.persist_project_ui(cx);
         cx.notify();
     }
 
@@ -1495,6 +1523,9 @@ impl AppView {
         self.remote_url_input.update(cx, |input, cx| {
             input.set_placeholder(t.remote_url_placeholder, window, cx);
         });
+        self.settings_search_input.update(cx, |input, cx| {
+            input.set_placeholder(t.settings_search_placeholder, window, cx);
+        });
     }
 
     fn wire_branch_search(&mut self, cx: &mut Context<Self>) {
@@ -1504,6 +1535,104 @@ impl AppView {
                 cx.notify();
             }
         }));
+    }
+
+    fn wire_settings_search(&mut self, cx: &mut Context<Self>) {
+        let input = self.settings_search_input.clone();
+        self._settings_search_sub = Some(cx.subscribe(&input, |_, _, event: &InputEvent, cx| {
+            if matches!(event, InputEvent::Change) {
+                cx.notify();
+            }
+        }));
+    }
+
+    pub(super) fn toggle_settings_toc(&mut self, cx: &mut Context<Self>) {
+        self.settings_toc_open = !self.settings_toc_open;
+        self.persist_prefs(cx);
+        cx.notify();
+    }
+
+    pub(super) fn scroll_to_settings_section(
+        &mut self,
+        section: SettingsSection,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.settings_anchors.get(section).scroll_to(window, cx);
+        cx.notify();
+    }
+
+    pub(super) fn begin_middle_scroll(
+        &mut self,
+        scroll: ScrollHandle,
+        cursor: Point<Pixels>,
+        cx: &mut Context<Self>,
+    ) {
+        self.middle_scroll = Some(MiddleScrollDrag {
+            start_offset: scroll.offset(),
+            scroll,
+            start_cursor: cursor,
+        });
+        cx.notify();
+    }
+
+    pub(super) fn update_middle_scroll(
+        &mut self,
+        cursor: Point<Pixels>,
+        pressed: Option<MouseButton>,
+        cx: &mut Context<Self>,
+    ) {
+        if pressed != Some(MouseButton::Middle) {
+            if self.middle_scroll.take().is_some() {
+                cx.notify();
+            }
+            return;
+        }
+        if let Some(drag) = self.middle_scroll.clone() {
+            drag.apply(cursor);
+            cx.notify();
+        }
+    }
+
+    pub(super) fn end_middle_scroll(&mut self, cx: &mut Context<Self>) {
+        if self.middle_scroll.take().is_some() {
+            cx.notify();
+        }
+    }
+
+    fn project_ui_key(&self) -> Option<String> {
+        if !self.has_repo() {
+            return None;
+        }
+        Some(display_path(&self.repo_root()))
+    }
+
+    fn apply_project_ui(&mut self, key: &str) {
+        let state = self
+            .project_ui
+            .get(key)
+            .cloned()
+            .unwrap_or_default();
+        self.tags_panel_open = state.tags_panel_open;
+        self.stash_panel_open = state.stash_panel_open;
+        self.sidebar_collapsed = state.sidebar_collapsed;
+        self.progress_collapsed = state.progress_collapsed;
+    }
+
+    pub(super) fn persist_project_ui(&mut self, cx: &mut Context<Self>) {
+        let Some(key) = self.project_ui_key() else {
+            return;
+        };
+        self.project_ui.insert(
+            key,
+            ProjectUiState {
+                tags_panel_open: self.tags_panel_open,
+                stash_panel_open: self.stash_panel_open,
+                sidebar_collapsed: self.sidebar_collapsed,
+                progress_collapsed: self.progress_collapsed,
+            },
+        );
+        self.persist_prefs(cx);
     }
 
     fn wire_history_branch_filter(&mut self, cx: &mut Context<Self>) {
@@ -3597,6 +3726,8 @@ impl AppView {
             ui_font_family: self.ui_font_family.clone(),
             commit_ai: self.commit_ai.clone(),
             stash_include_untracked: self.stash_include_untracked,
+            project_ui: self.project_ui.clone(),
+            settings_toc_open: self.settings_toc_open,
         };
         if let Err(err) = prefs.save() {
             self.error = Some(format!("Failed to save settings: {err:#}").into());
@@ -4107,6 +4238,7 @@ impl AppView {
 
     pub(super) fn toggle_progress_collapsed(&mut self, cx: &mut Context<Self>) {
         self.progress_collapsed = !self.progress_collapsed;
+        self.persist_project_ui(cx);
         cx.notify();
     }
 

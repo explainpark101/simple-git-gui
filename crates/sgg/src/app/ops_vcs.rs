@@ -623,6 +623,7 @@ impl AppView {
 
     pub(super) fn toggle_tags_panel(&mut self, cx: &mut Context<Self>) {
         self.tags_panel_open = !self.tags_panel_open;
+        self.persist_project_ui(cx);
         cx.notify();
     }
 
@@ -640,6 +641,7 @@ impl AppView {
 
     pub(super) fn toggle_stash_panel(&mut self, cx: &mut Context<Self>) {
         self.stash_panel_open = !self.stash_panel_open;
+        self.persist_project_ui(cx);
         cx.notify();
     }
 

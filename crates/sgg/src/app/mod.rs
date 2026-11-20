@@ -19,6 +19,7 @@ mod progress;
 mod reload;
 mod remote_url;
 mod render;
+mod settings_nav;
 mod sort;
 mod t3_bridge;
 mod terminal;

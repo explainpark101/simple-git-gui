@@ -24,6 +24,7 @@ use crate::app::prefs::{
     DEFAULT_TERMINAL_LINE_HEIGHT,
 };
 use crate::app::render::status_style::display_label;
+use crate::app::settings_nav::SettingsSection;
 use crate::app::view::AppView;
 use crate::app::widgets::{
     action_btn, display_btn, hoverable_switch, icon_btn, icon_danger_btn, list_row_btn, menu_item,
@@ -38,6 +39,57 @@ fn field_label(text: impl Into<SharedString>) -> Div {
         .text_left()
         .line_height(relative(1.35))
         .child(text.into())
+}
+
+fn section_shell(
+    section: SettingsSection,
+    view: &AppView,
+    query: &str,
+    t: UiText,
+    content: impl IntoElement,
+) -> Option<AnyElement> {
+    if !section.matches_query(query, t) {
+        return None;
+    }
+    Some(
+        div()
+            .id(SharedString::from(format!("settings-section-{section:?}")))
+            .w_full()
+            .anchor_scroll(Some(view.settings_anchors.get(section)))
+            .child(content)
+            .into_any_element(),
+    )
+}
+
+fn middle_drag_scroll(
+    el: Stateful<Div>,
+    scroll: ScrollHandle,
+    view: &AppView,
+    cx: &mut Context<AppView>,
+) -> Stateful<Div> {
+    let scroll_down = scroll.clone();
+    el.when(view.middle_scroll.is_some(), |this| {
+        this.cursor(CursorStyle::ClosedHand)
+    })
+    .on_mouse_down(
+        MouseButton::Middle,
+        cx.listener(move |this, event: &MouseDownEvent, _, cx| {
+            cx.stop_propagation();
+            this.begin_middle_scroll(scroll_down.clone(), event.position, cx);
+        }),
+    )
+    .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _, cx| {
+        if this.middle_scroll.is_none() {
+            return;
+        }
+        this.update_middle_scroll(event.position, event.pressed_button, cx);
+    }))
+    .on_mouse_up(
+        MouseButton::Middle,
+        cx.listener(|this, _, _, cx| {
+            this.end_middle_scroll(cx);
+        }),
+    )
 }
 
 fn pull_strategy_card(
@@ -101,617 +153,903 @@ pub fn render(view: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
     let settings_file = settings_path()
         .map(|p| p.display().to_string())
         .unwrap_or_else(|_| "(unavailable)".into());
-
+    let query = view.settings_search_input.read(cx).value().to_string();
+    let toc_open = view.settings_toc_open;
     let settings_scroll = view.settings_scroll.clone();
-    // Parent main pane is size_full (not a flex column), so flex_1 here does
-    // nothing — the scroll box grew with its content and never overflowed.
-    // size_full bounds the viewport; do not put flex() on this same node
-    // (GPUI can then ignore wheel scroll). Column stays flex_shrink_0 so
-    // cards below UI font remain in the scroll extent.
-    div()
-        .id("settings-scroll")
-        .size_full()
-        .min_h_0()
-        .overflow_y_scroll()
-        .track_scroll(&settings_scroll)
-        .vertical_scrollbar(&settings_scroll)
+
+    let appearance_card = div()
+        .flex()
+        .flex_col()
+        .gap_3()
+        .p_4()
+        .rounded_lg()
+        .border_1()
+        .border_color(cx.theme().border)
+        .child(div().font_semibold().text_left().child(t.appearance))
         .child(
             div()
-                .id("settings-column")
+                .text_xs()
+                .text_left()
+                .text_color(cx.theme().muted_foreground)
+                .child(t.appearance_help),
+        )
+        .child(
+            div()
+                .flex()
+                .justify_start()
+                .gap_2()
+                .child(
+                    display_btn("theme-light")
+                        .outline()
+                        .icon(AssetIcon::Sun)
+                        .label(t.theme_light)
+                        .tooltip(t.tip_theme_light)
+                        .selected(theme == ThemePreference::Light)
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.set_theme_preference(ThemePreference::Light, window, cx)
+                        })),
+                )
+                .child(
+                    display_btn("theme-dark")
+                        .outline()
+                        .icon(AssetIcon::Moon)
+                        .label(t.theme_dark)
+                        .tooltip(t.tip_theme_dark)
+                        .selected(theme == ThemePreference::Dark)
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.set_theme_preference(ThemePreference::Dark, window, cx)
+                        })),
+                )
+                .child(
+                    display_btn("theme-system")
+                        .outline()
+                        .icon(AssetIcon::Monitor)
+                        .label(t.theme_system)
+                        .tooltip(t.tip_theme_system)
+                        .selected(theme == ThemePreference::System)
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.set_theme_preference(ThemePreference::System, window, cx)
+                        })),
+                ),
+        );
+
+    // Sticky search stays outside the scroll viewport. Middle-click drag scrolls
+    // the long settings column (browser-style grab scroll).
+    let scroll_body = middle_drag_scroll(
+        div()
+            .id("settings-scroll")
+            .flex_1()
+            .min_h_0()
+            .min_w_0()
+            .overflow_y_scroll()
+            .track_scroll(&settings_scroll)
+            .vertical_scrollbar(&settings_scroll),
+        settings_scroll.clone(),
+        view,
+        cx,
+    )
+    .child(
+        div()
+            .id("settings-column")
+            .w_full()
+            .max_w(px(720.))
+            .mx_auto()
+            .flex_shrink_0()
+            .flex()
+            .flex_col()
+            .gap_6()
+            .p_6()
+            .children(
+                [
+                    section_shell(
+                        SettingsSection::Appearance,
+                        view,
+                        &query,
+                        t,
+                        appearance_card,
+                    ),
+                    section_shell(
+                        SettingsSection::StatusColors,
+                        view,
+                        &query,
+                        t,
+                        status_colors_section(view, t, cx),
+                    ),
+                    section_shell(
+                        SettingsSection::UiFont,
+                        view,
+                        &query,
+                        t,
+                        ui_font_section(view, t, cx),
+                    ),
+                    section_shell(
+                        SettingsSection::InlineBlame,
+                        view,
+                        &query,
+                        t,
+                        inline_blame_section(view, t, cx),
+                    ),
+                    section_shell(
+                        SettingsSection::DiffLineBackground,
+                        view,
+                        &query,
+                        t,
+                        diff_line_background_section(view, t, cx),
+                    ),
+                    section_shell(
+                        SettingsSection::TerminalShell,
+                        view,
+                        &query,
+                        t,
+                        terminal_shell_section(view, t, cx),
+                    ),
+                    section_shell(
+                        SettingsSection::TerminalFont,
+                        view,
+                        &query,
+                        t,
+                        terminal_font_section(view, t, cx),
+                    ),
+                    section_shell(
+                        SettingsSection::CommitAi,
+                        view,
+                        &query,
+                        t,
+                        commit_ai_section(view, t, cx),
+                    ),
+                    section_shell(
+                        SettingsSection::Language,
+                        view,
+                        &query,
+                        t,
+                        language_card(view, t, locale, cx),
+                    ),
+                    section_shell(
+                        SettingsSection::ChangesView,
+                        view,
+                        &query,
+                        t,
+                        changes_view_card(view, t, cx),
+                    ),
+                    section_shell(
+                        SettingsSection::AutoRefresh,
+                        view,
+                        &query,
+                        t,
+                        auto_refresh_card(view, t, cx),
+                    ),
+                    section_shell(
+                        SettingsSection::Branches,
+                        view,
+                        &query,
+                        t,
+                        branches_card(view, t, cx),
+                    ),
+                    section_shell(
+                        SettingsSection::ExternalEditor,
+                        view,
+                        &query,
+                        t,
+                        external_editor_card(view, t, editor, cx),
+                    ),
+                    section_shell(
+                        SettingsSection::FetchOnOpen,
+                        view,
+                        &query,
+                        t,
+                        fetch_on_open_card(view, t, cx),
+                    ),
+                    section_shell(
+                        SettingsSection::PullStrategy,
+                        view,
+                        &query,
+                        t,
+                        pull_strategy_card(view, t, cx),
+                    ),
+                    section_shell(
+                        SettingsSection::Repository,
+                        view,
+                        &query,
+                        t,
+                        repository_card(view, t, &path, cx),
+                    ),
+                    section_shell(
+                        SettingsSection::Updates,
+                        view,
+                        &query,
+                        t,
+                        updates_section(view, t, cx),
+                    ),
+                ]
+                .into_iter()
+                .flatten(),
+            )
+            .when(
+                !query.trim().is_empty()
+                    && SettingsSection::ALL
+                        .iter()
+                        .all(|s| !s.matches_query(&query, t)),
+                |this| {
+                    this.child(
+                        div()
+                            .text_sm()
+                            .text_color(cx.theme().muted_foreground)
+                            .text_left()
+                            .child(t.settings_no_match),
+                    )
+                },
+            )
+            .child(
+                div()
+                    .text_xs()
+                    .text_left()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(format!("{}: {settings_file}", t.settings_file)),
+            ),
+    );
+
+    div()
+        .id("settings-root")
+        .size_full()
+        .min_h_0()
+        .flex()
+        .flex_col()
+        .child(
+            div()
+                .id("settings-search-bar")
                 .w_full()
-                .max_w(px(720.))
-                .mx_auto()
                 .flex_shrink_0()
                 .flex()
+                .items_center()
+                .gap_2()
+                .px_4()
+                .py_2()
+                .border_b_1()
+                .border_color(cx.theme().border)
+                .bg(cx.theme().background)
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .child(
+                            Input::new(&view.settings_search_input)
+                                .cleanable(true)
+                                .appearance(true),
+                        ),
+                )
+                .child(
+                    icon_btn(
+                        "settings-toc-toggle",
+                        if toc_open {
+                            AssetIcon::PanelRightClose
+                        } else {
+                            AssetIcon::PanelRightOpen
+                        },
+                    )
+                    .accessibility_label(t.settings_toc)
+                    .tooltip(if toc_open {
+                        t.tip_settings_toc_hide
+                    } else {
+                        t.tip_settings_toc_show
+                    })
+                    .selected(toc_open)
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.toggle_settings_toc(cx);
+                    })),
+                ),
+        )
+        .child(
+            div()
+                .flex()
+                .flex_1()
+                .min_h_0()
+                .w_full()
+                .child(scroll_body)
+                .when(toc_open, |this| {
+                    this.child(settings_toc_panel(view, &query, t, cx))
+                }),
+        )
+}
+
+fn settings_toc_panel(
+    _view: &AppView,
+    query: &str,
+    t: UiText,
+    cx: &mut Context<AppView>,
+) -> impl IntoElement {
+    div()
+        .id("settings-toc")
+        .w(px(220.))
+        .h_full()
+        .flex_shrink_0()
+        .border_l_1()
+        .border_color(cx.theme().border)
+        .flex()
+        .flex_col()
+        .child(
+            div()
+                .px_3()
+                .py_2()
+                .border_b_1()
+                .border_color(cx.theme().border)
+                .font_semibold()
+                .text_sm()
+                .text_left()
+                .child(t.settings_toc),
+        )
+        .child(
+            div()
+                .id("settings-toc-list")
+                .flex_1()
+                .min_h_0()
+                .overflow_y_scroll()
+                .px_2()
+                .py_2()
+                .flex()
                 .flex_col()
-                .gap_6()
-                .p_6()
-                .child(div().text_lg().font_semibold().text_left().child(t.settings))
+                .gap_1()
+                .children(SettingsSection::ALL.into_iter().filter_map(|section| {
+                    if !section.matches_query(query, t) {
+                        return None;
+                    }
+                    let title = section.title(t);
+                    Some(
+                        display_btn(SharedString::from(format!("settings-toc:{title}")))
+                            .ghost()
+                            .w_full()
+                            .px_2()
+                            .py_1()
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.scroll_to_settings_section(section, window, cx);
+                            }))
+                            .child(
+                                div()
+                                    .w_full()
+                                    .text_sm()
+                                    .text_left()
+                                    .line_height(relative(1.35))
+                                    .overflow_hidden()
+                                    .text_ellipsis()
+                                    .whitespace_nowrap()
+                                    .child(title),
+                            )
+                            .into_any_element(),
+                    )
+                })),
+        )
+}
+
+fn language_card(
+    _view: &AppView,
+    t: UiText,
+    locale: Locale,
+    cx: &mut Context<AppView>,
+) -> impl IntoElement {
+    div()
+        .flex()
+        .flex_col()
+        .gap_3()
+        .p_4()
+        .rounded_lg()
+        .border_1()
+        .border_color(cx.theme().border)
+        .child(div().font_semibold().text_left().child(t.language))
+        .child(
+            div()
+                .text_xs()
+                .text_left()
+                .text_color(cx.theme().muted_foreground)
+                .child(t.language_help),
+        )
+        .child(
+            div()
+                .flex()
+                .justify_start()
+                .gap_2()
+                .children(Locale::ALL.into_iter().map(|item| {
+                    let tip = match item {
+                        Locale::English => t.tip_locale_en,
+                        Locale::Korean => t.tip_locale_ko,
+                    };
+                    display_btn(SharedString::from(format!("locale-{}", item.label())))
+                        .outline()
+                        .label(item.label())
+                        .tooltip(tip)
+                        .selected(locale == item)
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.set_locale(item, window, cx)
+                        }))
+                        .into_any_element()
+                })),
+        )
+}
+
+fn changes_view_card(
+    view: &AppView,
+    t: UiText,
+    cx: &mut Context<AppView>,
+) -> impl IntoElement {
+    div()
+        .flex()
+        .flex_col()
+        .gap_3()
+        .p_4()
+        .rounded_lg()
+        .border_1()
+        .border_color(cx.theme().border)
+        .child(div().font_semibold().text_left().child(t.changes_view))
+        .child(
+            div()
+                .text_xs()
+                .text_left()
+                .text_color(cx.theme().muted_foreground)
+                .child(t.changes_view_help),
+        )
+        .child(
+            div()
+                .flex()
+                .justify_start()
+                .gap_2()
+                .child(
+                    display_btn("changes-flat")
+                        .outline()
+                        .label(t.changes_flat)
+                        .tooltip(t.tip_changes_flat)
+                        .selected(!view.changes_as_tree)
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.set_changes_as_tree(false, cx)
+                        })),
+                )
+                .child(
+                    display_btn("changes-tree")
+                        .outline()
+                        .label(t.changes_tree)
+                        .tooltip(t.tip_changes_tree)
+                        .selected(view.changes_as_tree)
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.set_changes_as_tree(true, cx)
+                        })),
+                ),
+        )
+}
+
+fn auto_refresh_card(
+    view: &AppView,
+    t: UiText,
+    cx: &mut Context<AppView>,
+) -> impl IntoElement {
+    div()
+        .flex()
+        .flex_col()
+        .gap_3()
+        .p_4()
+        .rounded_lg()
+        .border_1()
+        .border_color(cx.theme().border)
+        .child(div().font_semibold().text_left().child(t.auto_refresh))
+        .child(
+            div()
+                .text_xs()
+                .text_left()
+                .text_color(cx.theme().muted_foreground)
+                .child(t.auto_refresh_help),
+        )
+        .child(
+            div()
+                .flex()
+                .justify_start()
+                .gap_2()
+                .child(
+                    display_btn("auto-refresh-on")
+                        .outline()
+                        .label(t.auto_refresh_on)
+                        .tooltip(t.tip_auto_refresh_on)
+                        .selected(view.auto_refresh)
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.set_auto_refresh(true, cx)
+                        })),
+                )
+                .child(
+                    display_btn("auto-refresh-off")
+                        .outline()
+                        .label(t.auto_refresh_off)
+                        .tooltip(t.tip_auto_refresh_off)
+                        .selected(!view.auto_refresh)
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.set_auto_refresh(false, cx)
+                        })),
+                ),
+        )
+}
+
+fn branches_card(
+    view: &AppView,
+    t: UiText,
+    cx: &mut Context<AppView>,
+) -> impl IntoElement {
+    div()
+        .flex()
+        .flex_col()
+        .gap_3()
+        .p_4()
+        .rounded_lg()
+        .border_1()
+        .border_color(cx.theme().border)
+        .child(div().font_semibold().text_left().child(t.branches))
+        .child(
+            div()
+                .text_xs()
+                .text_left()
+                .text_color(cx.theme().muted_foreground)
+                .child(t.tip_show_remote_branches),
+        )
+        .child(hoverable_switch(
+            "settings-show-remote-branches",
+            Switch::new("settings-show-remote-branches")
+                .label(t.show_remote_branches)
+                .checked(view.show_remote_branches)
+                .tooltip(t.tip_show_remote_branches)
+                .on_click(cx.listener(|this, checked, _, cx| {
+                    this.set_show_remote_branches(*checked, cx);
+                })),
+            cx,
+        ))
+        .child(field_label(t.branch_sync_display))
+        .child(
+            div()
+                .text_xs()
+                .text_left()
+                .line_height(relative(1.35))
+                .text_color(cx.theme().muted_foreground)
+                .child(t.tip_branch_sync_display),
+        )
+        .child(
+            div()
+                .flex()
+                .flex_wrap()
+                .gap_2()
+                .child(
+                    display_btn("branch-sync-dot")
+                        .outline()
+                        .small()
+                        .label(t.branch_sync_display_dot)
+                        .tooltip(t.tip_branch_sync_display_dot)
+                        .selected(view.branch_sync_display == BranchSyncDisplay::Dot)
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.set_branch_sync_display(BranchSyncDisplay::Dot, cx);
+                        })),
+                )
+                .child(
+                    display_btn("branch-sync-counts")
+                        .outline()
+                        .small()
+                        .label(t.branch_sync_display_counts)
+                        .tooltip(t.tip_branch_sync_display_counts)
+                        .selected(view.branch_sync_display == BranchSyncDisplay::Counts)
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.set_branch_sync_display(BranchSyncDisplay::Counts, cx);
+                        })),
+                ),
+        )
+}
+
+fn external_editor_card(
+    view: &AppView,
+    t: UiText,
+    editor: &crate::app::editor::ExternalEditor,
+    cx: &mut Context<AppView>,
+) -> impl IntoElement {
+    div()
+        .flex()
+        .flex_col()
+        .gap_3()
+        .p_4()
+        .rounded_lg()
+        .border_1()
+        .border_color(cx.theme().border)
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .justify_between()
+                .gap_2()
+                .child(div().font_semibold().text_left().child(t.external_editor))
+                .child(
+                    display_btn("zed-install")
+                        .ghost()
+                        .small()
+                        .icon(AssetIcon::Download)
+                        .label(t.zed_install)
+                        .tooltip(t.tip_zed_install)
+                        .on_click(|_, _, cx| {
+                            cx.open_url(ZED_DOWNLOAD_URL);
+                        }),
+                ),
+        )
+        .child(
+            div()
+                .text_xs()
+                .text_left()
+                .text_color(cx.theme().muted_foreground)
+                .child(t.external_editor_help),
+        )
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .justify_start()
+                .gap_2()
+                .child(editor_select(view, t.tip_editor_select, cx))
+                .child(
+                    with_busy(
+                        crate::app::widgets::confirm_btn(
+                            "open-project-editor",
+                            AssetIcon::ExternalLink,
+                            cx,
+                        )
+                        .small()
+                        .label(format!("{} {}", t.open_project_in, editor.label()))
+                        .tooltip(t.tip_open_project)
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.open_project_in_editor_busy(window, cx)
+                        })),
+                        view.busy,
+                        BusyKind::OpenProject,
+                    ),
+                ),
+        )
+        .when(editor.preset == EditorPreset::Custom, |this| {
+            this.child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .child(Input::new(&view.custom_editor_input)),
+                    )
+                    .child(
+                        with_busy(
+                            action_btn("save-custom-editor", AssetIcon::Save)
+                                .outline()
+                                .small()
+                                .label(t.save_command)
+                                .tooltip(t.tip_save_command)
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.save_custom_editor_command(window, cx)
+                                })),
+                            view.busy,
+                            BusyKind::SaveEditor,
+                        ),
+                    ),
+            )
+        })
+}
+
+fn fetch_on_open_card(
+    view: &AppView,
+    t: UiText,
+    cx: &mut Context<AppView>,
+) -> impl IntoElement {
+    div()
+        .flex()
+        .flex_col()
+        .gap_3()
+        .p_4()
+        .rounded_lg()
+        .border_1()
+        .border_color(cx.theme().border)
+        .child(div().font_semibold().text_left().child(t.fetch_on_open))
+        .child(
+            div()
+                .text_xs()
+                .text_left()
+                .text_color(cx.theme().muted_foreground)
+                .child(t.fetch_on_open_help),
+        )
+        .child(
+            div()
+                .flex()
+                .justify_start()
+                .gap_2()
+                .child(
+                    display_btn("ask-fetch-on")
+                        .outline()
+                        .label(t.ask_fetch_on)
+                        .tooltip(t.tip_ask_fetch_on)
+                        .selected(view.ask_fetch_on_open)
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.set_ask_fetch_on_open(true, cx)
+                        })),
+                )
+                .child(
+                    display_btn("ask-fetch-off")
+                        .outline()
+                        .label(t.ask_fetch_off)
+                        .tooltip(t.tip_ask_fetch_off)
+                        .selected(!view.ask_fetch_on_open)
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.set_ask_fetch_on_open(false, cx)
+                        })),
+                ),
+        )
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .justify_between()
+                .gap_2()
+                .child(
+                    div()
+                        .text_sm()
+                        .text_left()
+                        .font_semibold()
+                        .child(t.fetch_prompt_muted_list),
+                )
+                .child(
+                    action_btn("mute-current-fetch", AssetIcon::Ban)
+                        .outline()
+                        .small()
+                        .label(t.mute_current_repo)
+                        .tooltip(t.tip_mute_current_repo)
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.mute_current_fetch_prompt(cx)
+                        })),
+                ),
+        )
+        .child(
+            div()
+                .text_xs()
+                .text_left()
+                .text_color(cx.theme().muted_foreground)
+                .child(t.fetch_prompt_muted_help),
+        )
+        .when(view.fetch_prompt_muted.is_empty(), |this| {
+            this.child(
+                div()
+                    .text_xs()
+                    .text_left()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(t.fetch_prompt_muted_empty),
+            )
+        })
+        .children(view.fetch_prompt_muted.iter().cloned().map(|root| {
+            let root_unmute = root.clone();
+            div()
+                .flex()
+                .items_center()
+                .justify_between()
+                .gap_2()
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .text_xs()
+                        .text_left()
+                        .whitespace_nowrap()
+                        .overflow_hidden()
+                        .text_ellipsis()
+                        .child(root),
+                )
+                .child(
+                    action_btn(
+                        SharedString::from(format!("unmute-fetch:{root_unmute}")),
+                        AssetIcon::RotateCcw,
+                    )
+                    .outline()
+                    .small()
+                    .label(t.unmute_fetch_prompt)
+                    .tooltip(t.tip_unmute_fetch_prompt)
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.unmute_fetch_prompt(root_unmute.clone(), cx);
+                    })),
+                )
+                .into_any_element()
+        }))
+}
+
+fn repository_card(
+    view: &AppView,
+    t: UiText,
+    path: &str,
+    cx: &mut Context<AppView>,
+) -> impl IntoElement {
+    div()
+        .flex()
+        .flex_col()
+        .gap_3()
+        .p_3()
+        .rounded_lg()
+        .border_1()
+        .border_color(cx.theme().border)
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .justify_between()
+                .gap_2()
                 .child(
                     div()
                         .flex()
                         .flex_col()
-                        .gap_3()
-                        .p_4()
-                        .rounded_lg()
-                        .border_1()
-                        .border_color(cx.theme().border)
-                        .child(div().font_semibold().text_left().child(t.appearance))
+                        .gap_1()
+                        .min_w_0()
+                        .flex_1()
+                        .child(div().font_semibold().text_left().child(t.repository))
                         .child(
                             div()
                                 .text_xs()
                                 .text_left()
                                 .text_color(cx.theme().muted_foreground)
-                                .child(t.appearance_help),
-                        )
-                        .child(
-                            div()
-                                .flex()
-                                .justify_start()
-                                .gap_2()
-                                .child(
-                                    display_btn("theme-light")
-                                        .outline()
-                                        .icon(AssetIcon::Sun)
-                                        .label(t.theme_light)
-                                        .tooltip(t.tip_theme_light)
-                                        .selected(theme == ThemePreference::Light)
-                                        .on_click(cx.listener(|this, _, window, cx| {
-                                            this.set_theme_preference(
-                                                ThemePreference::Light,
-                                                window,
-                                                cx,
-                                            )
-                                        })),
-                                )
-                                .child(
-                                    display_btn("theme-dark")
-                                        .outline()
-                                        .icon(AssetIcon::Moon)
-                                        .label(t.theme_dark)
-                                        .tooltip(t.tip_theme_dark)
-                                        .selected(theme == ThemePreference::Dark)
-                                        .on_click(cx.listener(|this, _, window, cx| {
-                                            this.set_theme_preference(
-                                                ThemePreference::Dark,
-                                                window,
-                                                cx,
-                                            )
-                                        })),
-                                )
-                                .child(
-                                    display_btn("theme-system")
-                                        .outline()
-                                        .icon(AssetIcon::Monitor)
-                                        .label(t.theme_system)
-                                        .tooltip(t.tip_theme_system)
-                                        .selected(theme == ThemePreference::System)
-                                        .on_click(cx.listener(|this, _, window, cx| {
-                                            this.set_theme_preference(
-                                                ThemePreference::System,
-                                                window,
-                                                cx,
-                                            )
-                                        })),
-                                ),
-                        ),
-                )
-                .child(status_colors_section(view, t, cx))
-                .child(ui_font_section(view, t, cx))
-                .child(inline_blame_section(view, t, cx))
-                .child(diff_line_background_section(view, t, cx))
-                .child(terminal_shell_section(view, t, cx))
-                .child(terminal_font_section(view, t, cx))
-                .child(commit_ai_section(view, t, cx))
-                .child(
-            div()
-                .flex()
-                .flex_col()
-                .gap_3()
-                .p_4()
-                .rounded_lg()
-                .border_1()
-                .border_color(cx.theme().border)
-                .child(div().font_semibold().text_left().child(t.language))
-                .child(
-                    div()
-                        .text_xs()
-                        .text_left()
-                        .text_color(cx.theme().muted_foreground)
-                        .child(t.language_help),
-                )
-                .child(
-                    div()
-                        .flex()
-                        .justify_start()
-                        .gap_2()
-                        .children(Locale::ALL.into_iter().map(|item| {
-                            let tip = match item {
-                                Locale::English => t.tip_locale_en,
-                                Locale::Korean => t.tip_locale_ko,
-                            };
-                            display_btn(SharedString::from(format!("locale-{}", item.label())))
-                                .outline()
-                                .label(item.label())
-                                .tooltip(tip)
-                                .selected(locale == item)
-                                .on_click(cx.listener(move |this, _, window, cx| {
-                                    this.set_locale(item, window, cx)
-                                }))
-                                .into_any_element()
-                        })),
-                ),
-        )
-        .child(
-            div()
-                .flex()
-                .flex_col()
-                .gap_3()
-                .p_4()
-                .rounded_lg()
-                .border_1()
-                .border_color(cx.theme().border)
-                .child(div().font_semibold().text_left().child(t.changes_view))
-                .child(
-                    div()
-                        .text_xs()
-                        .text_left()
-                        .text_color(cx.theme().muted_foreground)
-                        .child(t.changes_view_help),
-                )
-                .child(
-                    div()
-                        .flex()
-                        .justify_start()
-                        .gap_2()
-                        .child(
-                            display_btn("changes-flat")
-                                .outline()
-                                .label(t.changes_flat)
-                                .tooltip(t.tip_changes_flat)
-                                .selected(!view.changes_as_tree)
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.set_changes_as_tree(false, cx)
-                                })),
-                        )
-                        .child(
-                            display_btn("changes-tree")
-                                .outline()
-                                .label(t.changes_tree)
-                                .tooltip(t.tip_changes_tree)
-                                .selected(view.changes_as_tree)
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.set_changes_as_tree(true, cx)
-                                })),
-                        ),
-                ),
-        )
-        .child(
-            div()
-                .flex()
-                .flex_col()
-                .gap_3()
-                .p_4()
-                .rounded_lg()
-                .border_1()
-                .border_color(cx.theme().border)
-                .child(div().font_semibold().text_left().child(t.auto_refresh))
-                .child(
-                    div()
-                        .text_xs()
-                        .text_left()
-                        .text_color(cx.theme().muted_foreground)
-                        .child(t.auto_refresh_help),
-                )
-                .child(
-                    div()
-                        .flex()
-                        .justify_start()
-                        .gap_2()
-                        .child(
-                            display_btn("auto-refresh-on")
-                                .outline()
-                                .label(t.auto_refresh_on)
-                                .tooltip(t.tip_auto_refresh_on)
-                                .selected(view.auto_refresh)
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.set_auto_refresh(true, cx)
-                                })),
-                        )
-                        .child(
-                            display_btn("auto-refresh-off")
-                                .outline()
-                                .label(t.auto_refresh_off)
-                                .tooltip(t.tip_auto_refresh_off)
-                                .selected(!view.auto_refresh)
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.set_auto_refresh(false, cx)
-                                })),
-                        ),
-                ),
-        )
-        .child(
-            div()
-                .flex()
-                .flex_col()
-                .gap_3()
-                .p_4()
-                .rounded_lg()
-                .border_1()
-                .border_color(cx.theme().border)
-                .child(div().font_semibold().text_left().child(t.branches))
-                .child(
-                    div()
-                        .text_xs()
-                        .text_left()
-                        .text_color(cx.theme().muted_foreground)
-                        .child(t.tip_show_remote_branches),
-                )
-                .child(hoverable_switch(
-                    "settings-show-remote-branches",
-                    Switch::new("settings-show-remote-branches")
-                        .label(t.show_remote_branches)
-                        .checked(view.show_remote_branches)
-                        .tooltip(t.tip_show_remote_branches)
-                        .on_click(cx.listener(|this, checked, _, cx| {
-                            this.set_show_remote_branches(*checked, cx);
-                        })),
-                    cx,
-                ))
-                .child(field_label(t.branch_sync_display))
-                .child(
-                    div()
-                        .text_xs()
-                        .text_left()
-                        .line_height(relative(1.35))
-                        .text_color(cx.theme().muted_foreground)
-                        .child(t.tip_branch_sync_display),
-                )
-                .child(
-                    div()
-                        .flex()
-                        .flex_wrap()
-                        .gap_2()
-                        .child(
-                            display_btn("branch-sync-dot")
-                                .outline()
-                                .small()
-                                .label(t.branch_sync_display_dot)
-                                .tooltip(t.tip_branch_sync_display_dot)
-                                .selected(view.branch_sync_display == BranchSyncDisplay::Dot)
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.set_branch_sync_display(BranchSyncDisplay::Dot, cx);
-                                })),
-                        )
-                        .child(
-                            display_btn("branch-sync-counts")
-                                .outline()
-                                .small()
-                                .label(t.branch_sync_display_counts)
-                                .tooltip(t.tip_branch_sync_display_counts)
-                                .selected(view.branch_sync_display == BranchSyncDisplay::Counts)
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.set_branch_sync_display(BranchSyncDisplay::Counts, cx);
-                                })),
-                        ),
-                ),
-        )
-        .child(
-            div()
-                .flex()
-                .flex_col()
-                .gap_3()
-                .p_4()
-                .rounded_lg()
-                .border_1()
-                .border_color(cx.theme().border)
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .justify_between()
-                        .gap_2()
-                        .child(div().font_semibold().text_left().child(t.external_editor))
-                        .child(
-                            display_btn("zed-install")
-                                .ghost()
-                                .small()
-                                .icon(AssetIcon::Download)
-                                .label(t.zed_install)
-                                .tooltip(t.tip_zed_install)
-                                .on_click(|_, _, cx| {
-                                    cx.open_url(ZED_DOWNLOAD_URL);
-                                }),
-                        ),
-                )
-                .child(
-                    div()
-                        .text_xs()
-                        .text_left()
-                        .text_color(cx.theme().muted_foreground)
-                        .child(t.external_editor_help),
-                )
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .justify_start()
-                        .gap_2()
-                        .child(editor_select(view, t.tip_editor_select, cx))
-                        .child(
-                            with_busy(
-                                crate::app::widgets::confirm_btn(
-                                    "open-project-editor",
-                                    AssetIcon::ExternalLink,
-                                    cx,
-                                )
-                                .small()
-                                .label(format!("{} {}", t.open_project_in, editor.label()))
-                                .tooltip(t.tip_open_project)
-                                .on_click(cx.listener(|this, _, window, cx| {
-                                    this.open_project_in_editor_busy(window, cx)
-                                })),
-                                view.busy,
-                                BusyKind::OpenProject,
-                            ),
-                        ),
-                )
-                .when(editor.preset == EditorPreset::Custom, |this| {
-                    this.child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap_2()
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .child(Input::new(&view.custom_editor_input)),
-                            )
-                            .child(
-                                with_busy(
-                                    action_btn("save-custom-editor", AssetIcon::Save)
-                                        .outline()
-                                        .small()
-                                        .label(t.save_command)
-                                        .tooltip(t.tip_save_command)
-                                        .on_click(cx.listener(|this, _, window, cx| {
-                                            this.save_custom_editor_command(window, cx)
-                                        })),
-                                    view.busy,
-                                    BusyKind::SaveEditor,
-                                ),
-                            ),
-                    )
-                }),
-        )
-        .child(
-            div()
-                .flex()
-                .flex_col()
-                .gap_3()
-                .p_4()
-                .rounded_lg()
-                .border_1()
-                .border_color(cx.theme().border)
-                .child(div().font_semibold().text_left().child(t.fetch_on_open))
-                .child(
-                    div()
-                        .text_xs()
-                        .text_left()
-                        .text_color(cx.theme().muted_foreground)
-                        .child(t.fetch_on_open_help),
-                )
-                .child(
-                    div()
-                        .flex()
-                        .justify_start()
-                        .gap_2()
-                        .child(
-                            display_btn("ask-fetch-on")
-                                .outline()
-                                .label(t.ask_fetch_on)
-                                .tooltip(t.tip_ask_fetch_on)
-                                .selected(view.ask_fetch_on_open)
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.set_ask_fetch_on_open(true, cx)
-                                })),
-                        )
-                        .child(
-                            display_btn("ask-fetch-off")
-                                .outline()
-                                .label(t.ask_fetch_off)
-                                .tooltip(t.tip_ask_fetch_off)
-                                .selected(!view.ask_fetch_on_open)
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.set_ask_fetch_on_open(false, cx)
-                                })),
-                        ),
-                )
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .justify_between()
-                        .gap_2()
-                        .child(
-                            div()
-                                .text_sm()
-                                .text_left()
-                                .font_semibold()
-                                .child(t.fetch_prompt_muted_list),
-                        )
-                        .child(
-                            action_btn("mute-current-fetch", AssetIcon::Ban)
-                                .outline()
-                                .small()
-                                .label(t.mute_current_repo)
-                                .tooltip(t.tip_mute_current_repo)
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.mute_current_fetch_prompt(cx)
-                                })),
-                        ),
-                )
-                .child(
-                    div()
-                        .text_xs()
-                        .text_left()
-                        .text_color(cx.theme().muted_foreground)
-                        .child(t.fetch_prompt_muted_help),
-                )
-                .when(view.fetch_prompt_muted.is_empty(), |this| {
-                    this.child(
-                        div()
-                            .text_xs()
-                            .text_left()
-                            .text_color(cx.theme().muted_foreground)
-                            .child(t.fetch_prompt_muted_empty),
-                    )
-                })
-                .children(view.fetch_prompt_muted.iter().cloned().map(|root| {
-                    let root_unmute = root.clone();
-                    div()
-                        .flex()
-                        .items_center()
-                        .justify_between()
-                        .gap_2()
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .text_xs()
-                                .text_left()
                                 .whitespace_nowrap()
                                 .overflow_hidden()
                                 .text_ellipsis()
-                                .child(root),
-                        )
-                        .child(
-                            action_btn(
-                                SharedString::from(format!("unmute-fetch:{root_unmute}")),
-                                AssetIcon::RotateCcw,
-                            )
-                            .outline()
+                                .child(format!("{}: {path}", t.current_path)),
+                        ),
+                )
+                .child(
+                    with_busy(
+                        action_btn("settings-open-folder", AssetIcon::FolderOpen)
+                            .primary()
                             .small()
-                            .label(t.unmute_fetch_prompt)
-                            .tooltip(t.tip_unmute_fetch_prompt)
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.unmute_fetch_prompt(root_unmute.clone(), cx);
+                            .label(t.open_folder)
+                            .tooltip(t.tip_open_folder)
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.open_folder(window, cx)
                             })),
-                        )
-                        .into_any_element()
-                })),
+                        view.busy,
+                        BusyKind::OpenFolder,
+                    ),
+                ),
         )
-        .child(pull_strategy_card(view, t, cx))
         .child(
             div()
-                .flex()
-                .flex_col()
-                .gap_3()
-                .p_3()
-                .rounded_lg()
-                .border_1()
-                .border_color(cx.theme().border)
+                .text_sm()
+                .font_semibold()
+                .text_left()
+                .child(t.recent_projects),
+        )
+        .child(
+            div()
+                .id("settings-recent-repos")
+                .h(px(200.))
+                .w_full()
+                .min_w_0()
+                .flex_shrink_0()
+                .overflow_y_scroll()
                 .child(
                     div()
                         .flex()
-                        .items_center()
-                        .justify_between()
-                        .gap_2()
-                        .child(
-                            div()
-                                .flex()
-                                .flex_col()
-                                .gap_1()
-                                .min_w_0()
-                                .flex_1()
-                                .child(div().font_semibold().text_left().child(t.repository))
-                                .child(
-                                    div()
-                                        .text_xs()
-                                        .text_left()
-                                        .text_color(cx.theme().muted_foreground)
-                                        .whitespace_nowrap()
-                                        .overflow_hidden()
-                                        .text_ellipsis()
-                                        .child(format!("{}: {path}", t.current_path)),
-                                ),
-                        )
-                        .child(
-                            with_busy(
-                                action_btn("settings-open-folder", AssetIcon::FolderOpen)
-                                    .primary()
-                                    .small()
-                                    .label(t.open_folder)
-                                    .tooltip(t.tip_open_folder)
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        this.open_folder(window, cx)
-                                    })),
-                                view.busy,
-                                BusyKind::OpenFolder,
-                            ),
-                        ),
-                )
-                .child(
-                    div()
-                        .text_sm()
-                        .font_semibold()
-                        .text_left()
-                        .child(t.recent_projects),
-                )
-                .child(
-                    // Fixed height + overflow_y_scroll; keep flex off the
-                    // scroll node (GPUI wheel scroll can fail with flex).
-                    div()
-                        .id("settings-recent-repos")
-                        .h(px(200.))
-                        .w_full()
-                        .min_w_0()
-                        .flex_shrink_0()
-                        .overflow_y_scroll()
-                        .child(
-                            div()
-                                .flex()
-                                .flex_col()
-                                .gap_1()
-                                .when(view.recent_repos.is_empty(), |this| {
-                                    this.child(
-                                        div()
-                                            .text_xs()
-                                            .text_color(cx.theme().muted_foreground)
-                                            .text_left()
-                                            .child(t.recent_projects_empty),
-                                    )
-                                })
-                                .children(view.recent_repos.iter().enumerate().map(
-                                    |(i, repo)| {
-                                        let open_path = repo.clone();
-                                        let tip = t.tip_open_recent;
-                                        list_row_btn(
-                                            SharedString::from(format!("settings-recent:{i}")),
-                                            repo.clone(),
-                                        )
-                                        .tooltip(tip)
-                                        .on_click(cx.listener(move |this, _, _, cx| {
-                                            this.open_repo_path(
-                                                std::path::PathBuf::from(open_path.clone()),
-                                                cx,
-                                            );
-                                        }))
-                                        .into_any_element()
-                                    },
-                                )),
-                        ),
+                        .flex_col()
+                        .gap_1()
+                        .when(view.recent_repos.is_empty(), |this| {
+                            this.child(
+                                div()
+                                    .text_xs()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .text_left()
+                                    .child(t.recent_projects_empty),
+                            )
+                        })
+                        .children(view.recent_repos.iter().enumerate().map(|(i, repo)| {
+                            let open_path = repo.clone();
+                            let tip = t.tip_open_recent;
+                            list_row_btn(
+                                SharedString::from(format!("settings-recent:{i}")),
+                                repo.clone(),
+                            )
+                            .tooltip(tip)
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.open_repo_path(
+                                    std::path::PathBuf::from(open_path.clone()),
+                                    cx,
+                                );
+                            }))
+                            .into_any_element()
+                        })),
                 ),
-        )
-                .child(updates_section(view, t, cx))
-                .child(
-            div()
-                .text_xs()
-                .text_left()
-                .text_color(cx.theme().muted_foreground)
-                .child(format!("{}: {settings_file}", t.settings_file)),
-        ),
         )
 }
 
@@ -1053,7 +1391,6 @@ fn commit_ai_section(
         .rounded_lg()
         .border_1()
         .border_color(cx.theme().border)
-        .anchor_scroll(Some(view.settings_commit_ai_anchor.clone()))
         .child(div().font_semibold().text_left().child(t.commit_ai))
         .child(
             div()

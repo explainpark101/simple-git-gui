@@ -17,9 +17,6 @@ use crate::app::widgets::{
     action_btn, display_btn, icon_btn, pane_body, pane_header, with_busy,
 };
 
-/// Two-line list row (title + meta). Button default `h_8` + overflow clips glyphs.
-const ACTIONS_ROW_HEIGHT: f32 = 56.0;
-
 pub fn render(view: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
     let t = view.t();
     let selected_wf = view.selected_workflow;
@@ -160,8 +157,8 @@ pub fn render(view: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
                         .ghost()
                         .selected(is_selected)
                         .w_full()
-                        .h(px(ACTIONS_ROW_HEIGHT))
                         .px_2()
+                        .py_2()
                         .on_click(cx.listener(move |this, _, _, cx| {
                             this.select_workflow(id, cx);
                         }))
@@ -169,12 +166,9 @@ pub fn render(view: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
                             div()
                                 .flex()
                                 .flex_col()
-                                .justify_center()
                                 .gap_2()
                                 .w_full()
                                 .min_w_0()
-                                .overflow_hidden()
-                                .py_1()
                                 .text_left()
                                 .child(
                                     div()
@@ -372,47 +366,55 @@ fn runs_list(
                     format!(" / {}", r.conclusion)
                 }
             );
+            let status_color = run_status_color(r, cx);
             let is_selected = selected_run == Some(id);
             display_btn(SharedString::from(format!("actions-run:{id}")))
                 .ghost()
                 .selected(is_selected)
                 .w_full()
-                .h(px(ACTIONS_ROW_HEIGHT))
                 .px_2()
+                .py_2()
                 .on_click(cx.listener(move |this, _, _, cx| {
                     this.select_workflow_run(id, cx);
                 }))
                 .child(
                     div()
                         .flex()
-                        .flex_col()
-                        .justify_center()
+                        .items_start()
                         .gap_2()
                         .w_full()
                         .min_w_0()
-                        .overflow_hidden()
-                        .py_1()
                         .text_left()
+                        .child(status_dot(status_color).mt(px(4.)))
                         .child(
                             div()
-                                .text_sm()
-                                .line_height(relative(1.35))
-                                .overflow_hidden()
-                                .text_ellipsis()
-                                .whitespace_nowrap()
+                                .flex()
+                                .flex_col()
+                                .gap_2()
+                                .flex_1()
+                                .min_w_0()
                                 .text_left()
-                                .child(title),
-                        )
-                        .child(
-                            div()
-                                .text_xs()
-                                .line_height(relative(1.35))
-                                .text_color(cx.theme().muted_foreground)
-                                .overflow_hidden()
-                                .text_ellipsis()
-                                .whitespace_nowrap()
-                                .text_left()
-                                .child(meta),
+                                .child(
+                                    div()
+                                        .text_sm()
+                                        .line_height(relative(1.35))
+                                        .overflow_hidden()
+                                        .text_ellipsis()
+                                        .whitespace_nowrap()
+                                        .text_left()
+                                        .child(title),
+                                )
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .line_height(relative(1.35))
+                                        .text_color(cx.theme().muted_foreground)
+                                        .overflow_hidden()
+                                        .text_ellipsis()
+                                        .whitespace_nowrap()
+                                        .text_left()
+                                        .child(meta),
+                                ),
                         ),
                 )
                 .into_any_element()
@@ -543,6 +545,7 @@ fn run_detail(
                     } else {
                         format!("{} / {}", r.status, r.conclusion)
                     };
+                    let status_color = run_status_color(&r, cx);
                     let sha = r.short_sha().to_string();
                     this.child(
                         div()
@@ -558,7 +561,12 @@ fn run_detail(
                                     .text_left()
                                     .child(title),
                             )
-                            .child(detail_row(t.actions_field_status, status, cx))
+                            .child(status_detail_row(
+                                t.actions_field_status,
+                                status,
+                                status_color,
+                                cx,
+                            ))
                             .child(detail_row(
                                 t.actions_field_workflow,
                                 r.workflow_name.clone(),
@@ -589,6 +597,71 @@ fn run_detail(
                             ),
                     )
                 }),
+        )
+}
+
+fn run_status_color(run: &crate::app::github_actions::WorkflowRunInfo, cx: &App) -> Hsla {
+    let conclusion = run.conclusion.to_ascii_lowercase();
+    if !conclusion.is_empty() {
+        return match conclusion.as_str() {
+            "success" => cx.theme().success,
+            "failure" | "timed_out" | "startup_failure" => cx.theme().danger,
+            "cancelled" => cx.theme().warning,
+            "skipped" | "neutral" => cx.theme().muted_foreground,
+            _ => cx.theme().muted_foreground,
+        };
+    }
+    match run.status.to_ascii_lowercase().as_str() {
+        "queued" | "in_progress" | "requested" | "waiting" | "pending" => cx.theme().accent,
+        "completed" => cx.theme().muted_foreground,
+        _ => cx.theme().muted_foreground,
+    }
+}
+
+/// Soft traffic-light glow for Actions run status.
+fn status_dot(color: Hsla) -> Div {
+    div()
+        .flex_shrink_0()
+        .size(px(10.))
+        .rounded_full()
+        .bg(color.opacity(0.35))
+        .flex()
+        .items_center()
+        .justify_center()
+        .child(div().size(px(6.)).rounded_full().bg(color))
+}
+
+fn status_detail_row(label: &str, value: String, color: Hsla, cx: &App) -> Div {
+    div()
+        .flex()
+        .flex_col()
+        .gap_1()
+        .min_w_0()
+        .child(
+            div()
+                .text_xs()
+                .font_semibold()
+                .text_color(cx.theme().muted_foreground)
+                .text_left()
+                .child(label.to_string()),
+        )
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap_2()
+                .min_w_0()
+                .child(status_dot(color))
+                .child(
+                    div()
+                        .text_sm()
+                        .line_height(relative(1.35))
+                        .text_left()
+                        .overflow_hidden()
+                        .text_ellipsis()
+                        .whitespace_nowrap()
+                        .child(value),
+                ),
         )
 }
 

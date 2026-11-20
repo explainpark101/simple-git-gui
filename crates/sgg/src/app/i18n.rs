@@ -456,6 +456,12 @@ pub struct UiText {
 
     // Settings
     pub settings: &'static str,
+    pub settings_search_placeholder: &'static str,
+    pub tip_settings_search: &'static str,
+    pub settings_toc: &'static str,
+    pub tip_settings_toc_show: &'static str,
+    pub tip_settings_toc_hide: &'static str,
+    pub settings_no_match: &'static str,
     pub appearance: &'static str,
     pub appearance_help: &'static str,
     pub theme_light: &'static str,
@@ -1112,6 +1118,12 @@ impl UiText {
             preview_placeholder: "Select a file to preview",
 
             settings: "Settings",
+            settings_search_placeholder: "Search settings…",
+            tip_settings_search: "Filter settings sections by keyword.",
+            settings_toc: "Contents",
+            tip_settings_toc_show: "Show the settings table of contents.",
+            tip_settings_toc_hide: "Hide the settings table of contents.",
+            settings_no_match: "No settings match your search.",
             appearance: "Theme",
             appearance_help: "Light, Dark, or follow the system theme (default: System).",
             theme_light: "Light",
@@ -1768,6 +1780,12 @@ impl UiText {
             preview_placeholder: "미리볼 파일을 선택하세요",
 
             settings: "설정",
+            settings_search_placeholder: "설정 검색…",
+            tip_settings_search: "키워드로 설정 섹션을 필터합니다.",
+            settings_toc: "목차",
+            tip_settings_toc_show: "설정 목차 패널을 엽니다.",
+            tip_settings_toc_hide: "설정 목차 패널을 닫습니다.",
+            settings_no_match: "검색어와 일치하는 설정이 없습니다.",
             appearance: "테마",
             appearance_help: "밝게, 어둡게, 또는 시스템 테마를 따릅니다 (기본: 시스템).",
             theme_light: "밝게",

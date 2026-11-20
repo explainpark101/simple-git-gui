@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -186,6 +187,36 @@ pub struct AppPrefs {
     /// Include untracked files when stashing (`git stash push -u`).
     #[serde(default)]
     pub stash_include_untracked: bool,
+    /// Per-repository collapse / panel open state (keyed by absolute display path).
+    #[serde(default)]
+    pub project_ui: HashMap<String, ProjectUiState>,
+    /// Settings page: show the right-hand table-of-contents panel.
+    #[serde(default = "default_true")]
+    pub settings_toc_open: bool,
+}
+
+/// Collapsed / expanded chrome remembered per project.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProjectUiState {
+    #[serde(default = "default_true")]
+    pub tags_panel_open: bool,
+    #[serde(default)]
+    pub stash_panel_open: bool,
+    #[serde(default)]
+    pub sidebar_collapsed: bool,
+    #[serde(default)]
+    pub progress_collapsed: bool,
+}
+
+impl Default for ProjectUiState {
+    fn default() -> Self {
+        Self {
+            tags_panel_open: true,
+            stash_panel_open: false,
+            sidebar_collapsed: false,
+            progress_collapsed: false,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -417,6 +448,8 @@ impl Default for AppPrefs {
             skipped_update_version: String::new(),
             commit_ai: CommitAiPrefs::default(),
             stash_include_untracked: false,
+            project_ui: HashMap::new(),
+            settings_toc_open: true,
         }
     }
 }

@@ -926,6 +926,8 @@ impl AppView {
         if !self.has_repo() && self.start_path.is_none() {
             return;
         }
+        self.persist_project_ui(cx);
+        self.project_ui_applied = None;
         self.start_path = None;
         self.fetch_prompted_root = None;
         self.reload_task = None;

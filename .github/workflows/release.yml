@@ -3,6 +3,9 @@ name: Release
 # On every push to main: read workspace.package.version from Cargo.toml.
 # If tag vX.Y.Z does not exist yet, build installers and create a GitHub Release.
 # Re-pushes with the same version are no-ops (no duplicate tags/releases).
+#
+# Assets go straight to a draft GitHub Release (Releases API) — no
+# actions/upload-artifact hop (avoids ArtifactService CreateArtifact timeouts).
 
 on:
   push:
@@ -85,7 +88,22 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
 
-  # Artifacts:
+      # Create the draft once so matrix jobs only upload assets (no ArtifactService).
+      - name: Create draft GitHub Release
+        if: steps.meta.outputs.should_release == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.meta.outputs.tag }}
+        run: |
+          set -euo pipefail
+          gh release create "${TAG}" \
+            --draft \
+            --title "${TAG}" \
+            --target "${GITHUB_SHA}" \
+            --generate-notes \
+            --notes "Building platform packages…"
+
+  # Release assets (uploaded directly to the draft release):
   # - Windows: *-setup.exe (NSIS installer) + sgg_portable*.exe (no-install binary)
   # - macOS: *.dmg
   # - Linux: *.AppImage + linux_sgg_portable (raw ELF, same role as portable .exe)
@@ -99,7 +117,6 @@ jobs:
           - os: windows-latest
             target: windows-x64
             script: ./build-exe.sh
-            artifact: windows-x64
             # Zip-friendly standalone binary (x86_64). Installer is separate.
             portable_name: sgg_portable.exe
             glob: |
@@ -108,7 +125,6 @@ jobs:
           - os: windows-11-arm
             target: windows-arm64
             script: ./build-exe.sh
-            artifact: windows-arm64
             # Snapdragon / Windows on ARM portable binary.
             portable_name: sgg_portable_arm64.exe
             glob: |
@@ -117,14 +133,12 @@ jobs:
           - os: macos-latest
             target: macos
             script: ./build-dmg.sh
-            artifact: macos
             portable_name: ""
             glob: |
               dist/*.dmg
           - os: ubuntu-latest
             target: linux
             script: ./build-appimage.sh
-            artifact: linux
             portable_name: linux_sgg_portable
             glob: |
               dist/*.AppImage
@@ -242,13 +256,17 @@ jobs:
           fi
           ls -lah dist || true
 
-      - name: Upload build artifacts
-        uses: actions/upload-artifact@v4
+      # Upload straight to the draft release (GitHub Releases API — not ArtifactService).
+      - name: Upload assets to draft release
+        uses: softprops/action-gh-release@v2
         with:
-          name: sgg-${{ needs.prepare.outputs.tag }}-${{ matrix.artifact }}
-          path: ${{ matrix.glob }}
-          if-no-files-found: error
-          retention-days: 14
+          tag_name: ${{ needs.prepare.outputs.tag }}
+          draft: true
+          fail_on_unmatched_files: true
+          overwrite_files: true
+          files: ${{ matrix.glob }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   publish:
     needs: [prepare, build]
@@ -257,15 +275,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Download all artifacts
-        uses: actions/download-artifact@v4
-        with:
-          pattern: sgg-${{ needs.prepare.outputs.tag }}-*
-          path: release-assets
-          merge-multiple: true
-
-      - name: List release assets
-        run: find release-assets -type f | sort
+      # Pull built installers from the draft release (Releases API), not Actions artifacts.
+      - name: Download draft release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+        run: |
+          set -euo pipefail
+          mkdir -p release-assets
+          gh release download "${TAG}" --dir release-assets --clobber
+          find release-assets -type f | sort
 
       - name: Generate latest.json (auto-update manifest)
         env:
@@ -276,14 +295,16 @@ jobs:
           chmod +x packaging/generate-latest-json.sh || true
           bash packaging/generate-latest-json.sh release-assets
 
-      - name: Create tag and GitHub Release
+      - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ needs.prepare.outputs.tag }}
           name: ${{ needs.prepare.outputs.tag }}
           target_commitish: ${{ github.sha }}
+          draft: false
           generate_release_notes: true
           fail_on_unmatched_files: true
+          overwrite_files: true
           body: |
             ## Auto-update
             Manifest: [`latest.json`](https://github.com/${{ github.repository }}/releases/latest/download/latest.json)
@@ -309,6 +330,6 @@ jobs:
 
             DMG를 연 뒤 **Install sgg.command**를 실행하거나 `.app`을 Applications로 드래그하세요.
           files: |
-            release-assets/**
+            release-assets/latest.json
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
