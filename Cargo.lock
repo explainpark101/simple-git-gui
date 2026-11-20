@@ -6355,7 +6355,7 @@ dependencies = [
 
 [[package]]
 name = "sgg"
-version = "1.6.3"
+version = "1.6.4"
 dependencies = [
  "alacritty_terminal",
  "anyhow",
@@ -6376,7 +6376,7 @@ dependencies = [
 
 [[package]]
 name = "sgg-core"
-version = "1.6.3"
+version = "1.6.4"
 dependencies = [
  "anyhow",
  "git2",

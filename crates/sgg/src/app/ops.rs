@@ -149,6 +149,11 @@ impl AppView {
         if self.fetch_prompt_muted.iter().any(|p| p == &root_key) {
             return;
         }
+        // Don't mark prompted until we can actually open; otherwise a stacked
+        // dialog would permanently suppress the fetch prompt for this root.
+        if window.has_active_dialog(cx) {
+            return;
+        }
         self.fetch_prompted_root = Some(root.clone());
         self.fetch_dont_ask = false;
         let t = self.t();

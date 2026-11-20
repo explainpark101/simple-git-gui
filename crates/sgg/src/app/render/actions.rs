@@ -17,6 +17,10 @@ use crate::app::widgets::{
     action_btn, display_btn, icon_btn, pane_body, pane_header, with_busy,
 };
 
+/// Tall enough for title + meta (`gap_2`, `line_height` 1.35) inside a
+/// Medium `Button` that otherwise clamps to `h_8` and clips multi-line rows.
+const ACTIONS_LIST_ROW_HEIGHT: f32 = 56.;
+
 pub fn render(view: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
     let t = view.t();
     let selected_wf = view.selected_workflow;
@@ -157,8 +161,8 @@ pub fn render(view: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
                         .ghost()
                         .selected(is_selected)
                         .w_full()
-                        .px_2()
-                        .py_2()
+                        .h(px(ACTIONS_LIST_ROW_HEIGHT))
+                        .px_1()
                         .on_click(cx.listener(move |this, _, _, cx| {
                             this.select_workflow(id, cx);
                         }))
@@ -166,9 +170,13 @@ pub fn render(view: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
                             div()
                                 .flex()
                                 .flex_col()
+                                .justify_center()
                                 .gap_2()
                                 .w_full()
+                                .h_full()
                                 .min_w_0()
+                                .overflow_hidden()
+                                .py_1()
                                 .text_left()
                                 .child(
                                     div()
@@ -372,27 +380,32 @@ fn runs_list(
                 .ghost()
                 .selected(is_selected)
                 .w_full()
-                .px_2()
-                .py_2()
+                .h(px(ACTIONS_LIST_ROW_HEIGHT))
+                .px_1()
                 .on_click(cx.listener(move |this, _, _, cx| {
                     this.select_workflow_run(id, cx);
                 }))
                 .child(
                     div()
                         .flex()
-                        .items_start()
+                        .items_center()
                         .gap_2()
                         .w_full()
+                        .h_full()
                         .min_w_0()
+                        .overflow_hidden()
+                        .py_1()
                         .text_left()
-                        .child(status_dot(status_color).mt(px(4.)))
+                        .child(status_dot(status_color))
                         .child(
                             div()
                                 .flex()
                                 .flex_col()
+                                .justify_center()
                                 .gap_2()
                                 .flex_1()
                                 .min_w_0()
+                                .overflow_hidden()
                                 .text_left()
                                 .child(
                                     div()

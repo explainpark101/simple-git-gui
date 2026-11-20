@@ -27,6 +27,11 @@ pub fn open_confirm(
     danger: bool,
     on_ok: impl Fn(&ClickEvent, &mut Window, &mut App) -> bool + 'static,
 ) {
+    // Rapid re-clicks on the same confirm trigger must not stack modals.
+    if window.has_active_dialog(cx) {
+        return;
+    }
+
     let title = title.into();
     let description = description.into();
     let ok_text = ok_text.into();
@@ -82,6 +87,10 @@ pub fn open_busy_confirm(
     ok_icon: AssetIcon,
     work: impl Fn(&mut AppView, &mut Window, &mut Context<AppView>) + 'static,
 ) {
+    if window.has_active_dialog(cx) {
+        return;
+    }
+
     let title = title.into();
     let description = description.into();
     let cancel_text = cancel_text.into();
@@ -122,6 +131,10 @@ pub fn open_update_confirm(
     later_text: impl Into<SharedString>,
     skip_version: String,
 ) {
+    if window.has_active_dialog(cx) {
+        return;
+    }
+
     let title = title.into();
     let description = description.into();
     let ok = UpdatePromptDownload::mount(cx, app.clone(), ok_text.into());
