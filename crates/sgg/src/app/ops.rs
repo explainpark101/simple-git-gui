@@ -942,6 +942,7 @@ impl AppView {
         }
         self.reload(cx);
         self.sync_auto_refresh(cx);
+        self.sync_window_title(window);
         self.set_ok_status(self.t().close_project);
         cx.notify();
     }
@@ -1094,6 +1095,7 @@ impl AppView {
                     this.busy = None;
                     this.fetch_prompted_root = None;
                     this.start_path = Some(absolute_path(path));
+                    this.sync_window_title(window);
                     this.reload(cx);
                     this.sync_auto_refresh(cx);
                     this.maybe_prompt_fetch(window, cx);

@@ -744,8 +744,38 @@ impl AppView {
                 this.check_for_updates(true, window, cx);
             });
         }
+        view.sync_window_title(window);
         window.focus(&focus_handle, cx);
         view
+    }
+
+    /// OS window title: `{project} — simple-git-gui`, or just the app name.
+    fn window_title(&self) -> String {
+        const APP: &str = "simple-git-gui";
+        let root = if self.has_repo() {
+            Some(self.repo_root())
+        } else {
+            self.start_path.clone()
+        };
+        root.as_ref()
+            .and_then(|p| p.file_name())
+            .and_then(|n| n.to_str())
+            .filter(|n| !n.is_empty())
+            .map(|name| format!("{name} — {APP}"))
+            .unwrap_or_else(|| APP.to_string())
+    }
+
+    pub(super) fn sync_window_title(&self, window: &mut Window) {
+        window.set_window_title(&self.window_title());
+    }
+
+    fn sync_window_title_from_cx(&self, cx: &mut Context<Self>) {
+        let title = self.window_title();
+        if let Some(handle) = cx.active_window() {
+            let _ = cx.update_window(handle, |_root, window, _cx| {
+                window.set_window_title(&title);
+            });
+        }
     }
 
     pub(super) fn has_repo(&self) -> bool {
@@ -914,6 +944,7 @@ impl AppView {
             self.clear_blame_state();
             self.error = None;
             self.status_line = self.t().no_folder_open.into();
+            self.sync_window_title_from_cx(cx);
             cx.notify();
             return;
         };
@@ -1031,6 +1062,7 @@ impl AppView {
                 self.status_line = self.t().no_folder_open.into();
             }
         }
+        self.sync_window_title_from_cx(cx);
         cx.notify();
     }
 
@@ -1402,6 +1434,7 @@ impl AppView {
         self.fetch_prompted_root = None;
         self.start_path = Some(absolute_path(path));
         self.page = AppPage::Git;
+        self.sync_window_title_from_cx(cx);
         self.reload(cx);
         self.sync_auto_refresh(cx);
         cx.notify();
