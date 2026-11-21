@@ -83,7 +83,8 @@ pub fn list_history(
     rev: HistoryRevSpec<'_>,
 ) -> Result<Vec<HistoryCommit>, GitCliError> {
     let limit = format!("-n{HISTORY_LIMIT}");
-    let pretty = "--pretty=format:%H%x00%h%x00%s%x00%an%x00%ae%x00%cr%x00%P";
+    // Absolute stamp matches Zed Git Graph ("21 Nov 2026 21:52").
+    let pretty = "--pretty=format:%H%x00%h%x00%s%x00%an%x00%ae%x00%cd%x00%P";
     let mut args: Vec<&str> = vec!["log"];
     match rev {
         HistoryRevSpec::All => {
@@ -99,6 +100,7 @@ pub fn list_history(
         }
     }
     args.push("--topo-order");
+    args.push("--date=format:%d %b %Y %H:%M");
     args.push(&limit);
     args.push(pretty);
     let raw = run_git(repo, &args)?;

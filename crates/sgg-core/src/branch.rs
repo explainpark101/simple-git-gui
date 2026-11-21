@@ -12,10 +12,12 @@ impl RepoState {
             let (branch, _) = branch?;
             let name = branch.name()?.unwrap_or("").to_string();
             let (upstream, ahead, behind) = self.local_tracking(&branch, &name)?;
+            let tip_oid = branch.get().target().map(|oid| oid.to_string());
             out.push(BranchInfo {
                 name,
                 is_head: branch.is_head(),
                 is_remote: false,
+                tip_oid,
                 upstream,
                 ahead,
                 behind,
@@ -24,10 +26,12 @@ impl RepoState {
         for branch in self.repo.branches(Some(BranchType::Remote))? {
             let (branch, _) = branch?;
             let name = branch.name()?.unwrap_or("").to_string();
+            let tip_oid = branch.get().target().map(|oid| oid.to_string());
             out.push(BranchInfo {
                 name,
                 is_head: false,
                 is_remote: true,
+                tip_oid,
                 upstream: None,
                 ahead: 0,
                 behind: 0,

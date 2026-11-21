@@ -226,6 +226,8 @@ pub struct AppView {
     pub(super) history_commits: Vec<HistoryCommit>,
     /// Lane layout for the History list graph gutter (Zed-style).
     pub(super) history_graph: HistoryGraph,
+    /// Graph accent index → branch tip names (for hover labels).
+    pub(super) history_graph_color_branches: HashMap<usize, Vec<String>>,
     /// Full oid of `HEAD` (parent of the uncommitted WIP graph row).
     pub(super) history_head_oid: Option<String>,
     pub(super) history_selected: Option<String>,
@@ -237,8 +239,13 @@ pub struct AppView {
     /// Search box in the History graph branch-filter panel.
     pub(super) history_branch_filter_input: Entity<InputState>,
     _history_branch_filter_sub: Option<Subscription>,
+    /// Commit search (message / author / oid) under the History table header.
+    pub(super) history_search_input: Entity<InputState>,
+    _history_search_sub: Option<Subscription>,
     /// Cog panel open: pick which branches appear in the graph.
     pub(super) history_branch_filter_open: bool,
+    /// Tip oid → branch names (for description badges).
+    pub(super) history_oid_branches: HashMap<String, Vec<String>>,
     /// History file opened in the preview pane (diff or blob at commit).
     pub(super) history_file_preview: Option<HistoryFilePreview>,
     /// Git Changes preview: working-tree file vs Diff.
@@ -439,6 +446,9 @@ impl AppView {
         let history_branch_filter_input = cx.new(|cx| {
             InputState::new(window, cx).placeholder(t.history_branch_filter_placeholder)
         });
+        let history_search_input = cx.new(|cx| {
+            InputState::new(window, cx).placeholder(t.history_search_placeholder)
+        });
         let file_op_input =
             cx.new(|cx| InputState::new(window, cx).placeholder(t.file_op_placeholder));
         let remote_name_input =
@@ -602,6 +612,7 @@ impl AppView {
             show_diff_line_background: prefs.show_diff_line_background,
             history_commits: Vec::new(),
             history_graph: HistoryGraph::default(),
+            history_graph_color_branches: HashMap::new(),
             history_head_oid: None,
             history_selected: None,
             history_detail: None,
@@ -609,7 +620,10 @@ impl AppView {
             history_graph_excluded: HashSet::new(),
             history_branch_filter_input,
             _history_branch_filter_sub: None,
+            history_search_input,
+            _history_search_sub: None,
             history_branch_filter_open: false,
+            history_oid_branches: HashMap::new(),
             history_file_preview: None,
             changes_file_view_mode: ChangesFileViewMode::default(),
             changes_diff_layout: HistoryDiffLayout::default(),
@@ -742,6 +756,7 @@ impl AppView {
         view.wire_status_color_pickers(window, cx);
         view.wire_branch_search(cx);
         view.wire_history_branch_filter(cx);
+        view.wire_history_search(cx);
         view.wire_settings_search(cx);
         view.wire_font_search_inputs(cx);
         view.ensure_system_fonts(cx);
@@ -1471,6 +1486,15 @@ impl AppView {
         cx.notify();
     }
 
+    /// Spotlight-style palette for recent projects / typed paths.
+    pub(super) fn open_recent_projects_picker(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        super::dialogs::open_recent_projects_picker(window, cx);
+    }
+
     pub(super) fn set_editor_preset(&mut self, preset: EditorPreset, cx: &mut Context<Self>) {
         self.preferred_editor.preset = preset;
         self.sync_custom_command_from_input(cx);
@@ -1516,6 +1540,9 @@ impl AppView {
         });
         self.history_branch_filter_input.update(cx, |input, cx| {
             input.set_placeholder(t.history_branch_filter_placeholder, window, cx);
+        });
+        self.history_search_input.update(cx, |input, cx| {
+            input.set_placeholder(t.history_search_placeholder, window, cx);
         });
         self.preview_input.update(cx, |input, cx| {
             input.set_placeholder(t.preview_placeholder, window, cx);
@@ -1671,6 +1698,15 @@ impl AppView {
                     cx.notify();
                 }
             }));
+    }
+
+    fn wire_history_search(&mut self, cx: &mut Context<Self>) {
+        let input = self.history_search_input.clone();
+        self._history_search_sub = Some(cx.subscribe(&input, |_, _, event: &InputEvent, cx| {
+            if matches!(event, InputEvent::Change) {
+                cx.notify();
+            }
+        }));
     }
 
     fn wire_font_search_inputs(&mut self, cx: &mut Context<Self>) {
@@ -1850,6 +1886,8 @@ impl AppView {
     pub(super) fn clear_history_state(&mut self) {
         self.history_commits.clear();
         self.history_graph = HistoryGraph::default();
+        self.history_graph_color_branches.clear();
+        self.history_oid_branches.clear();
         self.history_head_oid = None;
         self.history_selected = None;
         self.history_detail = None;
@@ -1912,6 +1950,67 @@ impl AppView {
             parents: c.parents.clone(),
         }));
         self.history_graph = build_history_graph(&inputs, GRAPH_ACCENT_COUNT);
+
+        // Map each graph accent to the branch tip(s) that currently sit on it.
+        let mut oid_to_color: HashMap<&str, usize> = HashMap::new();
+        for c in &self.history_graph.commits {
+            oid_to_color.insert(c.oid.as_str(), c.color_idx);
+        }
+        let mut color_branches: HashMap<usize, Vec<String>> = HashMap::new();
+        if let Some(snapshot) = self.snapshot.as_ref() {
+            for branch in &snapshot.branches {
+                if self.history_graph_excluded.contains(&branch.name) {
+                    continue;
+                }
+                let Some(oid) = branch.tip_oid.as_deref() else {
+                    continue;
+                };
+                let Some(&color_idx) = oid_to_color.get(oid) else {
+                    continue;
+                };
+                let names = color_branches.entry(color_idx).or_default();
+                if !names.iter().any(|n| n == &branch.name) {
+                    names.push(branch.name.clone());
+                }
+            }
+        }
+        for names in color_branches.values_mut() {
+            names.sort();
+        }
+        self.history_graph_color_branches = color_branches;
+
+        // Tip oid → branch names for description badges (HEAD first).
+        let head_name = self
+            .snapshot
+            .as_ref()
+            .and_then(|s| s.head_branch.clone());
+        let mut oid_branches: HashMap<String, Vec<String>> = HashMap::new();
+        if let Some(snapshot) = self.snapshot.as_ref() {
+            for branch in &snapshot.branches {
+                if self.history_graph_excluded.contains(&branch.name) {
+                    continue;
+                }
+                let Some(oid) = branch.tip_oid.as_ref() else {
+                    continue;
+                };
+                let names = oid_branches.entry(oid.clone()).or_default();
+                if !names.iter().any(|n| n == &branch.name) {
+                    names.push(branch.name.clone());
+                }
+            }
+        }
+        for names in oid_branches.values_mut() {
+            names.sort_by(|a, b| {
+                let a_head = head_name.as_deref() == Some(a.as_str());
+                let b_head = head_name.as_deref() == Some(b.as_str());
+                match (a_head, b_head) {
+                    (true, false) => std::cmp::Ordering::Less,
+                    (false, true) => std::cmp::Ordering::Greater,
+                    _ => a.cmp(b),
+                }
+            });
+        }
+        self.history_oid_branches = oid_branches;
     }
 
     pub(super) fn clear_blame_state(&mut self) {

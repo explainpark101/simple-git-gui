@@ -418,4 +418,82 @@ mod tests {
         assert!(g.max_lanes >= 2);
         assert!(!g.lines.is_empty());
     }
+
+    #[test]
+    fn merge_side_branch_line_ends_on_tip_with_merge_curve() {
+        // Matches the "floating tip" case: merge → feature tip on the next row.
+        let commits = vec![
+            GraphCommitInput {
+                oid: "merge".into(),
+                parents: vec!["main1".into(), "feat2".into()],
+            },
+            GraphCommitInput {
+                oid: "feat2".into(),
+                parents: vec!["feat1".into()],
+            },
+            GraphCommitInput {
+                oid: "feat1".into(),
+                parents: vec!["base".into()],
+            },
+            GraphCommitInput {
+                oid: "main1".into(),
+                parents: vec!["base".into()],
+            },
+            GraphCommitInput {
+                oid: "base".into(),
+                parents: vec![],
+            },
+        ];
+        let g = build_history_graph(&commits, 8);
+        assert_eq!(g.commits[1].oid, "feat2");
+        assert_eq!(g.commits[1].lane, 1);
+
+        let merge_line = g
+            .lines
+            .iter()
+            .find(|l| l.full_interval.start == 0 && l.full_interval.end == 1)
+            .expect("merge→tip line");
+        assert!(matches!(
+            merge_line.segments.as_slice(),
+            [CommitLineSegment::Curve {
+                to_column: 1,
+                on_row: 1,
+                curve_kind: CurveKind::Merge,
+            }]
+        ));
+
+        let checkout_line = g
+            .lines
+            .iter()
+            .find(|l| {
+                l.segments.iter().any(|s| {
+                    matches!(
+                        s,
+                        CommitLineSegment::Curve {
+                            curve_kind: CurveKind::Checkout,
+                            ..
+                        }
+                    )
+                })
+            })
+            .expect("feature checkout into base");
+        let segs = &checkout_line.segments;
+        assert!(
+            matches!(
+                segs.last(),
+                Some(CommitLineSegment::Curve {
+                    curve_kind: CurveKind::Checkout,
+                    ..
+                })
+            ),
+            "checkout must be the final segment so the painter can seal the vertical"
+        );
+        if let Some(CommitLineSegment::Straight { to_row }) = segs.first() {
+            assert_eq!(
+                *to_row,
+                checkout_line.full_interval.end.saturating_sub(1),
+                "straight must stop on the row above the checkout curve"
+            );
+        }
+    }
 }

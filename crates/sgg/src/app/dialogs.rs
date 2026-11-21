@@ -1,12 +1,15 @@
 //! Confirm dialogs with pointer cursors on footer buttons.
 
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use gpui_kit::assets::IconName as AssetIcon;
+use gpui_kit::base::StyledExt as _;
 use gpui_kit::component::WindowExt as _;
 use gpui_kit::component::button::ButtonVariants as _;
+use gpui_kit::component::command::{Command, CommandItem, CommandState};
 use gpui_kit::component::dialog::{DialogClose, DialogFooter};
-use gpui_kit::component::Disableable as _;
+use gpui_kit::component::{ActiveTheme as _, Disableable as _, Icon, Sizable as _, h_flex};
 use gpui_kit::*;
 
 use super::busy::BusyKind;
@@ -366,4 +369,206 @@ impl Render for FetchPromptSkip {
                 window.close_dialog(cx);
             })
     }
+}
+
+/// Spotlight / Raycast-style palette: search recent repos or type a path to open.
+pub fn open_recent_projects_picker(window: &mut Window, cx: &mut Context<AppView>) {
+    if window.has_active_dialog(cx) {
+        return;
+    }
+
+    let view = cx.entity();
+    let paths = view.read(cx).recent_repos.clone();
+    let t = view.read(cx).t();
+    let title = t.recent_projects_picker_title;
+    let placeholder = t.recent_projects_picker_placeholder;
+    let open_path_fmt = t.recent_projects_picker_open_path;
+    let empty_label = t.recent_projects_picker_empty;
+    let hint = t.recent_projects_picker_hint;
+    let state = cx.new(|cx| CommandState::new(window, cx));
+
+    window.open_dialog(cx, move |dialog, window, cx| {
+        state.update(cx, |state, cx| state.focus(window, cx));
+
+        let state = state.clone();
+        let view = view.clone();
+        let paths = paths.clone();
+        let open_path_fmt = open_path_fmt;
+        let empty_label = empty_label;
+        let title = title;
+        let hint = hint;
+
+        dialog
+            .close_button(false)
+            .overlay_closable(true)
+            .margin_top(px(96.))
+            .w(px(560.))
+            .p_0()
+            .content(move |content, _, cx| {
+                let query = state.read(cx).query(cx);
+                let trimmed = query.trim().to_string();
+                let has_typed_path = !trimmed.is_empty();
+
+                let mut items: Vec<CommandItem> = paths
+                    .iter()
+                    .map(|path| recent_picker_item(path))
+                    .collect();
+
+                if has_typed_path {
+                    let open_label = open_path_fmt.replace("{path}", &trimmed);
+                    items.push(
+                        CommandItem::new()
+                            .label(open_label)
+                            .keywords([trimmed.clone()])
+                            .icon(AssetIcon::FolderOpen),
+                    );
+                }
+
+                let state_confirm = state.clone();
+                let view_confirm = view.clone();
+                let paths_confirm = paths.clone();
+                let empty_label = empty_label;
+
+                content.child(
+                    Command::new(&state)
+                        .bordered(false)
+                        .placeholder(placeholder)
+                        .max_h(px(360.))
+                        .items(items)
+                        .empty(move |_, _, cx| {
+                            div()
+                                .px_4()
+                                .py_6()
+                                .text_sm()
+                                .text_color(cx.theme().muted_foreground)
+                                .text_center()
+                                .child(empty_label)
+                        })
+                        .header(move |_, _, cx| {
+                            h_flex()
+                                .justify_between()
+                                .items_center()
+                                .px_3()
+                                .py_2()
+                                .border_b_1()
+                                .border_color(cx.theme().border)
+                                .child(
+                                    div()
+                                        .text_sm()
+                                        .font_semibold()
+                                        .child(title),
+                                )
+                        })
+                        .footer(move |_, _, cx| {
+                            h_flex()
+                                .px_3()
+                                .py_2()
+                                .border_t_1()
+                                .border_color(cx.theme().border)
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(cx.theme().muted_foreground)
+                                        .child(hint),
+                                )
+                        })
+                        .on_confirm(move |index, window, cx| {
+                            if index.section != 0 {
+                                return;
+                            }
+                            let query = state_confirm.read(cx).query(cx);
+                            let typed = query.trim().to_string();
+                            let open_row = if typed.is_empty() {
+                                None
+                            } else {
+                                Some(paths_confirm.len())
+                            };
+
+                            let path = if open_row == Some(index.row) {
+                                expand_typed_repo_path(&typed)
+                            } else {
+                                match paths_confirm.get(index.row) {
+                                    Some(p) => PathBuf::from(p),
+                                    None => return,
+                                }
+                            };
+
+                            window.close_dialog(cx);
+                            view_confirm.update(cx, |this, cx| {
+                                this.open_repo_path(path, cx);
+                            });
+                        }),
+                )
+            })
+    });
+}
+
+fn recent_picker_item(path: &str) -> CommandItem {
+    let name = Path::new(path)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or(path)
+        .to_string();
+    let path_owned = path.to_string();
+    let name_for_row = name.clone();
+    let path_for_row = path_owned.clone();
+
+    CommandItem::new()
+        .label(name)
+        .keywords([path_owned])
+        .child(move |_, cx| {
+            h_flex()
+                .flex_1()
+                .gap_2()
+                .items_center()
+                .min_w_0()
+                .child(
+                    Icon::new(AssetIcon::Folder)
+                        .small()
+                        .text_color(cx.theme().muted_foreground),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap_2()
+                        .min_w_0()
+                        .flex_1()
+                        .child(
+                            div()
+                                .text_sm()
+                                .line_height(relative(1.35))
+                                .overflow_hidden()
+                                .text_ellipsis()
+                                .whitespace_nowrap()
+                                .child(name_for_row.clone()),
+                        )
+                        .child(
+                            div()
+                                .text_xs()
+                                .line_height(relative(1.35))
+                                .text_color(cx.theme().muted_foreground)
+                                .overflow_hidden()
+                                .text_ellipsis()
+                                .whitespace_nowrap()
+                                .child(path_for_row.clone()),
+                        ),
+                )
+        })
+}
+
+fn expand_typed_repo_path(raw: &str) -> PathBuf {
+    let raw = raw.trim();
+    if raw == "~" {
+        return dirs::home_dir().unwrap_or_else(|| PathBuf::from("~"));
+    }
+    if let Some(rest) = raw
+        .strip_prefix("~/")
+        .or_else(|| raw.strip_prefix("~\\"))
+    {
+        if let Some(home) = dirs::home_dir() {
+            return home.join(rest);
+        }
+    }
+    PathBuf::from(raw)
 }

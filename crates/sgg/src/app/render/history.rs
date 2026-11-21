@@ -7,13 +7,14 @@ use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::input::Input;
 use gpui_kit::component::menu::ContextMenuExt as _;
 use gpui_kit::component::scroll::ScrollableElement as _;
+use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{
     ActiveTheme as _, Icon, Selectable as _, Sizable as _, h_resizable, resizable_panel,
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use crate::app::busy::BusyKind;
 use crate::app::i18n::UiText;
@@ -27,26 +28,47 @@ use sgg_core::{is_uncommitted_oid, HistoryFileChange, ResetMode, UNCOMMITTED_OID
 pub fn render(view: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
     let t = view.t();
     let selected = view.history_selected.clone();
-    let commits = view.history_commits.clone();
+    let search_q = view
+        .history_search_input
+        .read(cx)
+        .value()
+        .to_string()
+        .to_lowercase();
+    let commits: Vec<_> = view
+        .history_commits
+        .iter()
+        .cloned()
+        .enumerate()
+        .filter(|(_, c)| commit_matches_search(c, &search_q))
+        .collect();
     let graph = view.history_graph.clone();
+    let color_branches = view.history_graph_color_branches.clone();
+    let oid_branches = view.history_oid_branches.clone();
+    let head_oid = view.history_head_oid.clone();
+    let head_branch = view
+        .snapshot
+        .as_ref()
+        .and_then(|s| s.head_branch.clone());
     let bg = cx.theme().background;
     let muted = cx.theme().muted_foreground;
-    let has_uncommitted = view.history_has_uncommitted();
+    let graph_has_wip = view.history_has_uncommitted();
+    let has_uncommitted = graph_has_wip
+        && (search_q.is_empty()
+            || t.history_uncommitted.to_lowercase().contains(&search_q)
+            || "wip".contains(search_q.as_str()));
     let history_rev = view.history_rev.clone();
     let preview_open = view.history_file_preview.is_some();
     let graph_w = git_graph::graph_width(graph.max_lanes);
-    // Min width: keep the "History" / "히스토리" header title on one line
-    // (px_3*2 + gap_2 + refresh control + title advance), and never narrower
-    // than the graph gutter.
+    // Table needs room for Graph + Description + Date + Author + Commit.
     let list_min = history_list_min_width(t.tab_history, graph_w);
-    let list_default = (graph_w + px(300.)).max(px(320.)).max(list_min);
+    let list_default = (graph_w + px(560.)).max(px(520.)).max(list_min);
 
     // Nest like git-work: outer split is list | right. File preview gets its own
     // inner h_resizable so dragging that handle cannot cascade into the graph list
     // (gpui-base steals from earlier siblings once the middle panel hits min size).
     let list_panel = resizable_panel()
         .size(list_default)
-        .size_range(list_min..px(640.))
+        .size_range(list_min..px(1400.))
         .child(
             div()
                 .id("history-list")
@@ -125,13 +147,29 @@ pub fn render(view: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
                 .when(view.history_branch_filter_open, |this| {
                     this.child(history_branch_filter_panel(view, t, cx))
                 })
+                // Column headers (Zed Git Graph).
+                .child(history_table_header(t, graph_w, cx))
+                // Search under the header.
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .px_2()
+                        .py_1()
+                        .border_b_1()
+                        .border_color(cx.theme().border)
+                        .child(
+                            Input::new(&view.history_search_input)
+                                .cleanable(true)
+                                .prefix(Icon::new(AssetIcon::Search).small()),
+                        ),
+                )
                 .child(
                     div()
                         .flex_1()
                         .min_h_0()
                         .overflow_y_scrollbar()
-                        .px_1()
-                        .py_1()
                         .when(commits.is_empty() && !has_uncommitted, |this| {
                             this.child(
                                 div()
@@ -144,147 +182,77 @@ pub fn render(view: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
                         })
                         .when(has_uncommitted, |this| {
                             let row_graph = graph.clone();
+                            let row_colors = color_branches.clone();
                             let wip_selected =
                                 selected.as_deref() == Some(UNCOMMITTED_OID);
-                            this.child(
-                                display_btn("hist:uncommitted")
-                                    .ghost()
-                                    .selected(wip_selected)
-                                    .w_full()
-                                    .h(px(git_graph::ROW_HEIGHT))
-                                    .px_1()
-                                    .tooltip(t.tip_history_uncommitted)
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        this.select_history_commit(
-                                            UNCOMMITTED_OID.to_string(),
-                                            window,
-                                            cx,
-                                        );
-                                    }))
-                                    .child(
-                                        div()
-                                            .flex()
-                                            .items_stretch()
-                                            .gap_2()
-                                            .w_full()
-                                            .h_full()
-                                            .min_w_0()
-                                            .overflow_hidden()
-                                            .child(git_graph::row_canvas(
-                                                row_graph, 0, bg, muted,
-                                            ))
-                                            .child(
-                                                div()
-                                                    .flex()
-                                                    .flex_col()
-                                                    .justify_center()
-                                                    .gap_1()
-                                                    .flex_1()
-                                                    .min_w_0()
-                                                    .overflow_hidden()
-                                                    .py_1()
-                                                    .pr_2()
-                                                    .text_left()
-                                                    .child(
-                                                        div()
-                                                            .text_sm()
-                                                            .line_height(relative(1.4))
-                                                            .text_color(
-                                                                cx.theme().muted_foreground,
-                                                            )
-                                                            .whitespace_nowrap()
-                                                            .overflow_hidden()
-                                                            .text_ellipsis()
-                                                            .child(t.history_uncommitted),
-                                                    )
-                                                    .child(
-                                                        div()
-                                                            .text_xs()
-                                                            .line_height(relative(1.4))
-                                                            .text_color(
-                                                                cx.theme().muted_foreground,
-                                                            )
-                                                            .whitespace_nowrap()
-                                                            .overflow_hidden()
-                                                            .text_ellipsis()
-                                                            .child(t.tip_history_uncommitted),
-                                                    ),
-                                            ),
-                                    ),
-                            )
+                            this.child(history_table_row(
+                                "hist:uncommitted",
+                                0,
+                                row_graph,
+                                row_colors,
+                                bg,
+                                muted,
+                                wip_selected,
+                                t.history_uncommitted.to_string(),
+                                Vec::new(),
+                                t.history_uncommitted_meta.to_string(),
+                                String::new(),
+                                "WIP".into(),
+                                t.tip_history_uncommitted.to_string(),
+                                cx.listener(|this, _, window, cx| {
+                                    this.select_history_commit(
+                                        UNCOMMITTED_OID.to_string(),
+                                        window,
+                                        cx,
+                                    );
+                                }),
+                                cx,
+                            ))
                         })
-                        .children(commits.into_iter().enumerate().map(|(i, c)| {
+                        .children(commits.into_iter().map(|(orig_i, c)| {
                             let oid = c.full_oid.clone();
                             let selected = selected.as_deref() == Some(oid.as_str());
                             let row_graph = graph.clone();
-                            let row = if has_uncommitted { i + 1 } else { i };
-                            let meta = format!("{} · {} · {}", c.short_oid, c.author, c.when);
-                            // Two-line hover detail: subject, then meta.
-                            let tip = format!("{}\n{meta}", c.subject);
-                            display_btn(SharedString::from(format!("hist:{}", c.short_oid)))
-                                .ghost()
-                                .selected(selected)
-                                .w_full()
-                                // Fixed row height; graph canvas stretches via h_full so
-                                // lane strokes meet across adjacent rows with no gaps.
-                                .h(px(git_graph::ROW_HEIGHT))
-                                .px_1()
-                                .tooltip(tip)
-                                .on_click(cx.listener(move |this, _, window, cx| {
+                            let row_colors = color_branches.clone();
+                            // Graph row index must follow the unfiltered list order.
+                            let row = if graph_has_wip { orig_i + 1 } else { orig_i };
+                            let mut badges = oid_branches
+                                .get(&c.full_oid)
+                                .cloned()
+                                .unwrap_or_default();
+                            if head_oid.as_deref() == Some(c.full_oid.as_str()) {
+                                if let Some(hb) = head_branch.as_ref() {
+                                    let head_label = format!("HEAD -> {hb}");
+                                    badges.retain(|b| b != hb);
+                                    badges.insert(0, head_label);
+                                } else if !badges.iter().any(|b| b.starts_with("HEAD")) {
+                                    badges.insert(0, "HEAD".into());
+                                }
+                            }
+                            let tip = format!(
+                                "{}\n{} · {} · {}",
+                                c.subject, c.short_oid, c.author, c.when
+                            );
+                            history_table_row(
+                                SharedString::from(format!("hist:{}", c.short_oid)),
+                                row,
+                                row_graph,
+                                row_colors,
+                                bg,
+                                muted,
+                                selected,
+                                c.subject.clone(),
+                                badges,
+                                c.when.clone(),
+                                c.author.clone(),
+                                c.short_oid.clone(),
+                                tip,
+                                cx.listener(move |this, _, window, cx| {
                                     this.select_history_commit(oid.clone(), window, cx);
-                                }))
-                                .child(
-                                    div()
-                                        .flex()
-                                        .items_stretch()
-                                        .gap_2()
-                                        .w_full()
-                                        .h_full()
-                                        .min_w_0()
-                                        .overflow_hidden()
-                                        .child(git_graph::row_canvas(
-                                            row_graph, row, bg, muted,
-                                        ))
-                                        .child(
-                                            div()
-                                                .flex()
-                                                .flex_col()
-                                                .justify_center()
-                                                // Keep subject and meta on separate lines
-                                                // with enough gap so glyphs never collide.
-                                                .gap_1()
-                                                .flex_1()
-                                                .min_w_0()
-                                                .overflow_hidden()
-                                                .py_1()
-                                                .pr_2()
-                                                .text_left()
-                                                .child(
-                                                    div()
-                                                        .text_sm()
-                                                        .line_height(relative(1.4))
-                                                        .text_left()
-                                                        .whitespace_nowrap()
-                                                        .overflow_hidden()
-                                                        .text_ellipsis()
-                                                        .child(c.subject.clone()),
-                                                )
-                                                .child(
-                                                    div()
-                                                        .text_xs()
-                                                        .line_height(relative(1.4))
-                                                        .text_color(cx.theme().muted_foreground)
-                                                        .text_left()
-                                                        // Narrow panes: ellipsis instead of
-                                                        // wrapping (which clipped under fixed height).
-                                                        .whitespace_nowrap()
-                                                        .overflow_hidden()
-                                                        .text_ellipsis()
-                                                        .child(meta),
-                                                ),
-                                        ),
-                                )
-                                .into_any_element()
+                                }),
+                                cx,
+                            )
+                            .into_any_element()
                         })),
                 ),
         );
@@ -323,6 +291,230 @@ pub fn render(view: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
             .child(resizable_panel().child(detail))
             .into_any_element()
     }
+}
+
+fn commit_matches_search(c: &sgg_core::HistoryCommit, q: &str) -> bool {
+    if q.is_empty() {
+        return true;
+    }
+    c.subject.to_lowercase().contains(q)
+        || c.author.to_lowercase().contains(q)
+        || c.short_oid.to_lowercase().contains(q)
+        || c.full_oid.to_lowercase().contains(q)
+}
+
+fn history_table_header(
+    t: UiText,
+    graph_w: Pixels,
+    cx: &mut Context<AppView>,
+) -> impl IntoElement {
+    let muted = cx.theme().muted_foreground;
+    div()
+        .flex()
+        .items_center()
+        .gap_2()
+        .px_2()
+        .py_1()
+        .border_b_1()
+        .border_color(cx.theme().border)
+        .text_xs()
+        .text_color(muted)
+        .child(
+            div()
+                .w(graph_w)
+                .flex_shrink_0()
+                .whitespace_nowrap()
+                .child(t.history_col_graph),
+        )
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .whitespace_nowrap()
+                .overflow_hidden()
+                .text_ellipsis()
+                .child(t.history_col_description),
+        )
+        .child(
+            div()
+                .w(px(148.))
+                .flex_shrink_0()
+                .whitespace_nowrap()
+                .child(t.history_col_date),
+        )
+        .child(
+            div()
+                .w(px(128.))
+                .flex_shrink_0()
+                .whitespace_nowrap()
+                .child(t.history_col_author),
+        )
+        .child(
+            div()
+                .w(px(72.))
+                .flex_shrink_0()
+                .whitespace_nowrap()
+                .child(t.history_col_commit),
+        )
+}
+
+fn history_branch_badge(label: String, is_head: bool, cx: &Context<AppView>) -> impl IntoElement {
+    let accent = cx.theme().accent;
+    div()
+        .flex()
+        .items_center()
+        .gap_1()
+        .px_1()
+        .py_0()
+        .rounded(px(4.))
+        .bg(if is_head {
+            hsla(accent.h, accent.s, accent.l, 0.18)
+        } else {
+            cx.theme().secondary
+        })
+        .border_1()
+        .border_color(cx.theme().border)
+        .child(
+            div()
+                .text_xs()
+                .line_height(relative(1.2))
+                .text_color(if is_head {
+                    accent
+                } else {
+                    cx.theme().muted_foreground
+                })
+                .whitespace_nowrap()
+                .child(label),
+        )
+}
+
+fn author_avatar(name: &str, cx: &Context<AppView>) -> impl IntoElement {
+    let initial = name
+        .chars()
+        .next()
+        .map(|c| c.to_uppercase().to_string())
+        .unwrap_or_else(|| "?".into());
+    div()
+        .flex()
+        .items_center()
+        .justify_center()
+        .size(px(18.))
+        .rounded_full()
+        .flex_shrink_0()
+        .bg(cx.theme().secondary)
+        .child(
+            div()
+                .text_xs()
+                .text_color(cx.theme().muted_foreground)
+                .child(initial),
+        )
+}
+
+fn history_table_row(
+    id: impl Into<ElementId>,
+    row: usize,
+    graph: sgg_core::HistoryGraph,
+    color_branches: HashMap<usize, Vec<String>>,
+    bg: Hsla,
+    muted: Hsla,
+    selected: bool,
+    subject: String,
+    badges: Vec<String>,
+    date: String,
+    author: String,
+    short_oid: String,
+    tip: String,
+    on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+    cx: &mut Context<AppView>,
+) -> impl IntoElement {
+    let tip_subject = tip.clone();
+    display_btn(id)
+        .ghost()
+        .selected(selected)
+        .w_full()
+        .h(px(git_graph::ROW_HEIGHT))
+        .px_1()
+        .on_click(on_click)
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap_2()
+                .w_full()
+                .h_full()
+                .min_w_0()
+                .overflow_hidden()
+                .px_1()
+                .child(git_graph::row_canvas(graph, row, bg, muted, color_branches))
+                .child(
+                    div()
+                        .id(SharedString::from(format!("hist-desc:{row}")))
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .flex_1()
+                        .min_w_0()
+                        .overflow_hidden()
+                        .tooltip(move |window, cx| {
+                            Tooltip::new(tip_subject.clone()).build(window, cx)
+                        })
+                        .children(badges.into_iter().map(|label| {
+                            let is_head = label.starts_with("HEAD");
+                            history_branch_badge(label, is_head, cx).into_any_element()
+                        }))
+                        .child(
+                            div()
+                                .text_sm()
+                                .line_height(relative(1.25))
+                                .whitespace_nowrap()
+                                .overflow_hidden()
+                                .text_ellipsis()
+                                .min_w_0()
+                                .child(subject),
+                        ),
+                )
+                .child(
+                    div()
+                        .w(px(148.))
+                        .flex_shrink_0()
+                        .text_xs()
+                        .text_color(cx.theme().muted_foreground)
+                        .whitespace_nowrap()
+                        .overflow_hidden()
+                        .text_ellipsis()
+                        .child(date),
+                )
+                .child(
+                    div()
+                        .w(px(128.))
+                        .flex_shrink_0()
+                        .flex()
+                        .items_center()
+                        .gap_1()
+                        .min_w_0()
+                        .when(!author.is_empty(), |this| {
+                            this.child(author_avatar(&author, cx)).child(
+                                div()
+                                    .text_xs()
+                                    .whitespace_nowrap()
+                                    .overflow_hidden()
+                                    .text_ellipsis()
+                                    .min_w_0()
+                                    .child(author),
+                            )
+                        }),
+                )
+                .child(
+                    div()
+                        .w(px(72.))
+                        .flex_shrink_0()
+                        .font_family("monospace")
+                        .text_xs()
+                        .text_color(cx.theme().muted_foreground)
+                        .whitespace_nowrap()
+                        .child(short_oid),
+                ),
+        )
 }
 
 /// Searchable checkbox list of branches included in the History graph.
@@ -402,13 +594,16 @@ fn history_list_min_width(title: &str, graph_w: Pixels) -> Pixels {
     const HEADER_PAD_X: f32 = 24.; // px_3 left + right
     const HEADER_GAP: f32 = 8.; // gap_2 between title and refresh
     const REFRESH_BTN: f32 = 32.; // small icon button
+    // Date + Author + Commit columns (Zed table).
+    const TABLE_FIXED: f32 = 148. + 128. + 72. + 24.;
     // Approximate default UI font advances (semibold body size).
     let title_w: f32 = title
         .chars()
         .map(|c| if c.is_ascii() { 8.5 } else { 14. })
         .sum();
     let header_min = px(HEADER_PAD_X + HEADER_GAP + REFRESH_BTN + title_w);
-    header_min.max(graph_w + px(8.))
+    let table_min = graph_w + px(TABLE_FIXED) + px(160.);
+    header_min.max(table_min)
 }
 
 fn detail_pane(view: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {

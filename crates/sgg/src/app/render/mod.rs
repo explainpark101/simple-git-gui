@@ -16,7 +16,7 @@ use gpui_kit::assets::IconName as AssetIcon;
 use gpui_kit::base::StyledExt as _;
 use gpui_kit::component::ActiveTheme as _;
 use gpui_kit::component::button::ButtonVariants as _;
-use gpui_kit::component::{h_resizable, resizable_panel, v_resizable};
+use gpui_kit::component::{Sizable as _, h_resizable, resizable_panel, v_resizable};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
@@ -24,7 +24,7 @@ use super::page::AppPage;
 use super::terminal::{TERMINAL_MAX_HEIGHT, TERMINAL_MIN_HEIGHT};
 use super::view::AppView;
 use crate::app::busy::BusyKind;
-use crate::app::widgets::{action_btn, icon_btn, list_row_btn, with_busy};
+use crate::app::widgets::{action_btn, display_btn, icon_btn, list_row_btn, with_busy};
 use crate::app::{
     ClosePreview, HistoryBack, HistoryForward, NewTerminalTab, SavePreview, ToggleTerminal,
 };
@@ -277,11 +277,29 @@ fn welcome(view: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
                     .gap_2()
                     .child(
                         div()
-                            .text_sm()
-                            .font_semibold()
-                            .text_left()
-                            .text_color(cx.theme().muted_foreground)
-                            .child(t.recent_projects),
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .gap_2()
+                            .w_full()
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .font_semibold()
+                                    .text_left()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(t.recent_projects),
+                            )
+                            .child(
+                                display_btn("welcome-recent-more")
+                                    .ghost()
+                                    .small()
+                                    .label(t.recent_projects_more)
+                                    .tooltip(t.tip_recent_projects_more)
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.open_recent_projects_picker(window, cx);
+                                    })),
+                            ),
                     )
                     .children(recent.into_iter().enumerate().map(|(i, path)| {
                         let label = recent_repo_label(&path);

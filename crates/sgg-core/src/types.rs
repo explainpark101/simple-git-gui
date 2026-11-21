@@ -22,6 +22,9 @@ pub struct BranchInfo {
     pub name: String,
     pub is_head: bool,
     pub is_remote: bool,
+    /// Tip commit oid (`None` if the ref does not resolve).
+    #[serde(default)]
+    pub tip_oid: Option<String>,
     /// Configured or inferred upstream (e.g. `origin/main`). `None` if no remote branch.
     pub upstream: Option<String>,
     /// Commits on this branch not in upstream (needs push). Meaningful when `upstream` is set.
