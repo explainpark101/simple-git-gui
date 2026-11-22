@@ -159,7 +159,7 @@ pub fn render(view: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
                 if view.preview_tabs.is_empty() {
                     pane_body(cx).flex_1().min_w_0().into_any_element()
                 } else {
-                    preview_pane::render(view, true, true, cx).into_any_element()
+                    preview_pane::render(cx.entity(), true, true, cx).into_any_element()
                 },
             ),
         )

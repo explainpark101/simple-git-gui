@@ -642,7 +642,7 @@ impl AppView {
     pub(super) fn toggle_stash_panel(&mut self, cx: &mut Context<Self>) {
         self.stash_panel_open = !self.stash_panel_open;
         self.persist_project_ui(cx);
-        cx.notify();
+        self.notify_changes(cx);
     }
 
     pub(super) fn confirm_stash_push(

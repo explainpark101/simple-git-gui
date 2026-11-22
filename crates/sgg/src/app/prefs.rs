@@ -166,6 +166,9 @@ pub struct AppPrefs {
     /// Shell used for new terminal tabs (Zed `terminal.shell`).
     #[serde(default)]
     pub terminal_shell: TerminalShellPrefs,
+    /// Which History table columns are visible (Description / Date / Author / Commit).
+    #[serde(default)]
+    pub history_columns: HistoryColumnsPrefs,
     /// Show git blame next to the preview caret line.
     #[serde(default = "default_true")]
     pub show_inline_blame: bool,
@@ -441,6 +444,7 @@ impl Default for AppPrefs {
             terminal_font_size: DEFAULT_TERMINAL_FONT_SIZE,
             terminal_line_height: DEFAULT_TERMINAL_LINE_HEIGHT,
             terminal_shell: TerminalShellPrefs::default(),
+            history_columns: HistoryColumnsPrefs::default(),
             show_inline_blame: true,
             show_diff_line_background: true,
             ui_font_family: String::new(),
@@ -450,6 +454,56 @@ impl Default for AppPrefs {
             stash_include_untracked: false,
             project_ui: HashMap::new(),
             settings_toc_open: true,
+        }
+    }
+}
+
+/// Visibility of History list columns (Graph is always shown).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct HistoryColumnsPrefs {
+    #[serde(default = "default_true")]
+    pub description: bool,
+    #[serde(default = "default_true")]
+    pub date: bool,
+    #[serde(default = "default_true")]
+    pub author: bool,
+    #[serde(default = "default_true")]
+    pub commit: bool,
+}
+
+impl Default for HistoryColumnsPrefs {
+    fn default() -> Self {
+        Self {
+            description: true,
+            date: true,
+            author: true,
+            commit: true,
+        }
+    }
+}
+
+impl HistoryColumnsPrefs {
+    /// Fixed-width columns (Date + Author + Commit) plus gap/padding budget.
+    pub fn fixed_width_px(&self) -> f32 {
+        let mut w = 24.;
+        if self.date {
+            w += 148.;
+        }
+        if self.author {
+            w += 128.;
+        }
+        if self.commit {
+            w += 72.;
+        }
+        w
+    }
+
+    /// Flex description column minimum when visible.
+    pub fn description_min_px(&self) -> f32 {
+        if self.description {
+            160.
+        } else {
+            0.
         }
     }
 }

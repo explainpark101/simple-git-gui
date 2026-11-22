@@ -5,6 +5,7 @@ mod commit_ai;
 mod dialogs;
 mod editor;
 mod files;
+mod git_panes;
 mod github_actions;
 mod github_pr;
 mod i18n;

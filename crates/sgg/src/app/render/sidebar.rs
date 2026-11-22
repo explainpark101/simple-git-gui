@@ -13,28 +13,61 @@ use gpui_kit::component::{
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{InteractiveElement as _, *};
-use sgg_core::{BranchInfo, RemoteInfo, RepoOperation};
+use sgg_core::RepoOperation;
 
 use crate::app::busy::BusyKind;
 use crate::app::i18n::UiText;
 use crate::app::ops::RemoteAction;
 use crate::app::progress::{ProgressState, PROGRESS_MAX_HEIGHT, PROGRESS_MIN_HEIGHT};
 use crate::app::remote_url::remote_browse_url;
+use crate::app::git_panes::{app_click, app_click_window};
 use crate::app::view::{AppView, BranchForm, RemoteForm, TagForm};
+use sgg_core::{BranchInfo, RemoteInfo};
 use crate::app::widgets::{
     action_btn, action_row, confirm_btn, display_btn, hoverable_switch, icon_btn, icon_danger_btn,
     list_row_btn, menu_item_with_icon, pane_body, pane_header, with_busy,
 };
 
-pub fn render(
-    view: &AppView,
-    branches: &[BranchInfo],
-    remotes: &[RemoteInfo],
-    cx: &mut Context<AppView>,
-) -> impl IntoElement {
-    let t = view.t();
+pub fn render(app: Entity<AppView>, cx: &mut App) -> impl IntoElement {
+    let (
+        sidebar_collapsed,
+        t,
+        branches,
+        remotes,
+        selected_remote,
+        branch_form,
+        remote_form,
+        remote_compact,
+        progress_collapsed,
+        progress_h,
+        busy,
+    ) = {
+        let view = app.read(cx);
+        (
+            view.sidebar_collapsed,
+            view.t(),
+            view
+                .snapshot
+                .as_ref()
+                .map(|s| s.branches.clone())
+                .unwrap_or_default(),
+            view
+                .snapshot
+                .as_ref()
+                .map(|s| s.remotes.clone())
+                .unwrap_or_default(),
+            view.selected_remote.clone(),
+            view.branch_form.clone(),
+            view.remote_form.clone(),
+            view.remote_actions_compact,
+            view.progress_collapsed,
+            view.progress_panel_height.clamp(PROGRESS_MIN_HEIGHT, PROGRESS_MAX_HEIGHT),
+            view.busy,
+        )
+    };
+    let app_toggle_sidebar = app.clone();
 
-    if view.sidebar_collapsed {
+    if sidebar_collapsed {
         return div()
             .flex()
             .flex_col()
@@ -47,25 +80,18 @@ pub fn render(
                 icon_btn("sidebar-expand", AssetIcon::PanelLeftOpen)
                     .accessibility_label(t.tip_expand_sidebar)
                     .tooltip(t.tip_expand_sidebar)
-                    .on_click(cx.listener(|this, _, _, cx| {
+                    .on_click(app_click(app_toggle_sidebar, |this, cx| {
                         this.toggle_sidebar_collapsed(cx);
                     })),
             )
             .into_any_element();
     }
 
-    let selected_remote = view.selected_remote.clone();
-    let branch_form = view.branch_form.clone();
-    let remote_form = view.remote_form.clone();
     let remote_form_open = !matches!(remote_form, RemoteForm::Hidden);
     let branch_form_open = !matches!(branch_form, BranchForm::Hidden);
-    let remote_compact = view.remote_actions_compact;
-    let entity = cx.entity();
-    let progress_collapsed = view.progress_collapsed;
-    let progress_h = view.progress_panel_height.clamp(
-        PROGRESS_MIN_HEIGHT,
-        PROGRESS_MAX_HEIGHT,
-    );
+    let entity = app.clone();
+    let remotes = remotes.as_slice();
+    let branches = branches.as_slice();
 
     div()
         .relative()
@@ -105,7 +131,7 @@ pub fn render(
                     .size_full()
                     .invisible(),
                 )
-                .child(remote_sync_chip(view, &selected_remote, cx))
+                .child(remote_sync_chip(app.clone(), &selected_remote, cx))
                 .child(
                     div()
                         .flex()
@@ -122,14 +148,14 @@ pub fn render(
                                     .when(!remote_compact, |this| this.label(t.fetch))
                                     .accessibility_label(t.fetch)
                                     .tooltip(t.tip_fetch)
-                                    .on_click(cx.listener(|this, _, window, cx| {
+                                    .on_click(app_click_window(entity.clone(), |this, window, cx| {
                                         this.confirm_remote_action(
                                             RemoteAction::Fetch,
                                             window,
                                             cx,
                                         )
                                     })),
-                                view.busy,
+                                busy,
                                 BusyKind::Fetch,
                             ),
                         )
@@ -142,19 +168,20 @@ pub fn render(
                                     .when(!remote_compact, |this| this.label(t.pull))
                                     .accessibility_label(t.pull)
                                     .tooltip(t.tip_pull)
-                                    .on_click(cx.listener(|this, _, window, cx| {
+                                    .on_click(app_click_window(entity.clone(), |this, window, cx| {
                                         this.confirm_remote_action(
                                             RemoteAction::Pull,
                                             window,
                                             cx,
                                         )
                                     })),
-                                view.busy,
+                                busy,
                                 BusyKind::Pull,
                             ),
                         )
                         .child({
-                            let head = view
+                            let head = app
+                                .read(cx)
                                 .snapshot
                                 .as_ref()
                                 .and_then(|s| s.branches.iter().find(|b| b.is_head && !b.is_remote));
@@ -181,14 +208,14 @@ pub fn render(
                                     .accessibility_label(t.push)
                                     .tooltip(push_tip)
                                     .disabled(!can_push)
-                                    .on_click(cx.listener(|this, _, window, cx| {
+                                    .on_click(app_click_window(entity.clone(), |this, window, cx| {
                                         this.confirm_remote_action(
                                             RemoteAction::Push,
                                             window,
                                             cx,
                                         )
                                     })),
-                                view.busy,
+                                busy,
                                 BusyKind::Push,
                             )
                         })
@@ -196,7 +223,7 @@ pub fn render(
                             icon_btn("sidebar-collapse", AssetIcon::PanelLeftClose)
                                 .accessibility_label(t.tip_collapse_sidebar)
                                 .tooltip(t.tip_collapse_sidebar)
-                                .on_click(cx.listener(|this, _, _, cx| {
+                                .on_click(app_click(entity.clone(), |this, cx| {
                                     this.toggle_sidebar_collapsed(cx);
                                 })),
                         ),
@@ -205,8 +232,9 @@ pub fn render(
         .child({
             // Forms are painted as overlays (last children) so Branches / Progress
             // headers cannot cover confirm buttons — GPUI has no CSS z-index.
-            let remotes_el = remotes_panel(view, remotes, selected_remote, cx);
-            let branches_el = branches_panel(view, branches, cx);
+            let remotes_el =
+                remotes_panel(app.clone(), remotes, selected_remote, cx);
+            let branches_el = branches_panel(app.clone(), branches, cx);
 
             if progress_collapsed {
                 div()
@@ -226,7 +254,7 @@ pub fn render(
                                 .child(resizable_panel().child(branches_el)),
                         ),
                     )
-                    .child(progress_header(view, true, cx))
+                    .child(progress_header(app.clone(), true, cx))
                     .into_any_element()
             } else {
                 div()
@@ -249,7 +277,7 @@ pub fn render(
                                     .size_range(
                                         px(PROGRESS_MIN_HEIGHT)..px(PROGRESS_MAX_HEIGHT),
                                     )
-                                    .child(progress_panel(view, cx)),
+                                    .child(progress_panel(app.clone(), cx)),
                             ),
                     )
                     .into_any_element()
@@ -261,7 +289,7 @@ pub fn render(
                 FormOverlayAnchor::Top,
                 progress_collapsed,
                 progress_h,
-                remote_form_panel(view, &remote_form, cx).into_any_element(),
+                remote_form_panel(app.clone(), &remote_form, cx).into_any_element(),
                 cx,
             ))
         })
@@ -271,7 +299,7 @@ pub fn render(
                 FormOverlayAnchor::AboveProgress,
                 progress_collapsed,
                 progress_h,
-                branch_form_panel(view, &branch_form, cx).into_any_element(),
+                branch_form_panel(app.clone(), &branch_form, cx).into_any_element(),
                 cx,
             ))
         })
@@ -279,10 +307,11 @@ pub fn render(
 }
 
 fn remote_sync_chip(
-    view: &AppView,
+    app: Entity<AppView>,
     selected_remote: &str,
-    cx: &mut Context<AppView>,
+    cx: &mut App,
 ) -> impl IntoElement {
+    let view = app.read(cx);
     let t = view.t();
     let head = view
         .snapshot
@@ -355,7 +384,7 @@ fn remote_sync_chip(
             ))
         })
         .when(operation != RepoOperation::Clean, |this| {
-            this.child(operation_actions(operation, view, t, cx))
+            this.child(operation_actions(app.clone(), operation, t, cx))
         })
 }
 
@@ -461,11 +490,13 @@ fn branch_sync_counts(
 }
 
 fn operation_actions(
+    app: Entity<AppView>,
     operation: RepoOperation,
-    view: &AppView,
     t: UiText,
-    cx: &mut Context<AppView>,
+    cx: &mut App,
 ) -> impl IntoElement {
+    let view = app.read(cx);
+    let entity = app;
     let show_sequencer = matches!(
         operation,
         RepoOperation::Merge | RepoOperation::Rebase | RepoOperation::CherryPick
@@ -484,7 +515,7 @@ fn operation_actions(
                     .small()
                     .label(t.op_continue)
                     .tooltip(t.tip_op_continue)
-                    .on_click(cx.listener(|this, _, window, cx| {
+                    .on_click(app_click_window(entity.clone(), |this, window, cx| {
                         this.confirm_continue_operation(window, cx);
                     })),
                 view.busy,
@@ -500,7 +531,7 @@ fn operation_actions(
                     .small()
                     .label(t.op_abort)
                     .tooltip(t.tip_op_abort)
-                    .on_click(cx.listener(|this, _, window, cx| {
+                    .on_click(app_click_window(entity.clone(), |this, window, cx| {
                         this.confirm_abort_operation(window, cx);
                     })),
                 view.busy,
@@ -518,7 +549,7 @@ fn operation_actions(
                     .small()
                     .label(t.op_skip)
                     .tooltip(t.tip_op_skip)
-                    .on_click(cx.listener(|this, _, window, cx| {
+                    .on_click(app_click_window(entity.clone(), |this, window, cx| {
                         this.confirm_rebase_skip(window, cx);
                     })),
                 view.busy,
@@ -611,7 +642,7 @@ fn form_overlay(
     progress_collapsed: bool,
     progress_h: f32,
     body: AnyElement,
-    cx: &mut Context<AppView>,
+    cx: &mut App,
 ) -> impl IntoElement {
     let progress_chrome = if progress_collapsed {
         36.0
@@ -644,12 +675,16 @@ fn form_overlay(
 }
 
 fn progress_header(
-    view: &AppView,
+    app: Entity<AppView>,
     collapsed: bool,
-    cx: &mut Context<AppView>,
+    cx: &mut App,
 ) -> impl IntoElement {
-    let t = view.t();
-    let busy = view.busy.is_some() || view.is_generating_commit_message();
+    let entity = app.clone();
+    let busy = {
+        let view = app.read(cx);
+        view.busy.is_some() || view.is_generating_commit_message()
+    };
+    let t = app.read(cx).t();
     let chevron = if collapsed {
         IconName::ChevronUp
     } else {
@@ -686,14 +721,21 @@ fn progress_header(
                 }),
         )
         .child(div().flex_shrink_0().child(chevron))
-        .on_click(cx.listener(|this, _, _, cx| {
+        .on_click(app_click(entity.clone(), |this, cx| {
             this.toggle_progress_collapsed(cx);
         }))
 }
 
-fn progress_panel(view: &AppView, cx: &mut Context<AppView>) -> AnyElement {
-    let t = view.t();
-    let log_empty = view.progress_log.is_empty();
+fn progress_panel(app: Entity<AppView>, cx: &mut App) -> AnyElement {
+    let entity = app.clone();
+    let (t, log_empty, log): (UiText, bool, Vec<_>) = {
+        let view = app.read(cx);
+        (
+            view.t(),
+            view.progress_log.is_empty(),
+            view.progress_log.clone(),
+        )
+    };
 
     div()
         .flex()
@@ -701,7 +743,7 @@ fn progress_panel(view: &AppView, cx: &mut Context<AppView>) -> AnyElement {
         .size_full()
         .min_h_0()
         .bg(cx.theme().sidebar)
-        .child(progress_header(view, false, cx))
+        .child(progress_header(app.clone(), false, cx))
         .child(
             pane_body(cx)
                 .id("progress-log")
@@ -725,7 +767,7 @@ fn progress_panel(view: &AppView, cx: &mut Context<AppView>) -> AnyElement {
                             .child(t.progress_empty),
                     )
                 })
-                .children(view.progress_log.iter().rev().enumerate().map(|(idx, entry)| {
+                .children(log.iter().rev().enumerate().map(|(idx, entry)| {
                     let (color, mark) = match entry.state {
                         ProgressState::Running => (cx.theme().accent, "…"),
                         ProgressState::Done => (cx.theme().success, "✓"),
@@ -783,7 +825,7 @@ fn progress_panel(view: &AppView, cx: &mut Context<AppView>) -> AnyElement {
                                         AssetIcon::Copy,
                                     )
                                     .tooltip(t.tip_copy_progress)
-                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                    .on_click(app_click(entity.clone(), move |this, cx| {
                                         this.copy_progress_entry(
                                             title_copy.as_ref(),
                                             detail_copy.as_ref(),
@@ -808,14 +850,15 @@ fn progress_panel(view: &AppView, cx: &mut Context<AppView>) -> AnyElement {
 }
 
 fn remotes_panel(
-    view: &AppView,
+    app: Entity<AppView>,
     remotes: &[RemoteInfo],
     selected_remote: String,
-    cx: &mut Context<AppView>,
+    cx: &mut App,
 ) -> AnyElement {
+    let view = app.read(cx);
     let t = view.t();
     let form = view.remote_form.clone();
-    let entity = cx.entity();
+    let entity = app;
     div()
         .flex()
         .flex_col()
@@ -834,7 +877,7 @@ fn remotes_panel(
                         .accessibility_label(t.add_remote)
                         .tooltip(t.tip_add_remote)
                         .selected(matches!(form, RemoteForm::Add | RemoteForm::Edit { .. }))
-                        .on_click(cx.listener(|this, _, window, cx| {
+                        .on_click(app_click_window(entity.clone(), |this, window, cx| {
                             this.toggle_add_remote_form(window, cx);
                         })),
                 ),
@@ -880,7 +923,7 @@ fn remotes_panel(
                             )
                             .w_full()
                             .tooltip(tip)
-                            .on_click(cx.listener(move |this, _, _, cx| {
+                            .on_click(app_click(entity.clone(), move |this, cx| {
                                 this.select_remote(name_select.clone(), cx);
                             })),
                         )
@@ -903,10 +946,12 @@ fn remotes_panel(
 }
 
 fn remote_form_panel(
-    view: &AppView,
+    app: Entity<AppView>,
     form: &RemoteForm,
-    cx: &mut Context<AppView>,
+    cx: &mut App,
 ) -> impl IntoElement {
+    let view = app.read(cx);
+    let entity = app;
     let t = view.t();
     let title = match form {
         RemoteForm::Add => t.add_remote,
@@ -943,7 +988,7 @@ fn remote_form_panel(
                         .ghost()
                         .small()
                         .label(t.branch_cancel)
-                        .on_click(cx.listener(|this, _, window, cx| {
+                        .on_click(app_click_window(entity.clone(), |this, window, cx| {
                             this.close_remote_form(window, cx);
                         })),
                 )
@@ -951,7 +996,7 @@ fn remote_form_panel(
                     confirm_btn("remote-form-confirm", icon, cx)
                         .small()
                         .label(t.branch_confirm)
-                        .on_click(cx.listener(|this, _, window, cx| {
+                        .on_click(app_click_window(entity.clone(), |this, window, cx| {
                             this.confirm_remote_form(window, cx);
                         })),
                     view.busy,
@@ -1017,10 +1062,11 @@ fn remote_context_menu(
 }
 
 fn branches_panel(
-    view: &AppView,
+    app: Entity<AppView>,
     branches: &[BranchInfo],
-    cx: &mut Context<AppView>,
+    cx: &mut App,
 ) -> AnyElement {
+    let view = app.read(cx);
     let t = view.t();
     let form = view.branch_form.clone();
     let show_remote = view.show_remote_branches;
@@ -1037,12 +1083,14 @@ fn branches_panel(
         .value()
         .trim()
         .to_lowercase();
-    let visible: Vec<&BranchInfo> = branches
+    let visible: Vec<BranchInfo> = branches
         .iter()
         .filter(|b| show_remote || !b.is_remote)
         .filter(|b| query.is_empty() || b.name.to_lowercase().contains(&query))
+        .cloned()
         .collect();
-    let entity = cx.entity();
+    let visible_len = visible.len();
+    let entity = app.clone();
     div()
         .flex()
         .flex_col()
@@ -1110,7 +1158,7 @@ fn branches_panel(
                                     .accessibility_label(t.tip_branch_search)
                                     .tooltip(t.tip_branch_search)
                                     .selected(search_open)
-                                    .on_click(cx.listener(|this, _, window, cx| {
+                                    .on_click(app_click_window(entity.clone(), |this, window, cx| {
                                         this.toggle_branch_search_open(window, cx);
                                     })),
                             )
@@ -1123,7 +1171,7 @@ fn branches_panel(
                                     form,
                                     BranchForm::Create | BranchForm::Rename { .. }
                                 ))
-                                .on_click(cx.listener(|this, _, window, cx| {
+                                .on_click(app_click_window(entity.clone(), |this, window, cx| {
                                     this.toggle_create_branch_form(window, cx);
                                 })),
                         )
@@ -1188,22 +1236,35 @@ fn branches_panel(
                 .flex_1()
                 .min_h_0()
                 .p_2()
-                .gap_1()
                 .flex()
                 .flex_col()
                 .items_start()
-                .overflow_y_scroll()
-                .children(
-                    visible
-                        .into_iter()
-                        .map(|b| branch_row(b, changes_count, view, cx)),
+                .child(
+                    uniform_list("branch-vl", visible_len, {
+                        let entity = entity.clone();
+                        move |range: std::ops::Range<usize>, _window, cx| {
+                            let view = entity.read(cx);
+                            range
+                                .filter_map(|i| visible.get(i).cloned())
+                                .map(|b| {
+                                    branch_row(&entity, &b, changes_count, &view, cx)
+                                })
+                                .collect()
+                        }
+                    })
+                    .flex_1()
+                    .size_full()
+                    .min_h_0(),
                 ),
         )
-        .child(tags_panel(view, cx))
+        .child(tags_panel(app.clone(), cx))
         .into_any_element()
 }
 
-fn tags_panel(view: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
+fn tags_panel(app: Entity<AppView>, cx: &mut App) -> impl IntoElement {
+    let view = app.read(cx);
+    let entity_tag = app.clone();
+    let busy = view.busy;
     let t = view.t();
     let open = view.tags_panel_open;
     let form_open = !matches!(view.tag_form, TagForm::Hidden);
@@ -1231,7 +1292,7 @@ fn tags_panel(view: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
                     )
                     .accessibility_label(t.tip_tags_section)
                     .tooltip(t.tip_tags_section)
-                    .on_click(cx.listener(|this, _, _, cx| {
+                    .on_click(app_click(entity_tag.clone(), |this, cx| {
                         this.toggle_tags_panel(cx);
                     })),
                 )
@@ -1248,7 +1309,7 @@ fn tags_panel(view: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
                     icon_btn("tag-create", AssetIcon::Plus)
                         .accessibility_label(t.create_tag)
                         .tooltip(t.tip_create_tag)
-                        .on_click(cx.listener(|this, _, window, cx| {
+                        .on_click(app_click_window(entity_tag.clone(), |this, window, cx| {
                             this.start_create_tag(None, window, cx);
                         })),
                 ),
@@ -1269,7 +1330,7 @@ fn tags_panel(view: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
                                     .ghost()
                                     .small()
                                     .label(t.branch_cancel)
-                                    .on_click(cx.listener(|this, _, window, cx| {
+                                    .on_click(app_click_window(entity_tag.clone(), |this, window, cx| {
                                         this.close_tag_form(window, cx);
                                     })),
                             )
@@ -1277,10 +1338,10 @@ fn tags_panel(view: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
                                 confirm_btn("tag-form-confirm", AssetIcon::Plus, cx)
                                     .small()
                                     .label(t.create_tag)
-                                    .on_click(cx.listener(|this, _, window, cx| {
+                                    .on_click(app_click_window(entity_tag.clone(), |this, window, cx| {
                                         this.confirm_tag_form(window, cx);
                                     })),
-                                view.busy,
+                                busy,
                                 BusyKind::TagCreate,
                             )),
                     ),
@@ -1315,7 +1376,7 @@ fn tags_panel(view: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
                         let name_del = tag.name.clone();
                         let name_push = tag.name.clone();
                         let target = tag.target.clone();
-                        let entity = cx.entity();
+                        let entity = entity_tag.clone();
                         div()
                             .w_full()
                             .flex()
@@ -1467,10 +1528,12 @@ fn branch_context_menu(
 }
 
 fn branch_form_panel(
-    view: &AppView,
+    app: Entity<AppView>,
     form: &BranchForm,
-    cx: &mut Context<AppView>,
+    cx: &mut App,
 ) -> impl IntoElement {
+    let view = app.read(cx);
+    let entity = app;
     let t = view.t();
     let title = match form {
         BranchForm::Create => t.create_switch,
@@ -1498,7 +1561,7 @@ fn branch_form_panel(
                         .ghost()
                         .small()
                         .label(t.branch_cancel)
-                        .on_click(cx.listener(|this, _, window, cx| {
+                        .on_click(app_click_window(entity.clone(), |this, window, cx| {
                             this.close_branch_form(window, cx);
                         })),
                 )
@@ -1516,7 +1579,7 @@ fn branch_form_panel(
                             .small()
                             .label(t.branch_confirm)
                             .tooltip(t.tip_create_branch)
-                            .on_click(cx.listener(|this, _, window, cx| {
+                            .on_click(app_click_window(entity.clone(), |this, window, cx| {
                                 this.confirm_branch_form(window, cx);
                             })),
                         view.busy,
@@ -1527,10 +1590,11 @@ fn branch_form_panel(
 }
 
 fn branch_row(
+    entity: &Entity<AppView>,
     branch: &BranchInfo,
     changes_count: usize,
     view: &AppView,
-    cx: &mut Context<AppView>,
+    cx: &App,
 ) -> AnyElement {
     let t = view.t();
     let name = branch.name.clone();
@@ -1565,11 +1629,16 @@ fn branch_row(
     } else {
         cx.theme().success
     };
-    let entity = cx.entity();
+    let entity_menu = entity.clone();
+    let entity_switch = entity.clone();
+    let entity_remote = entity.clone();
+    let entity_rename = entity.clone();
+    let entity_delete = entity.clone();
 
     div()
         .id(SharedString::from(format!("branch-row:{}", branch.name)))
         .w_full()
+        .h(px(28.))
         .flex()
         .items_center()
         .justify_between()
@@ -1579,7 +1648,7 @@ fn branch_row(
         .context_menu(move |menu, _, _| {
             branch_context_menu(
                 menu,
-                &entity,
+                &entity_menu,
                 &name_history,
                 is_head,
                 can_rename,
@@ -1624,23 +1693,25 @@ fn branch_row(
                     // Remote HEAD is non-interactive; named remotes use double-click checkout.
                     .disabled(branch.is_remote && !can_checkout_remote)
                     .when(can_switch, |this| {
-                        this.on_click(cx.listener(move |this, _, window, cx| {
-                            this.confirm_switch_branch(name_switch.clone(), window, cx);
-                        }))
+                        this.on_click(move |_, window, cx| {
+                            let _ = entity_switch.update(cx, |this, cx| {
+                                this.confirm_switch_branch(name_switch.clone(), window, cx);
+                            });
+                        })
                     })
                     .when(can_checkout_remote, |this| {
-                        this.on_click(cx.listener(
-                            move |this, event: &ClickEvent, window, cx| {
-                                if event.click_count() < 2 {
-                                    return;
-                                }
+                        this.on_click(move |event: &ClickEvent, window, cx| {
+                            if event.click_count() < 2 {
+                                return;
+                            }
+                            let _ = entity_remote.update(cx, |this, cx| {
                                 this.confirm_checkout_remote_branch(
                                     name_remote.clone(),
                                     window,
                                     cx,
                                 );
-                            },
-                        ))
+                            });
+                        })
                     }),
                 )
                 .when_some(sync, |this, sync| match sync_mode {
@@ -1681,9 +1752,11 @@ fn branch_row(
                         )
                         .accessibility_label(t.tip_rename_branch)
                         .tooltip(t.tip_rename_branch)
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            this.start_rename_branch(name_rename.clone(), window, cx);
-                        })),
+                        .on_click(move |_, window, cx| {
+                            let _ = entity_rename.update(cx, |this, cx| {
+                                this.start_rename_branch(name_rename.clone(), window, cx);
+                            });
+                        }),
                     )
                 })
                 .when(can_delete, |this| {
@@ -1694,9 +1767,11 @@ fn branch_row(
                         )
                         .accessibility_label(t.tip_delete_branch)
                         .tooltip(t.tip_delete_branch)
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            this.confirm_delete_branch(name_delete.clone(), window, cx);
-                        })),
+                        .on_click(move |_, window, cx| {
+                            let _ = entity_delete.update(cx, |this, cx| {
+                                this.confirm_delete_branch(name_delete.clone(), window, cx);
+                            });
+                        }),
                     )
                 }),
         )

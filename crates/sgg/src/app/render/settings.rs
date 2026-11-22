@@ -312,6 +312,13 @@ pub fn render(view: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
                         changes_view_card(view, t, cx),
                     ),
                     section_shell(
+                        SettingsSection::HistoryColumns,
+                        view,
+                        &query,
+                        t,
+                        history_columns_section(view, t, cx),
+                    ),
+                    section_shell(
                         SettingsSection::AutoRefresh,
                         view,
                         &query,
@@ -610,6 +617,80 @@ fn changes_view_card(
                             this.set_changes_as_tree(true, cx)
                         })),
                 ),
+        )
+}
+
+fn history_columns_section(
+    view: &AppView,
+    t: UiText,
+    cx: &mut Context<AppView>,
+) -> impl IntoElement {
+    let cols = &view.history_columns;
+    div()
+        .flex()
+        .flex_col()
+        .gap_3()
+        .p_4()
+        .rounded_lg()
+        .border_1()
+        .border_color(cx.theme().border)
+        .child(div().font_semibold().text_left().child(t.history_columns))
+        .child(
+            div()
+                .text_xs()
+                .text_left()
+                .text_color(cx.theme().muted_foreground)
+                .child(t.history_columns_help),
+        )
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .gap_2()
+                .child(hoverable_switch(
+                    "settings-hist-col-description",
+                    Switch::new("settings-hist-col-description")
+                        .label(t.history_col_description)
+                        .checked(cols.description)
+                        .tooltip(t.tip_history_col_description)
+                        .on_click(cx.listener(|this, checked, _, cx| {
+                            this.set_history_column_description(*checked, cx);
+                        })),
+                    cx,
+                ))
+                .child(hoverable_switch(
+                    "settings-hist-col-date",
+                    Switch::new("settings-hist-col-date")
+                        .label(t.history_col_date)
+                        .checked(cols.date)
+                        .tooltip(t.tip_history_col_date)
+                        .on_click(cx.listener(|this, checked, _, cx| {
+                            this.set_history_column_date(*checked, cx);
+                        })),
+                    cx,
+                ))
+                .child(hoverable_switch(
+                    "settings-hist-col-author",
+                    Switch::new("settings-hist-col-author")
+                        .label(t.history_col_author)
+                        .checked(cols.author)
+                        .tooltip(t.tip_history_col_author)
+                        .on_click(cx.listener(|this, checked, _, cx| {
+                            this.set_history_column_author(*checked, cx);
+                        })),
+                    cx,
+                ))
+                .child(hoverable_switch(
+                    "settings-hist-col-commit",
+                    Switch::new("settings-hist-col-commit")
+                        .label(t.history_col_commit)
+                        .checked(cols.commit)
+                        .tooltip(t.tip_history_col_commit)
+                        .on_click(cx.listener(|this, checked, _, cx| {
+                            this.set_history_column_commit(*checked, cx);
+                        })),
+                    cx,
+                )),
         )
 }
 

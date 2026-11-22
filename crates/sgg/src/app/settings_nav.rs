@@ -16,6 +16,7 @@ pub enum SettingsSection {
     CommitAi,
     Language,
     ChangesView,
+    HistoryColumns,
     AutoRefresh,
     Branches,
     ExternalEditor,
@@ -26,7 +27,7 @@ pub enum SettingsSection {
 }
 
 impl SettingsSection {
-    pub const ALL: [Self; 17] = [
+    pub const ALL: [Self; 18] = [
         Self::Appearance,
         Self::StatusColors,
         Self::UiFont,
@@ -37,6 +38,7 @@ impl SettingsSection {
         Self::CommitAi,
         Self::Language,
         Self::ChangesView,
+        Self::HistoryColumns,
         Self::AutoRefresh,
         Self::Branches,
         Self::ExternalEditor,
@@ -58,6 +60,7 @@ impl SettingsSection {
             Self::CommitAi => t.commit_ai,
             Self::Language => t.language,
             Self::ChangesView => t.changes_view,
+            Self::HistoryColumns => t.history_columns,
             Self::AutoRefresh => t.auto_refresh,
             Self::Branches => t.branches,
             Self::ExternalEditor => t.external_editor,
@@ -80,6 +83,14 @@ impl SettingsSection {
             Self::CommitAi => vec![t.commit_ai, t.commit_ai_help],
             Self::Language => vec![t.language, t.language_help],
             Self::ChangesView => vec![t.changes_view, t.changes_view_help],
+            Self::HistoryColumns => vec![
+                t.history_columns,
+                t.history_columns_help,
+                t.history_col_description,
+                t.history_col_date,
+                t.history_col_author,
+                t.history_col_commit,
+            ],
             Self::AutoRefresh => vec![t.auto_refresh, t.auto_refresh_help],
             Self::Branches => {
                 vec![t.branches, t.show_remote_branches, t.branch_sync_display]
@@ -116,6 +127,7 @@ pub struct SettingsAnchors {
     commit_ai: ScrollAnchor,
     language: ScrollAnchor,
     changes_view: ScrollAnchor,
+    history_columns: ScrollAnchor,
     auto_refresh: ScrollAnchor,
     branches: ScrollAnchor,
     external_editor: ScrollAnchor,
@@ -139,6 +151,7 @@ impl SettingsAnchors {
             commit_ai: mk(),
             language: mk(),
             changes_view: mk(),
+            history_columns: mk(),
             auto_refresh: mk(),
             branches: mk(),
             external_editor: mk(),
@@ -161,6 +174,7 @@ impl SettingsAnchors {
             SettingsSection::CommitAi => self.commit_ai.clone(),
             SettingsSection::Language => self.language.clone(),
             SettingsSection::ChangesView => self.changes_view.clone(),
+            SettingsSection::HistoryColumns => self.history_columns.clone(),
             SettingsSection::AutoRefresh => self.auto_refresh.clone(),
             SettingsSection::Branches => self.branches.clone(),
             SettingsSection::ExternalEditor => self.external_editor.clone(),

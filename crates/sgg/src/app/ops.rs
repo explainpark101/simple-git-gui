@@ -1238,28 +1238,44 @@ impl AppView {
                 self.set_ok_status(format!("Preview {rel_path}"));
                 return;
             }
-            // Load from disk into a new tab.
-            let full = self.repo_root().join(&rel_path);
-            let content = match read_preview_text(&rel_path, &full) {
-                Ok(text) => text,
-                Err(err) => {
-                    self.set_error(err.into(), cx);
-                    return;
-                }
-            };
-            self.preview_tabs.push(PreviewTab {
-                path: rel_path.clone(),
-                content: content.clone(),
-            });
-            let idx = self.preview_tabs.len() - 1;
-            self.preview_tab_index = idx;
-            self.preview_input.update(cx, |input, cx| {
-                input.set_value(&content, window, cx);
-            });
-            self.preview_path = Some(rel_path.clone());
-            self.error = None;
-            self.push_nav_entry(self.current_nav_entry());
-            self.set_ok_status(format!("Preview {rel_path}"));
+            // Load from disk into a new tab (off the UI thread).
+            self.preview_load_gen = self.preview_load_gen.wrapping_add(1);
+            let gen = self.preview_load_gen;
+            let path = rel_path.clone();
+            let full = self.repo_root().join(&path);
+            self.preview_load_task = Some(cx.spawn_in(window, async move |this, cx| {
+                let path_bg = path.clone();
+                let result = cx
+                    .background_spawn(async move { read_preview_text(&path_bg, &full) })
+                    .await;
+                let _ = cx.update(|window, cx| {
+                    this.update(cx, |this, cx| {
+                        this.preview_load_task = None;
+                        if this.preview_load_gen != gen {
+                            return;
+                        }
+                        match result {
+                            Ok(content) => {
+                                this.preview_tabs.push(PreviewTab {
+                                    path: path.clone(),
+                                    content: content.clone(),
+                                });
+                                let idx = this.preview_tabs.len() - 1;
+                                this.preview_tab_index = idx;
+                                this.preview_input.update(cx, |input, cx| {
+                                    input.set_value(&content, window, cx);
+                                });
+                                this.preview_path = Some(path.clone());
+                                this.error = None;
+                                this.push_nav_entry(this.current_nav_entry());
+                                this.set_ok_status(format!("Preview {path}"));
+                                cx.notify();
+                            }
+                            Err(err) => this.set_error(err.into(), cx),
+                        }
+                    })
+                });
+            }));
             cx.notify();
             return;
         }
@@ -1277,6 +1293,8 @@ impl AppView {
         self.push_nav_entry(self.current_nav_entry());
         self.set_ok_status(format!("Preview {rel_path}"));
         cx.notify();
+        self.notify_preview(cx);
+        self.notify_changes(cx);
     }
 
     pub(super) fn set_changes_file_view_mode(
@@ -1292,7 +1310,8 @@ impl AppView {
         if let Some(path) = self.git_preview_path.clone() {
             self.load_git_preview(&path, window, cx);
         }
-        cx.notify();
+        self.notify_preview(cx);
+        self.notify_changes(cx);
     }
 
     pub(super) fn set_changes_diff_layout(
@@ -1311,7 +1330,7 @@ impl AppView {
         if let Some(path) = self.git_preview_path.clone() {
             self.load_git_preview(&path, window, cx);
         }
-        cx.notify();
+        self.notify_preview(cx);
     }
 
     pub(super) fn confirm_delete_path(
@@ -1676,38 +1695,58 @@ impl AppView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.preview_load_gen = self.preview_load_gen.wrapping_add(1);
+        let gen = self.preview_load_gen;
+        let path = rel_path.to_string();
+        let root = self.repo_root();
+
         match self.changes_file_view_mode {
             super::view::ChangesFileViewMode::File => {
-                let full = self.repo_root().join(rel_path);
-                match read_preview_text(rel_path, &full) {
-                    Ok(content) => {
-                        self.preview_input.update(cx, |input, cx| {
-                            input.set_line_number(true, window, cx);
-                            input.set_value(&content, window, cx);
-                        });
-                        self.preview_input_old.update(cx, |input, cx| {
-                            input.set_line_number(true, window, cx);
-                            input.set_value("", window, cx);
-                        });
-                        self.history_diff.update(cx, |state, cx| {
-                            state.set_files([], cx);
-                        });
-                        self.history_aligned_split = None;
-                        self.git_preview_path = Some(rel_path.to_string());
-                        self.preview_path = Some(rel_path.to_string());
-                        self.error = None;
-                        self.clear_blame_state();
-                        self.refresh_inline_blame(cx);
-                        self.refresh_preview_diff_gutter(cx);
-                    }
-                    Err(err) => self.set_error(err.into(), cx),
-                }
+                self.git_preview_path = Some(path.clone());
+                self.preview_path = Some(path.clone());
+                self.error = None;
+                self.clear_blame_state();
+                self.history_aligned_split = None;
+                let full = root.join(&path);
+                let path_bg = path.clone();
+                self.preview_load_task = Some(cx.spawn_in(window, async move |this, cx| {
+                    let result = cx
+                        .background_spawn(async move { read_preview_text(&path_bg, &full) })
+                        .await;
+                    let _ = cx.update(|window, cx| {
+                        this.update(cx, |this, cx| {
+                            this.preview_load_task = None;
+                            if this.preview_load_gen != gen {
+                                return;
+                            }
+                            match result {
+                                Ok(content) => {
+                                    this.preview_input.update(cx, |input, cx| {
+                                        input.set_line_number(true, window, cx);
+                                        input.set_value(&content, window, cx);
+                                    });
+                                    this.preview_input_old.update(cx, |input, cx| {
+                                        input.set_line_number(true, window, cx);
+                                        input.set_value("", window, cx);
+                                    });
+                                    this.history_diff.update(cx, |state, cx| {
+                                        state.set_files([], cx);
+                                    });
+                                    this.refresh_inline_blame(cx);
+                                    this.refresh_preview_diff_gutter(cx);
+                                    this.notify_preview(cx);
+                                }
+                                Err(err) => this.set_error(err.into(), cx),
+                            }
+                        })
+                    });
+                }));
+                cx.notify();
             }
             super::view::ChangesFileViewMode::Diff => {
-                self.git_preview_path = Some(rel_path.to_string());
-                self.preview_path = Some(rel_path.to_string());
-                self.load_changes_diff_into_preview(rel_path, window, cx);
-                self.refresh_inline_blame(cx);
+                self.git_preview_path = Some(path.clone());
+                self.preview_path = Some(path.clone());
+                self.load_changes_diff_into_preview(&path, gen, window, cx);
             }
         }
     }
@@ -1715,117 +1754,154 @@ impl AppView {
     fn load_changes_diff_into_preview(
         &mut self,
         rel_path: &str,
+        gen: u64,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let root = self.repo_root();
+        let layout = self.changes_diff_layout;
+        let path = rel_path.to_string();
         const MAX: usize = 1_048_576;
-        let truncate = |text: String| -> String {
-            if text.len() > MAX {
-                format!(
-                    "{}\n\n… truncated ({} KiB).",
-                    &text[..MAX],
-                    text.len() / 1024
-                )
-            } else {
-                text
-            }
-        };
-        match sgg_core::diff_file_at_commit(&root, sgg_core::UNCOMMITTED_OID, rel_path) {
-            Ok(content) => match self.changes_diff_layout {
-                super::view::HistoryDiffLayout::Unified => {
-                    let files = if content.trim().is_empty() {
-                        vec![DiffFile::unchanged(
-                            rel_path,
-                            "(no uncommitted diff for this path)\n",
-                        )]
-                    } else {
-                        let patch = if content.len() > MAX {
-                            truncate(content)
+
+        self.preview_load_task = Some(cx.spawn_in(window, async move |this, cx| {
+            let path_bg = path.clone();
+            let root_bg = root.clone();
+            let loaded = cx
+                .background_spawn(async move {
+                    let content = sgg_core::diff_file_at_commit(
+                        &root_bg,
+                        sgg_core::UNCOMMITTED_OID,
+                        &path_bg,
+                    )
+                    .map_err(|e| e.to_string())?;
+                    let truncate = |text: String| -> String {
+                        if text.len() > MAX {
+                            format!(
+                                "{}\n\n… truncated ({} KiB).",
+                                &text[..MAX],
+                                text.len() / 1024
+                            )
                         } else {
-                            content
-                        };
-                        match DiffFile::parse(&patch) {
-                            Ok(files) if !files.is_empty() => files,
-                            Ok(_) => vec![DiffFile::unchanged(
-                                rel_path,
-                                "(no uncommitted diff for this path)\n",
-                            )],
-                            Err(_) => {
-                                let fallback = truncate(patch);
-                                vec![DiffFile::unchanged(rel_path, &fallback)]
-                            }
+                            text
                         }
                     };
-                    self.history_diff.update(cx, |state, cx| {
-                        state.set_context_lines(None, cx);
-                        state.set_files(files, cx);
-                        state.set_mode(DiffMode::Unified, cx);
-                    });
-                    self.preview_input.update(cx, |input, cx| {
-                        input.set_line_number(true, window, cx);
-                        input.set_value("", window, cx);
-                    });
-                    self.preview_input_old.update(cx, |input, cx| {
-                        input.set_line_number(true, window, cx);
-                        input.set_value("", window, cx);
-                    });
-                    self.history_aligned_split = None;
-                    self.clear_preview_diff_gutter(cx);
-                    self.error = None;
-                    cx.notify();
-                }
-                super::view::HistoryDiffLayout::Split => {
                     let patch = if content.len() > MAX {
                         truncate(content.clone())
                     } else {
                         content.clone()
                     };
-                    let aligned = sgg_core::align_split_from_unified(&patch);
-                    let (old_text, new_text) = if let Some(ref aligned) = aligned {
-                        (aligned.plain_side(true), aligned.plain_side(false))
-                    } else if content.trim().is_empty() {
-                        (
-                            "(no uncommitted diff for this path)\n".into(),
-                            "(no uncommitted diff for this path)\n".into(),
-                        )
+                    let empty_msg = "(no uncommitted diff for this path)\n";
+                    let unified_files = if matches!(
+                        layout,
+                        super::view::HistoryDiffLayout::Unified
+                    ) {
+                        Some(if content.trim().is_empty() {
+                            vec![DiffFile::unchanged(&path_bg, empty_msg)]
+                        } else {
+                            match DiffFile::parse(&patch) {
+                                Ok(files) if !files.is_empty() => files,
+                                Ok(_) => vec![DiffFile::unchanged(&path_bg, empty_msg)],
+                                Err(_) => vec![DiffFile::unchanged(&path_bg, &patch)],
+                            }
+                        })
                     } else {
-                        match sgg_core::split_file_at_commit(
-                            &root,
-                            sgg_core::UNCOMMITTED_OID,
-                            rel_path,
-                        ) {
-                            Ok((old, new)) => (truncate(old), truncate(new)),
-                            Err(_) => (truncate(patch.clone()), truncate(patch)),
-                        }
+                        None
                     };
-                    self.history_aligned_split = aligned;
-                    self.history_diff.update(cx, |state, cx| {
-                        state.set_files([], cx);
-                    });
-                    self.preview_input_old.update(cx, |input, cx| {
-                        input.set_line_number(false, window, cx);
-                        input.set_value(&old_text, window, cx);
-                        input.set_scroll_offset(point(px(0.), px(0.)), cx);
-                    });
-                    self.preview_input.update(cx, |input, cx| {
-                        input.set_line_number(false, window, cx);
-                        input.set_value(&new_text, window, cx);
-                        input.set_scroll_offset(point(px(0.), px(0.)), cx);
-                    });
-                    self.history_split_scroll_old
-                        .set_offset(point(px(0.), px(0.)));
-                    self.history_split_scroll_new
-                        .set_offset(point(px(0.), px(0.)));
-                    self.history_split_scroll_shared
-                        .set_offset(point(px(0.), px(0.)));
-                    self.error = None;
-                    self.refresh_history_diff_decorations(cx);
-                    cx.notify();
-                }
-            },
-            Err(err) => self.set_error(err.to_string().into(), cx),
-        }
+                    let aligned = sgg_core::align_split_from_unified(&patch);
+                    let sides = if aligned.is_none() && !content.trim().is_empty() {
+                        sgg_core::split_file_at_commit(
+                            &root_bg,
+                            sgg_core::UNCOMMITTED_OID,
+                            &path_bg,
+                        )
+                        .ok()
+                        .map(|(old, new)| (truncate(old), truncate(new)))
+                    } else {
+                        None
+                    };
+                    Ok::<_, String>((content, patch, aligned, sides, unified_files))
+                })
+                .await;
+
+            let _ = cx.update(|window, cx| {
+                this.update(cx, |this, cx| {
+                    this.preview_load_task = None;
+                    if this.preview_load_gen != gen {
+                        return;
+                    }
+                    match loaded {
+                        Ok((content, patch, aligned, sides, unified_files)) => match layout {
+                            super::view::HistoryDiffLayout::Unified => {
+                                let files = unified_files.unwrap_or_else(|| {
+                                    vec![DiffFile::unchanged(
+                                        &path,
+                                        "(no uncommitted diff for this path)\n",
+                                    )]
+                                });
+                                this.history_diff.update(cx, |state, cx| {
+                                    state.set_context_lines(None, cx);
+                                    state.set_files(files, cx);
+                                    state.set_mode(DiffMode::Unified, cx);
+                                });
+                                this.preview_input.update(cx, |input, cx| {
+                                    input.set_line_number(true, window, cx);
+                                    input.set_value("", window, cx);
+                                });
+                                this.preview_input_old.update(cx, |input, cx| {
+                                    input.set_line_number(true, window, cx);
+                                    input.set_value("", window, cx);
+                                });
+                                this.history_aligned_split = None;
+                                this.clear_preview_diff_gutter(cx);
+                                this.error = None;
+                                this.refresh_inline_blame(cx);
+                                this.notify_preview(cx);
+                            }
+                            super::view::HistoryDiffLayout::Split => {
+                                let (old_text, new_text) = if let Some(ref aligned) = aligned {
+                                    (aligned.plain_side(true), aligned.plain_side(false))
+                                } else if content.trim().is_empty() {
+                                    (
+                                        "(no uncommitted diff for this path)\n".into(),
+                                        "(no uncommitted diff for this path)\n".into(),
+                                    )
+                                } else if let Some(sides) = sides {
+                                    sides
+                                } else {
+                                    (patch.clone(), patch)
+                                };
+                                this.history_aligned_split = aligned;
+                                this.history_diff.update(cx, |state, cx| {
+                                    state.set_files([], cx);
+                                });
+                                this.preview_input_old.update(cx, |input, cx| {
+                                    input.set_line_number(false, window, cx);
+                                    input.set_value(&old_text, window, cx);
+                                    input.set_scroll_offset(point(px(0.), px(0.)), cx);
+                                });
+                                this.preview_input.update(cx, |input, cx| {
+                                    input.set_line_number(false, window, cx);
+                                    input.set_value(&new_text, window, cx);
+                                    input.set_scroll_offset(point(px(0.), px(0.)), cx);
+                                });
+                                this.history_split_scroll_old
+                                    .set_offset(point(px(0.), px(0.)));
+                                this.history_split_scroll_new
+                                    .set_offset(point(px(0.), px(0.)));
+                                this.history_split_scroll_shared
+                                    .set_offset(point(px(0.), px(0.)));
+                                this.error = None;
+                                this.refresh_inline_blame(cx);
+                                this.refresh_history_diff_decorations(cx);
+                                this.notify_preview(cx);
+                            }
+                        },
+                        Err(err) => this.set_error(err.into(), cx),
+                    }
+                })
+            });
+        }));
+        cx.notify();
     }
 
     pub(super) fn reload_history(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -2138,146 +2214,185 @@ impl AppView {
         };
         let root = self.repo_root();
         const MAX: usize = 1_048_576;
-        let truncate = |text: String| -> String {
-            if text.len() > MAX {
-                format!(
-                    "{}\n\n… truncated ({} KiB).",
-                    &text[..MAX],
-                    text.len() / 1024
-                )
-            } else {
-                text
-            }
-        };
+        self.preview_load_gen = self.preview_load_gen.wrapping_add(1);
+        let gen = self.preview_load_gen;
+        let mode = preview.mode;
+        let layout = preview.diff_layout;
+        let oid = preview.oid.clone();
+        let path = preview.path.clone();
 
-        match preview.mode {
-            super::view::HistoryFileViewMode::FileAtCommit => {
-                match sgg_core::show_file_at_revision(&root, &preview.oid, &preview.path) {
-                    Ok(content) => {
-                        let text = truncate(content);
-                        self.preview_input.update(cx, |input, cx| {
-                            input.set_line_number(true, window, cx);
-                            input.set_value(&text, window, cx);
-                        });
-                        self.preview_input_old.update(cx, |input, cx| {
-                            input.set_value("", window, cx);
-                        });
-                        self.history_diff.update(cx, |state, cx| {
-                            state.set_files([], cx);
-                        });
-                        self.history_aligned_split = None;
-                        self.clear_preview_diff_gutter(cx);
-                        self.error = None;
-                        cx.notify();
-                    }
-                    Err(err) => self.set_error(err.to_string().into(), cx),
-                }
+        self.preview_load_task = Some(cx.spawn_in(window, async move |this, cx| {
+            enum HistLoaded {
+                File(String),
+                Unified {
+                    files: Vec<DiffFile>,
+                },
+                Split {
+                    old_text: String,
+                    new_text: String,
+                    aligned: Option<sgg_core::AlignedSplitView>,
+                },
             }
-            super::view::HistoryFileViewMode::Diff => {
-                match sgg_core::diff_file_at_commit(&root, &preview.oid, &preview.path) {
-                    Ok(content) => match preview.diff_layout {
-                        super::view::HistoryDiffLayout::Unified => {
-                            let files = if content.trim().is_empty() {
-                                vec![DiffFile::unchanged(
-                                    preview.path.as_str(),
-                                    "(no diff for this path in the commit)\n",
-                                )]
-                            } else {
-                                let patch = if content.len() > MAX {
-                                    truncate(content)
-                                } else {
-                                    content
-                                };
-                                match DiffFile::parse(&patch) {
-                                    Ok(files) if !files.is_empty() => files,
-                                    Ok(_) => vec![DiffFile::unchanged(
-                                        preview.path.as_str(),
-                                        "(no diff for this path in the commit)\n",
-                                    )],
-                                    Err(_) => {
-                                        let fallback = truncate(patch);
-                                        vec![DiffFile::unchanged(
-                                            preview.path.as_str(),
-                                            &fallback,
-                                        )]
-                                    }
+
+            let loaded: Result<HistLoaded, String> = cx
+                .background_spawn(async move {
+                    let truncate = |text: String| -> String {
+                        if text.len() > MAX {
+                            format!(
+                                "{}\n\n… truncated ({} KiB).",
+                                &text[..MAX],
+                                text.len() / 1024
+                            )
+                        } else {
+                            text
+                        }
+                    };
+                    match mode {
+                        super::view::HistoryFileViewMode::FileAtCommit => {
+                            let content = sgg_core::show_file_at_revision(&root, &oid, &path)
+                                .map_err(|e| e.to_string())?;
+                            Ok(HistLoaded::File(truncate(content)))
+                        }
+                        super::view::HistoryFileViewMode::Diff => {
+                            let content =
+                                sgg_core::diff_file_at_commit(&root, &oid, &path)
+                                    .map_err(|e| e.to_string())?;
+                            let empty_msg = "(no diff for this path in the commit)\n";
+                            match layout {
+                                super::view::HistoryDiffLayout::Unified => {
+                                    let files = if content.trim().is_empty() {
+                                        vec![DiffFile::unchanged(path.as_str(), empty_msg)]
+                                    } else {
+                                        let patch = if content.len() > MAX {
+                                            truncate(content)
+                                        } else {
+                                            content
+                                        };
+                                        match DiffFile::parse(&patch) {
+                                            Ok(files) if !files.is_empty() => files,
+                                            Ok(_) => {
+                                                vec![DiffFile::unchanged(path.as_str(), empty_msg)]
+                                            }
+                                            Err(_) => {
+                                                vec![DiffFile::unchanged(path.as_str(), &patch)]
+                                            }
+                                        }
+                                    };
+                                    Ok(HistLoaded::Unified { files })
                                 }
-                            };
-                            self.history_diff.update(cx, |state, cx| {
+                                super::view::HistoryDiffLayout::Split => {
+                                    let patch = if content.len() > MAX {
+                                        truncate(content.clone())
+                                    } else {
+                                        content.clone()
+                                    };
+                                    let aligned = sgg_core::align_split_from_unified(&patch);
+                                    let (old_text, new_text) =
+                                        if let Some(ref aligned) = aligned {
+                                            (aligned.plain_side(true), aligned.plain_side(false))
+                                        } else if content.trim().is_empty() {
+                                            (empty_msg.into(), empty_msg.into())
+                                        } else {
+                                            match sgg_core::split_file_at_commit(
+                                                &root, &oid, &path,
+                                            ) {
+                                                Ok((old, new)) => (truncate(old), truncate(new)),
+                                                Err(_) => {
+                                                    (truncate(patch.clone()), truncate(patch))
+                                                }
+                                            }
+                                        };
+                                    Ok(HistLoaded::Split {
+                                        old_text,
+                                        new_text,
+                                        aligned,
+                                    })
+                                }
+                            }
+                        }
+                    }
+                })
+                .await;
+
+            let _ = cx.update(|window, cx| {
+                this.update(cx, |this, cx| {
+                    this.preview_load_task = None;
+                    if this.preview_load_gen != gen {
+                        return;
+                    }
+                    match loaded {
+                        Ok(HistLoaded::File(text)) => {
+                            this.preview_input.update(cx, |input, cx| {
+                                input.set_line_number(true, window, cx);
+                                input.set_value(&text, window, cx);
+                            });
+                            this.preview_input_old.update(cx, |input, cx| {
+                                input.set_value("", window, cx);
+                            });
+                            this.history_diff.update(cx, |state, cx| {
+                                state.set_files([], cx);
+                            });
+                            this.history_aligned_split = None;
+                            this.clear_preview_diff_gutter(cx);
+                            this.error = None;
+                            this.refresh_inline_blame(cx);
+                            cx.notify();
+                        }
+                        Ok(HistLoaded::Unified { files }) => {
+                            this.history_diff.update(cx, |state, cx| {
                                 state.set_context_lines(None, cx);
                                 state.set_files(files, cx);
                                 state.set_mode(DiffMode::Unified, cx);
                             });
-                            self.preview_input.update(cx, |input, cx| {
+                            this.preview_input.update(cx, |input, cx| {
                                 input.set_line_number(true, window, cx);
                                 input.set_value("", window, cx);
                             });
-                            self.preview_input_old.update(cx, |input, cx| {
+                            this.preview_input_old.update(cx, |input, cx| {
                                 input.set_line_number(true, window, cx);
                                 input.set_value("", window, cx);
                             });
-                            self.history_aligned_split = None;
-                            self.clear_preview_diff_gutter(cx);
-                            self.error = None;
+                            this.history_aligned_split = None;
+                            this.clear_preview_diff_gutter(cx);
+                            this.error = None;
+                            this.refresh_inline_blame(cx);
                             cx.notify();
                         }
-                        super::view::HistoryDiffLayout::Split => {
-                            let patch = if content.len() > MAX {
-                                truncate(content.clone())
-                            } else {
-                                content.clone()
-                            };
-                            let aligned = sgg_core::align_split_from_unified(&patch);
-                            let (old_text, new_text) = if let Some(ref aligned) = aligned {
-                                (aligned.plain_side(true), aligned.plain_side(false))
-                            } else if content.trim().is_empty() {
-                                (
-                                    "(no diff for this path in the commit)\n".into(),
-                                    "(no diff for this path in the commit)\n".into(),
-                                )
-                            } else {
-                                match sgg_core::split_file_at_commit(
-                                    &root,
-                                    &preview.oid,
-                                    &preview.path,
-                                ) {
-                                    Ok((old, new)) => (truncate(old), truncate(new)),
-                                    Err(_) => (truncate(patch.clone()), truncate(patch)),
-                                }
-                            };
-                            self.history_aligned_split = aligned;
-                            self.history_diff.update(cx, |state, cx| {
+                        Ok(HistLoaded::Split {
+                            old_text,
+                            new_text,
+                            aligned,
+                        }) => {
+                            this.history_aligned_split = aligned;
+                            this.history_diff.update(cx, |state, cx| {
                                 state.set_files([], cx);
                             });
-                            // Hide built-in sequential numbers; custom gutter shows
-                            // source lines (blank for padding) outside the text.
-                            self.preview_input_old.update(cx, |input, cx| {
+                            this.preview_input_old.update(cx, |input, cx| {
                                 input.set_line_number(false, window, cx);
                                 input.set_value(&old_text, window, cx);
-                                // Outer pane scroll owns vertical motion; keep
-                                // the editor's internal offset at origin.
                                 input.set_scroll_offset(point(px(0.), px(0.)), cx);
                             });
-                            self.preview_input.update(cx, |input, cx| {
+                            this.preview_input.update(cx, |input, cx| {
                                 input.set_line_number(false, window, cx);
                                 input.set_value(&new_text, window, cx);
                                 input.set_scroll_offset(point(px(0.), px(0.)), cx);
                             });
-                            self.history_split_scroll_old
+                            this.history_split_scroll_old
                                 .set_offset(point(px(0.), px(0.)));
-                            self.history_split_scroll_new
+                            this.history_split_scroll_new
                                 .set_offset(point(px(0.), px(0.)));
-                            self.history_split_scroll_shared
+                            this.history_split_scroll_shared
                                 .set_offset(point(px(0.), px(0.)));
-                            self.error = None;
-                            self.refresh_history_diff_decorations(cx);
+                            this.error = None;
+                            this.refresh_inline_blame(cx);
+                            this.refresh_history_diff_decorations(cx);
                             cx.notify();
                         }
-                    },
-                    Err(err) => self.set_error(err.to_string().into(), cx),
-                }
-            }
-        }
+                        Err(err) => this.set_error(err.into(), cx),
+                    }
+                })
+            });
+        }));
     }
 
     pub(super) fn save_preview(&mut self, window: &mut Window, cx: &mut Context<Self>) {

@@ -15,6 +15,7 @@ use gpui_kit::*;
 use sgg_core::AlignedSplitView;
 
 use crate::app::busy::BusyKind;
+use crate::app::git_panes::{app_click, app_click_window, app_toggle};
 use crate::app::page::AppPage;
 use crate::app::view::{
     AppView, ChangesFileViewMode, HistoryDiffLayout, HistoryFileViewMode,
@@ -25,24 +26,61 @@ use crate::app::widgets::{
 };
 
 pub fn render(
-    view: &AppView,
+    app: Entity<AppView>,
     show_close: bool,
     show_tabs: bool,
-    cx: &mut Context<AppView>,
+    cx: &mut App,
 ) -> impl IntoElement {
-    let t = view.t();
-    let has_path = view.preview_path.is_some();
-    let history_preview = if view.page == AppPage::History {
-        view.history_file_preview.clone()
-    } else {
-        None
+    let (
+        t,
+        has_path,
+        history_preview,
+        is_history,
+        is_changes,
+        changes_mode,
+        changes_layout,
+        selected_tab,
+        tab_count,
+        busy,
+        preview_path,
+    ) = {
+        let view = app.read(cx);
+        let history_preview = if view.page == AppPage::History {
+            view.history_file_preview.clone()
+        } else {
+            None
+        };
+        let is_history = history_preview.is_some();
+        (
+            view.t(),
+            view.preview_path.is_some(),
+            history_preview,
+            is_history,
+            view.page == AppPage::Git,
+            view.changes_file_view_mode,
+            view.changes_diff_layout,
+            view.preview_tab_index,
+            view.preview_tabs.len(),
+            view.busy,
+            view.preview_path.clone(),
+        )
     };
-    let is_history = history_preview.is_some();
-    let is_changes = view.page == AppPage::Git;
-    let changes_mode = view.changes_file_view_mode;
-    let changes_layout = view.changes_diff_layout;
-    let selected_tab = view.preview_tab_index;
-    let tab_count = view.preview_tabs.len();
+    let entity = app.clone();
+    let tab_labels: Vec<(usize, String)> = app
+        .read(cx)
+        .preview_tabs
+        .iter()
+        .enumerate()
+        .map(|(idx, tab)| {
+            let label = tab
+                .path
+                .rsplit('/')
+                .next()
+                .unwrap_or(tab.path.as_str())
+                .to_string();
+            (idx, label)
+        })
+        .collect();
 
     div()
         .flex()
@@ -52,39 +90,36 @@ pub fn render(
         .min_h_0()
         .when(show_tabs && tab_count > 0, |this| {
             // Labels only — do not clone tab file buffers every paint.
-            let tab_labels: Vec<(usize, String)> = view
-                .preview_tabs
-                .iter()
-                .enumerate()
-                .map(|(idx, tab)| {
-                    let label = tab
-                        .path
-                        .rsplit('/')
-                        .next()
-                        .unwrap_or(tab.path.as_str())
-                        .to_string();
-                    (idx, label)
-                })
-                .collect();
             this.child(
                 TabBar::new("preview-tabs")
                     .underline()
                     .w_full()
                     .px_2()
                     .selected_index(selected_tab)
-                    .on_click(cx.listener(|this, index: &usize, window, cx| {
-                        this.select_preview_tab(*index, window, cx);
-                    }))
+                    .on_click({
+                        let entity = entity.clone();
+                        move |index: &usize, window, cx| {
+                            entity.update(cx, |this, cx| {
+                                this.select_preview_tab(*index, window, cx);
+                            });
+                        }
+                    })
                     .children(tab_labels.into_iter().map(|(idx, label)| {
+                        let entity_tab = entity.clone();
                         Tab::new()
                             .label(label)
                             .selected(idx == selected_tab)
                             .on_mouse_down(
                                 MouseButton::Middle,
-                                cx.listener(move |this, _, window, cx| {
-                                    cx.stop_propagation();
-                                    this.close_preview_tab(idx, window, cx);
-                                }),
+                                {
+                                    let entity = entity_tab.clone();
+                                    move |_, window, cx| {
+                                        cx.stop_propagation();
+                                        entity.update(cx, |this, cx| {
+                                            this.close_preview_tab(idx, window, cx);
+                                        });
+                                    }
+                                },
                             )
                             .suffix(
                                 icon_btn(
@@ -96,10 +131,15 @@ pub fn render(
                                 .ghost()
                                 .accessibility_label(t.close_preview)
                                 .tooltip(t.tip_close_preview)
-                                .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
-                                    cx.stop_propagation();
-                                    this.close_preview_tab(idx, window, cx);
-                                })),
+                                .on_click({
+                                    let entity = entity_tab.clone();
+                                    move |_, window, cx| {
+                                        cx.stop_propagation();
+                                        entity.update(cx, |this, cx| {
+                                            this.close_preview_tab(idx, window, cx);
+                                        });
+                                    }
+                                }),
                             )
                     })),
             )
@@ -127,7 +167,7 @@ pub fn render(
                                 .whitespace_nowrap()
                                 .overflow_hidden()
                                 .text_ellipsis()
-                                .when_some(view.preview_path.clone(), |this, path| {
+                                .when_some(preview_path.clone(), |this, path| {
                                     this.child(path)
                                 }),
                         )
@@ -144,7 +184,7 @@ pub fn render(
                                     .xsmall()
                                     .label(short)
                                     .tooltip(t.tip_history_open_commit)
-                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                    .on_click(app_click_window(entity.clone(), move |this, window, cx| {
                                         this.show_history_commit(oid.clone(), window, cx);
                                     })),
                             )
@@ -159,7 +199,7 @@ pub fn render(
                                 t.history_view_file
                             };
                             let mode = hp.mode;
-                            let entity = cx.entity();
+                            let entity = app.clone();
                             this.child(
                                 display_btn("preview-hist-mode")
                                     .outline()
@@ -196,11 +236,17 @@ pub fn render(
                                     }),
                             )
                             .when(hp.mode == HistoryFileViewMode::Diff, |this| {
-                                this.child(diff_layout_pill(hp.diff_layout, false, t, cx))
+                                this.child(diff_layout_pill(
+                                    app.clone(),
+                                    hp.diff_layout,
+                                    false,
+                                    t,
+                                    cx,
+                                ))
                                     .when(
                                         hp.diff_layout == HistoryDiffLayout::Split,
                                         |this| {
-                                            this.child(diff_scroll_sync_switch(view, cx))
+                                            this.child(diff_scroll_sync_switch(app.clone(), cx))
                                         },
                                     )
                             })
@@ -211,7 +257,7 @@ pub fn render(
                             } else {
                                 t.changes_view_file
                             };
-                            let entity = cx.entity();
+                            let entity = app.clone();
                             this.child(
                                 display_btn("preview-changes-mode")
                                     .outline()
@@ -248,11 +294,17 @@ pub fn render(
                                     }),
                             )
                             .when(changes_mode == ChangesFileViewMode::Diff, |this| {
-                                this.child(diff_layout_pill(changes_layout, true, t, cx))
+                                this.child(diff_layout_pill(
+                                    app.clone(),
+                                    changes_layout,
+                                    true,
+                                    t,
+                                    cx,
+                                ))
                                     .when(
                                         changes_layout == HistoryDiffLayout::Split,
                                         |this| {
-                                            this.child(diff_scroll_sync_switch(view, cx))
+                                            this.child(diff_scroll_sync_switch(app.clone(), cx))
                                         },
                                     )
                             })
@@ -265,22 +317,22 @@ pub fn render(
                                         .label(t.save)
                                         .tooltip(t.tip_save_preview)
                                         .disabled(!has_path)
-                                        .on_click(cx.listener(|this, _, window, cx| {
+                                        .on_click(app_click_window(entity.clone(), |this, window, cx| {
                                             this.save_preview(window, cx)
                                         })),
-                                    view.busy,
+                                    busy,
                                     BusyKind::SavePreview,
                                 ),
                             )
                         })
                         .when(!is_history, |this| {
-                            this.when_some(view.preview_path.clone(), |this, path| {
+                            this.when_some(preview_path.clone(), |this, path| {
                                 this.child(
                                     icon_btn("preview-open-ext", AssetIcon::ExternalLink)
                                         .outline()
                                         .accessibility_label(t.open_external)
                                         .tooltip(t.tip_open_external)
-                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                        .on_click(app_click(entity.clone(), move |this, cx| {
                                             this.open_path_in_editor(&path, cx);
                                         })),
                                 )
@@ -292,7 +344,7 @@ pub fn render(
                                     .accessibility_label(t.close_preview)
                                     .tooltip(t.tip_close_preview)
                                     .disabled(!has_path)
-                                    .on_click(cx.listener(|this, _, window, cx| {
+                                    .on_click(app_click_window(entity.clone(), |this, window, cx| {
                                         this.close_preview(window, cx)
                                     })),
                             )
@@ -300,6 +352,7 @@ pub fn render(
                 ),
         )
         .child({
+            let view = app.read(cx);
             let layout = view.preview_diff_layout();
             let unified_diff = layout == Some(HistoryDiffLayout::Unified);
             let split_diff = layout == Some(HistoryDiffLayout::Split);
@@ -514,7 +567,9 @@ fn split_diff_side(
         )
 }
 
-fn diff_scroll_sync_switch(view: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
+fn diff_scroll_sync_switch(app: Entity<AppView>, cx: &mut App) -> impl IntoElement {
+    let view = app.read(cx);
+    let entity = app;
     let t = view.t();
     hoverable_switch(
         "preview-diff-scroll-sync",
@@ -523,8 +578,8 @@ fn diff_scroll_sync_switch(view: &AppView, cx: &mut Context<AppView>) -> impl In
             .label(t.history_diff_scroll_sync)
             .checked(view.history_diff_scroll_sync)
             .tooltip(t.tip_history_diff_scroll_sync)
-            .on_click(cx.listener(|this, checked, _, cx| {
-                this.set_history_diff_scroll_sync(*checked, cx);
+            .on_click(app_toggle(entity.clone(), |this, checked, cx| {
+                this.set_history_diff_scroll_sync(checked, cx);
             })),
         cx,
     )
@@ -532,11 +587,13 @@ fn diff_scroll_sync_switch(view: &AppView, cx: &mut Context<AppView>) -> impl In
 
 /// Icon-only unified/split radio pill (labels live in tooltips).
 fn diff_layout_pill(
+    app: Entity<AppView>,
     layout: HistoryDiffLayout,
     for_changes: bool,
     t: crate::app::i18n::UiText,
-    cx: &mut Context<AppView>,
+    cx: &mut App,
 ) -> impl IntoElement {
+    let entity = app;
     let unified_id = if for_changes {
         "preview-changes-unified"
     } else {
@@ -559,7 +616,7 @@ fn diff_layout_pill(
                 .selected(layout == HistoryDiffLayout::Unified)
                 .accessibility_label(t.history_diff_unified)
                 .tooltip(t.tip_history_diff_unified)
-                .on_click(cx.listener(move |this, _, window, cx| {
+                .on_click(app_click_window(entity.clone(), move |this, window, cx| {
                     if for_changes {
                         this.set_changes_diff_layout(HistoryDiffLayout::Unified, window, cx);
                     } else {
@@ -578,7 +635,7 @@ fn diff_layout_pill(
                 .selected(layout == HistoryDiffLayout::Split)
                 .accessibility_label(t.history_diff_split)
                 .tooltip(t.tip_history_diff_split)
-                .on_click(cx.listener(move |this, _, window, cx| {
+                .on_click(app_click_window(entity.clone(), move |this, window, cx| {
                     if for_changes {
                         this.set_changes_diff_layout(HistoryDiffLayout::Split, window, cx);
                     } else {

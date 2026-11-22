@@ -19,24 +19,154 @@ use super::status_style::{area_label, display_label, status_color, status_letter
 use crate::app::busy::BusyKind;
 use crate::app::i18n::UiText;
 use crate::app::sort::{ChangeFlatRow, ChangeSort};
+use crate::app::git_panes::{self, app_click, app_click_window, app_toggle};
 use crate::app::view::AppView;
 use crate::app::widgets::{
     confirm_btn, display_btn, hoverable_switch, icon_btn, icon_danger_btn, menu_item_with_icon,
     pane_body, pane_header, pane_toolbar, raised_action_btn, with_busy,
 };
 
-pub fn render(view: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
+pub fn render_commit_composer(app: Entity<AppView>, cx: &mut App) -> impl IntoElement {
+    let view = app.read(cx);
     let t = view.t();
-    let sort = view.change_sort.normalized();
-    let group_by_status = view.group_by_status;
-    let section_count = view.changes_sections.len();
-    let staged_idxs: Vec<usize> = (0..section_count)
-        .filter(|&i| view.changes_sections[i].title == "Staged")
-        .collect();
-    let working_idxs: Vec<usize> = (0..section_count)
-        .filter(|&i| view.changes_sections[i].title != "Staged")
-        .collect();
-    let all_idxs: Vec<usize> = (0..section_count).collect();
+    let has_repo = view.has_repo();
+    let app_ai = app.clone();
+    let app_settings = app.clone();
+    let app_gen = app.clone();
+    let app_commit = app.clone();
+
+    pane_toolbar(cx)
+        .flex()
+        .flex_col()
+        .gap_2()
+        .p_3()
+        .child(
+            div()
+                .w_full()
+                .rounded(cx.theme().radius)
+                .border_1()
+                .border_color(cx.theme().border)
+                .bg(cx.theme().input_background())
+                .overflow_hidden()
+                .flex()
+                .flex_col()
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .justify_end()
+                        .px_1()
+                        .pt_1()
+                        .child(
+                            div()
+                                .context_menu(move |menu, _, _| {
+                                    menu.item(menu_item_with_icon(
+                                        t.commit_ai_menu_generate,
+                                        AssetIcon::Sparkles,
+                                        {
+                                            let app = app_ai.clone();
+                                            move |_, window, cx| {
+                                                app.update(cx, |this, cx| {
+                                                    this.generate_commit_message(window, cx);
+                                                });
+                                            }
+                                        },
+                                    ))
+                                    .item(menu_item_with_icon(
+                                        t.commit_ai_open_settings,
+                                        AssetIcon::Settings,
+                                        {
+                                            let app = app_settings.clone();
+                                            move |_, window, cx| {
+                                                app.update(cx, |this, cx| {
+                                                    this.open_commit_ai_settings(window, cx);
+                                                });
+                                            }
+                                        },
+                                    ))
+                                })
+                                .child(with_busy(
+                                    icon_btn("generate-commit-ai", AssetIcon::Sparkles)
+                                        .accessibility_label(t.generate_commit_message)
+                                        .tooltip(t.tip_generate_commit_message)
+                                        .disabled(!has_repo)
+                                        .on_click(app_click_window(
+                                            app_gen,
+                                            |this, window, cx| {
+                                                this.generate_commit_message(window, cx);
+                                            },
+                                        )),
+                                    view.is_generating_commit_message()
+                                        .then_some(BusyKind::GenerateCommitMessage),
+                                    BusyKind::GenerateCommitMessage,
+                                )),
+                        ),
+                )
+                .child(
+                    div()
+                        .w_full()
+                        .px_2()
+                        .pb_2()
+                        .child(
+                            Textarea::new(&view.commit_input)
+                                .appearance(true)
+                                .border_1()
+                                .border_color(cx.theme().border)
+                                .rounded(cx.theme().radius),
+                        ),
+                ),
+        )
+        .child(with_busy(
+            confirm_btn("commit", AssetIcon::GitCommitVertical, cx)
+                .w_full()
+                .label(t.commit)
+                .tooltip(t.tip_commit)
+                .on_click(app_click_window(app_commit, |this, window, cx| {
+                    this.commit(window, cx);
+                })),
+            view.busy,
+            BusyKind::Commit,
+        ))
+}
+
+pub fn render(
+    app: Entity<AppView>,
+    composer: Entity<git_panes::CommitComposer>,
+    cx: &mut App,
+) -> impl IntoElement {
+    let (
+        t,
+        sort,
+        group_by_status,
+        staged_idxs,
+        working_idxs,
+        all_idxs,
+        stash_panel_open,
+        changes_list_compact,
+        changes_split_view,
+    ) = {
+        let view = app.read(cx);
+        let section_count = view.changes_sections.len();
+        let staged_idxs: Vec<usize> = (0..section_count)
+            .filter(|&i| view.changes_sections[i].title == "Staged")
+            .collect();
+        let working_idxs: Vec<usize> = (0..section_count)
+            .filter(|&i| view.changes_sections[i].title != "Staged")
+            .collect();
+        (
+            view.t(),
+            view.change_sort.normalized(),
+            view.group_by_status,
+            staged_idxs,
+            working_idxs,
+            (0..section_count).collect::<Vec<_>>(),
+            view.stash_panel_open,
+            view.changes_list_compact,
+            view.changes_split_view,
+        )
+    };
+    let app_reload = app.clone();
+    let app_stash = app.clone();
 
     div()
         .flex()
@@ -57,107 +187,17 @@ pub fn render(view: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
                     icon_btn("refresh", IconName::RefreshCw)
                         .accessibility_label(t.refresh)
                         .tooltip(t.tip_refresh)
-                        .on_click(cx.listener(|this, _, _, cx| this.reload(cx))),
+                        .on_click(app_click(app_reload, |this, cx| this.reload(cx))),
                 ),
         )
-        .child(
-            pane_toolbar(cx)
-                .flex()
-                .flex_col()
-                .gap_2()
-                .p_3()
-                .child(
-                    div()
-                        .w_full()
-                        .rounded(cx.theme().radius)
-                        .border_1()
-                        .border_color(cx.theme().border)
-                        // Input surface — distinct from secondary/toolbar action chips.
-                        .bg(cx.theme().input_background())
-                        .overflow_hidden()
-                        .flex()
-                        .flex_col()
-                        .child({
-                            let entity = cx.entity();
-                            let has_repo = view.has_repo();
-                            div()
-                                .flex()
-                                .items_center()
-                                .justify_end()
-                                .px_1()
-                                .pt_1()
-                                .child(
-                                    div()
-                                        .context_menu(move |menu, _, _| {
-                                            let entity_gen = entity.clone();
-                                            let entity_settings = entity.clone();
-                                            menu.item(menu_item_with_icon(
-                                                t.commit_ai_menu_generate,
-                                                AssetIcon::Sparkles,
-                                                move |_, window, cx| {
-                                                    entity_gen.update(cx, |this, cx| {
-                                                        this.generate_commit_message(window, cx);
-                                                    });
-                                                },
-                                            ))
-                                            .item(menu_item_with_icon(
-                                                t.commit_ai_open_settings,
-                                                AssetIcon::Settings,
-                                                move |_, window, cx| {
-                                                    entity_settings.update(cx, |this, cx| {
-                                                        this.open_commit_ai_settings(window, cx);
-                                                    });
-                                                },
-                                            ))
-                                        })
-                                        .child(with_busy(
-                                            icon_btn("generate-commit-ai", AssetIcon::Sparkles)
-                                                .accessibility_label(t.generate_commit_message)
-                                                .tooltip(t.tip_generate_commit_message)
-                                                .disabled(!has_repo)
-                                                .on_click(cx.listener(|this, _, window, cx| {
-                                                    this.generate_commit_message(window, cx);
-                                                })),
-                                            view
-                                                .is_generating_commit_message()
-                                                .then_some(BusyKind::GenerateCommitMessage),
-                                            BusyKind::GenerateCommitMessage,
-                                        )),
-                                )
-                        })
-                        .child(
-                            div()
-                                .w_full()
-                                .px_2()
-                                .pb_2()
-                                .child(
-                                    Textarea::new(&view.commit_input)
-                                        .appearance(true)
-                                        .border_1()
-                                        .border_color(cx.theme().border)
-                                        .rounded(cx.theme().radius),
-                                ),
-                        ),
-                )
-                .child(
-                    with_busy(
-                        confirm_btn("commit", AssetIcon::GitCommitVertical, cx)
-                            .w_full()
-                            .label(t.commit)
-                            .tooltip(t.tip_commit)
-                            .on_click(cx.listener(|this, _, window, cx| this.commit(window, cx))),
-                        view.busy,
-                        BusyKind::Commit,
-                    ),
-                ),
-        )
-        .child(stage_filter_row(view, sort, group_by_status, t, cx))
-        .when(view.stash_panel_open, |this| this.child(stash_panel(view, t, cx)))
+        .child(composer)
+        .child(stage_filter_row(&app, sort, group_by_status, t, cx))
+        .when(stash_panel_open, |this| this.child(stash_panel(&app_stash, t, cx)))
         .child({
-            let entity = cx.entity();
-            let compact = view.changes_list_compact;
+            let entity = app.clone();
+            let compact = changes_list_compact;
             // Top sections are always Staged vs working; split does not need status subgroups.
-            let use_split = view.changes_split_view;
+            let use_split = changes_split_view;
             let measure = canvas(
                 {
                     let entity = entity.clone();
@@ -214,7 +254,7 @@ pub fn render(view: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
                                     .child(
                                         changes_column(
                                             "changes-working",
-                                            view,
+                                            app.clone(),
                                             &working_idxs,
                                             compact,
                                             t,
@@ -227,7 +267,7 @@ pub fn render(view: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
                                 resizable_panel().child(
                                     changes_column(
                                         "changes-staged",
-                                        view,
+                                        app.clone(),
                                         &staged_idxs,
                                         compact,
                                         t,
@@ -256,7 +296,7 @@ pub fn render(view: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
                             .min_w_0()
                             .child(section_stack(
                                 "changes-stack",
-                                view,
+                                app.clone(),
                                 &all_idxs,
                                 compact,
                                 t,
@@ -270,11 +310,11 @@ pub fn render(view: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
 
 fn changes_column(
     id: &'static str,
-    view: &AppView,
+    app: Entity<AppView>,
     section_idxs: &[usize],
     compact: bool,
     t: UiText,
-    cx: &mut Context<AppView>,
+    cx: &mut App,
 ) -> impl IntoElement {
     div()
         .id(id)
@@ -291,7 +331,7 @@ fn changes_column(
                 .min_w_0()
                 .child(section_stack(
                     SharedString::from(format!("{id}-stack")),
-                    view,
+                    app,
                     section_idxs,
                     compact,
                     t,
@@ -303,13 +343,13 @@ fn changes_column(
 /// Stack of status sections with vertical resize handles between them.
 fn section_stack(
     stack_id: impl Into<ElementId>,
-    view: &AppView,
+    app: Entity<AppView>,
     section_idxs: &[usize],
     compact: bool,
     t: UiText,
-    cx: &mut Context<AppView>,
+    cx: &mut App,
 ) -> impl IntoElement {
-    let panels = render_section_panels(view, section_idxs, compact, t, cx);
+    let panels = render_section_panels(app, section_idxs, compact, t, cx);
     match panels.len() {
         0 => div().size_full().min_h_0().into_any_element(),
         1 => div()
@@ -339,43 +379,62 @@ fn section_stack(
 
 /// One panel per status section: sticky header + virtualized body.
 fn render_section_panels(
-    view: &AppView,
+    app: Entity<AppView>,
     section_idxs: &[usize],
     compact: bool,
     t: UiText,
-    cx: &mut Context<AppView>,
+    cx: &mut App,
 ) -> Vec<AnyElement> {
-    let entity = cx.entity();
-    section_idxs
-        .iter()
-        .copied()
-        .filter_map(|section_idx| {
-            let section = view.changes_sections.get(section_idx)?;
-            let title = section.title;
-            let item_count = section.items.len();
-            let title_key = title.to_string();
-            let expanded = !view.collapsed_change_sections.contains(&title_key);
-            let row_count = view
-                .changes_flat_rows
-                .get(section_idx)
-                .map(|r| r.len())
-                .unwrap_or(0);
-
-            Some(
-                div()
-                    .id(SharedString::from(format!("section-panel:{title}")))
-                    .size_full()
-                    .min_w_0()
-                    .min_h_0()
-                    .flex()
-                    .flex_col()
-                    .rounded(cx.theme().radius)
-                    .border_1()
-                    .border_color(cx.theme().border)
-                    .overflow_hidden()
-                    .child(section_header(
-                        view, title, item_count, expanded, t, cx,
-                    ))
+    let panels: Vec<_> = {
+        let view = app.read(cx);
+        section_idxs
+            .iter()
+            .copied()
+            .filter_map(|section_idx| {
+                let section = view.changes_sections.get(section_idx)?;
+                let title = section.title;
+                let item_count = section.items.len();
+                let title_key = title.to_string();
+                let expanded = !view.collapsed_change_sections.contains(&title_key);
+                let row_count = view
+                    .changes_flat_rows
+                    .get(section_idx)
+                    .map(|r| r.len())
+                    .unwrap_or(0);
+                Some((
+                    section_idx,
+                    title,
+                    item_count,
+                    title_key,
+                    expanded,
+                    row_count,
+                ))
+            })
+            .collect()
+    };
+    let entity = app.clone();
+    let mut out = Vec::new();
+    for (section_idx, title, item_count, _title_key, expanded, row_count) in panels {
+        out.push(
+            div()
+                .id(SharedString::from(format!("section-panel:{title}")))
+                .size_full()
+                .min_w_0()
+                .min_h_0()
+                .flex()
+                .flex_col()
+                .rounded(cx.theme().radius)
+                .border_1()
+                .border_color(cx.theme().border)
+                .overflow_hidden()
+                .child(section_header(
+                    entity.clone(),
+                    title,
+                    item_count,
+                    expanded,
+                    t,
+                    cx,
+                ))
                     .when(expanded, |this| {
                         let entity = entity.clone();
                         this.child(
@@ -395,10 +454,10 @@ fn render_section_panels(
                             .py_1(),
                         )
                     })
-                    .into_any_element(),
-            )
-        })
-        .collect()
+                .into_any_element(),
+        );
+    }
+    out
 }
 
 fn render_flat_range(
@@ -509,11 +568,8 @@ fn render_flat_range(
         .collect()
 }
 
-fn stash_panel(
-    view: &AppView,
-    t: UiText,
-    cx: &mut Context<AppView>,
-) -> impl IntoElement {
+fn stash_panel(app: &Entity<AppView>, t: UiText, cx: &mut App) -> impl IntoElement {
+    let view = app.read(cx);
     div()
         .id("stash-panel")
         .flex()
@@ -531,8 +587,8 @@ fn stash_panel(
                     .label(t.stash_include_untracked)
                     .checked(view.stash_include_untracked)
                     .tooltip(t.tip_stash_include_untracked)
-                    .on_click(cx.listener(|this, checked, _, cx| {
-                        this.set_stash_include_untracked(*checked, cx);
+                    .on_click(app_toggle(app.clone(), |this, checked, cx| {
+                        this.set_stash_include_untracked(checked, cx);
                     })),
                 cx,
             ),
@@ -559,7 +615,7 @@ fn stash_panel(
                 .children(view.stashes.iter().map(|entry| {
                     let idx = entry.index;
                     let msg = entry.message.clone();
-                    let entity = cx.entity();
+                    let entity = app.clone();
                     div()
                         .w_full()
                         .flex()
@@ -648,13 +704,14 @@ fn stash_panel(
 }
 
 fn stage_filter_row(
-    view: &AppView,
+    app: &Entity<AppView>,
     sort: ChangeSort,
     group_by_status: bool,
     t: UiText,
-    cx: &mut Context<AppView>,
+    cx: &mut App,
 ) -> impl IntoElement {
-    let entity = cx.entity();
+    let view = app.read(cx);
+    let entity = app.clone();
 
     pane_toolbar(cx)
         .id("stage-filter-row")
@@ -671,7 +728,7 @@ fn stage_filter_row(
                     .small()
                     .label(t.stage_all)
                     .tooltip(t.tip_stage_all)
-                    .on_click(cx.listener(|this, _, window, cx| {
+                    .on_click(app_click_window(entity.clone(), |this, window, cx| {
                         this.stage_all(window, cx);
                     })),
                 view.busy,
@@ -684,7 +741,7 @@ fn stage_filter_row(
                     .small()
                     .label(t.unstage_all)
                     .tooltip(t.tip_unstage_all)
-                    .on_click(cx.listener(|this, _, window, cx| {
+                    .on_click(app_click_window(entity.clone(), |this, window, cx| {
                         this.unstage_all(window, cx);
                     })),
                 view.busy,
@@ -697,7 +754,7 @@ fn stage_filter_row(
                     .small()
                     .label(t.stash_push)
                     .tooltip(t.tip_stash_push)
-                    .on_click(cx.listener(|this, _, window, cx| {
+                    .on_click(app_click_window(entity.clone(), |this, window, cx| {
                         this.confirm_stash_push(window, cx);
                     })),
                 view.busy,
@@ -711,7 +768,7 @@ fn stage_filter_row(
                     .label(t.stash_pop)
                     .tooltip(t.tip_stash_pop)
                     .disabled(view.stashes.is_empty())
-                    .on_click(cx.listener(|this, _, window, cx| {
+                    .on_click(app_click_window(entity.clone(), |this, window, cx| {
                         this.confirm_stash_pop(None, window, cx);
                     })),
                 view.busy,
@@ -729,7 +786,7 @@ fn stage_filter_row(
                 })
                 .label(format!("{} ({})", t.stash_list, view.stashes.len()))
                 .tooltip(t.tip_stash_list)
-                .on_click(cx.listener(|this, _, _, cx| {
+                .on_click(app_click(entity.clone(), |this, cx| {
                     this.toggle_stash_panel(cx);
                 })),
         )
@@ -759,7 +816,7 @@ fn stage_filter_row(
                 .icon(AssetIcon::ArrowUpDown)
                 .label(sort.label())
                 .tooltip(t.tip_sort_name_toggle)
-                .on_click(cx.listener(|this, _, _, cx| {
+                .on_click(app_click(entity.clone(), |this, cx| {
                     this.toggle_change_sort_name(cx);
                 })),
         )
@@ -778,13 +835,14 @@ fn section_action_label(
 }
 
 fn section_header(
-    view: &AppView,
+    app: Entity<AppView>,
     title: &'static str,
     count: usize,
     expanded: bool,
     t: UiText,
-    cx: &mut Context<AppView>,
+    cx: &mut App,
 ) -> impl IntoElement {
+    let view = app.read(cx);
     let label = section_title(title, t);
     let title_toggle = title.to_string();
     let hide_labels = view
@@ -797,7 +855,7 @@ fn section_header(
     } else {
         AssetIcon::ChevronRight
     };
-    let entity = cx.entity();
+    let entity = app;
     let measure_title = title.to_string();
 
     pane_header(cx)
@@ -865,7 +923,7 @@ fn section_header(
                     } else {
                         t.tip_expand_section
                     })
-                    .on_click(cx.listener(move |this, _, _, cx| {
+                    .on_click(app_click(entity.clone(), move |this, cx| {
                         this.toggle_change_section(title_toggle.clone(), cx);
                     })),
                 )
@@ -912,7 +970,7 @@ fn section_header(
                                 tip,
                                 hide_labels,
                             )
-                            .on_click(cx.listener(move |this, _, _, cx| {
+                            .on_click(app_click(entity.clone(), move |this, cx| {
                                 this.toggle_select_section(title_sel.clone(), cx);
                             })),
                         )
@@ -930,7 +988,7 @@ fn section_header(
                                 t.tip_stage,
                                 hide_labels,
                             )
-                            .on_click(cx.listener(|this, _, window, cx| {
+                            .on_click(app_click_window(entity.clone(), |this, window, cx| {
                                 this.stage_selected(window, cx);
                             })),
                             view.busy,
@@ -958,7 +1016,7 @@ fn section_header(
                                 t.tip_revert_all_untracked,
                                 hide_labels,
                             )
-                            .on_click(cx.listener(|this, _, window, cx| {
+                            .on_click(app_click_window(entity.clone(), |this, window, cx| {
                                 this.confirm_revert_all_untracked(window, cx)
                             })),
                             view.busy,
@@ -993,7 +1051,7 @@ fn section_header(
                                     t.tip_stage,
                                     hide_labels,
                                 )
-                                .on_click(cx.listener(|this, _, window, cx| {
+                                .on_click(app_click_window(entity.clone(), |this, window, cx| {
                                     this.stage_selected(window, cx)
                                 })),
                                 view.busy,
@@ -1016,7 +1074,7 @@ fn section_header(
                                 t.tip_unstage,
                                 hide_labels,
                             )
-                            .on_click(cx.listener(|this, _, window, cx| {
+                            .on_click(app_click_window(entity.clone(), |this, window, cx| {
                                 this.unstage_selected(window, cx)
                             })),
                             view.busy,
@@ -1044,7 +1102,7 @@ fn section_header(
                                 t.tip_revert_selected,
                                 hide_labels,
                             )
-                            .on_click(cx.listener(|this, _, window, cx| {
+                            .on_click(app_click_window(entity.clone(), |this, window, cx| {
                                 this.confirm_revert(window, cx)
                             })),
                             view.busy,

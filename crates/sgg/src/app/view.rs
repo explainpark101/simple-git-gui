@@ -27,8 +27,8 @@ use super::i18n::{Locale, UiText};
 use super::page::{AppPage, NavEntry};
 use super::prefs::{
     absolute_path, display_path, remember_repo, AppPrefs, BranchSyncDisplay, CommitAiPrefs,
-    ProjectUiState, PullStrategy, StatusColors, ThemePreference, DEFAULT_TERMINAL_FONT_FAMILY,
-    DEFAULT_TERMINAL_FONT_SIZE, DEFAULT_TERMINAL_LINE_HEIGHT,
+    HistoryColumnsPrefs, ProjectUiState, PullStrategy, StatusColors, ThemePreference,
+    DEFAULT_TERMINAL_FONT_FAMILY, DEFAULT_TERMINAL_FONT_SIZE, DEFAULT_TERMINAL_LINE_HEIGHT,
 };
 use super::settings_nav::{MiddleScrollDrag, SettingsAnchors, SettingsSection};
 use super::progress::{
@@ -222,6 +222,8 @@ pub struct AppView {
     pub(super) ui_font_family: String,
     pub(super) show_inline_blame: bool,
     pub(super) show_diff_line_background: bool,
+    /// History table column visibility (Description / Date / Author / Commit).
+    pub(super) history_columns: HistoryColumnsPrefs,
     /// Commit history list (History tab).
     pub(super) history_commits: Vec<HistoryCommit>,
     /// Lane layout for the History list graph gutter (Zed-style).
@@ -264,6 +266,14 @@ pub struct AppView {
     blame_cursor_line: Option<usize>,
     /// Last editor scroll Y used to keep inline blame glued to the caret row.
     blame_scroll_y: Option<f32>,
+    /// Coalesce blame overlay AppView notifies (caret/scroll) to ~20 Hz.
+    blame_notify_task: Option<Task<()>>,
+    /// True while the commit textarea owns focus (pauses auto-refresh).
+    commit_input_focused: bool,
+    /// Generation token so stale async preview/gutter results are ignored.
+    pub(super) preview_load_gen: u64,
+    pub(super) preview_load_task: Option<Task<()>>,
+    gutter_load_gen: u64,
     pub(super) terminal_font_size: f32,
     pub(super) terminal_line_height: f32,
     pub(super) terminal_shell: TerminalShellPrefs,
@@ -348,6 +358,7 @@ pub struct AppView {
     _branch_search_sub: Option<Subscription>,
     _font_search_subs: Vec<Subscription>,
     _commit_input_sub: Option<Subscription>,
+    _commit_focus_subs: Vec<Subscription>,
     _preview_blame_sub: Option<Subscription>,
     /// Re-render when Unified Diff line selection changes (blame strip).
     _preview_diff_blame_sub: Option<Subscription>,
@@ -419,6 +430,12 @@ pub struct AppView {
     pub(super) fetch_prompted_root: Option<PathBuf>,
     pub(super) focus_handle: FocusHandle,
     refresh_task: Option<Task<()>>,
+    pub(super) git_sidebar: Entity<super::git_panes::GitSidebarPane>,
+    pub(super) changes_pane: Entity<super::git_panes::ChangesPane>,
+    pub(super) git_preview_pane: Entity<super::git_panes::PreviewPaneHost>,
+    pub(super) commit_composer: Entity<super::git_panes::CommitComposer>,
+    density_notify_task: Option<Task<()>>,
+    sidebar_density_notify_task: Option<Task<()>>,
 }
 
 impl Focusable for AppView {
@@ -433,6 +450,18 @@ impl AppView {
         let start_path = start_path.map(absolute_path);
         let t = prefs.locale.text();
         let focus_handle = cx.focus_handle();
+        let weak = cx.weak_entity();
+        let git_sidebar =
+            cx.new(|_| super::git_panes::GitSidebarPane { app: weak.clone() });
+        let changes_pane =
+            cx.new(|_| super::git_panes::ChangesPane { app: weak.clone() });
+        let git_preview_pane = cx.new(|_| super::git_panes::PreviewPaneHost {
+            app: weak.clone(),
+            show_close: true,
+            show_tabs: false,
+        });
+        let commit_composer =
+            cx.new(|_| super::git_panes::CommitComposer { app: weak });
 
         let commit_input = cx.new(|cx| {
             TextareaState::new(window, cx)
@@ -610,6 +639,7 @@ impl AppView {
             ui_font_family: prefs.ui_font_family.clone(),
             show_inline_blame: prefs.show_inline_blame,
             show_diff_line_background: prefs.show_diff_line_background,
+            history_columns: prefs.history_columns.clone(),
             history_commits: Vec::new(),
             history_graph: HistoryGraph::default(),
             history_graph_color_branches: HashMap::new(),
@@ -634,6 +664,11 @@ impl AppView {
             blame_lines: Vec::new(),
             blame_cursor_line: None,
             blame_scroll_y: None,
+            blame_notify_task: None,
+            commit_input_focused: false,
+            preview_load_gen: 0,
+            preview_load_task: None,
+            gutter_load_gen: 0,
             terminal_font_size: prefs.terminal_font_size,
             terminal_line_height: prefs.terminal_line_height,
             terminal_shell: prefs.terminal_shell.clone(),
@@ -700,6 +735,7 @@ impl AppView {
             _branch_search_sub: None,
             _font_search_subs: Vec::new(),
             _commit_input_sub: None,
+            _commit_focus_subs: Vec::new(),
             _preview_blame_sub: None,
             _preview_diff_blame_sub: None,
             _window_bounds_sub: None,
@@ -751,6 +787,12 @@ impl AppView {
             fetch_prompted_root: None,
             focus_handle: focus_handle.clone(),
             refresh_task: None,
+            git_sidebar,
+            changes_pane,
+            git_preview_pane,
+            commit_composer,
+            density_notify_task: None,
+            sidebar_density_notify_task: None,
         };
         view.apply_theme(cx);
         view.wire_status_color_pickers(window, cx);
@@ -1107,6 +1149,56 @@ impl AppView {
         }
         self.sync_window_title_from_cx(cx);
         cx.notify();
+        self.notify_git_work(cx);
+    }
+
+    pub(super) fn notify_changes(&self, cx: &mut Context<Self>) {
+        self.changes_pane.update(cx, |_, cx| cx.notify());
+        self.commit_composer.update(cx, |_, cx| cx.notify());
+    }
+
+    pub(super) fn notify_sidebar(&self, cx: &mut Context<Self>) {
+        self.git_sidebar.update(cx, |_, cx| cx.notify());
+    }
+
+    pub(super) fn notify_preview(&self, cx: &mut Context<Self>) {
+        self.git_preview_pane.update(cx, |_, cx| cx.notify());
+    }
+
+    pub(super) fn notify_git_work(&self, cx: &mut Context<Self>) {
+        self.notify_changes(cx);
+        self.notify_sidebar(cx);
+        self.notify_preview(cx);
+    }
+
+    fn schedule_density_notify(&mut self, cx: &mut Context<Self>) {
+        if self.density_notify_task.is_some() {
+            return;
+        }
+        self.density_notify_task = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(Duration::from_millis(0))
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                this.density_notify_task = None;
+                this.notify_changes(cx);
+            });
+        }));
+    }
+
+    fn schedule_sidebar_density_notify(&mut self, cx: &mut Context<Self>) {
+        if self.sidebar_density_notify_task.is_some() {
+            return;
+        }
+        self.sidebar_density_notify_task = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(Duration::from_millis(0))
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                this.sidebar_density_notify_task = None;
+                this.notify_sidebar(cx);
+            });
+        }));
     }
 
     pub(super) fn rebuild_changes_sections(&mut self) {
@@ -1178,7 +1270,7 @@ impl AppView {
         } else {
             self.selected.remove(&path);
         }
-        cx.notify();
+        self.notify_changes(cx);
     }
 
     /// Select or deselect every path in `paths` (used by Changes folder checkboxes).
@@ -1198,7 +1290,7 @@ impl AppView {
                 self.selected.remove(path);
             }
         }
-        cx.notify();
+        self.notify_changes(cx);
     }
 
     /// Paths listed under a Changes section title (`Staged` / `Unstaged` / …).
@@ -1228,7 +1320,7 @@ impl AppView {
 
     pub(super) fn select_remote(&mut self, name: String, cx: &mut Context<Self>) {
         self.selected_remote = name;
-        cx.notify();
+        self.notify_sidebar(cx);
     }
 
     pub(super) fn set_page(
@@ -1332,7 +1424,7 @@ impl AppView {
         self.change_sort = sort.normalized();
         self.rebuild_changes_sections();
         self.persist_prefs(cx);
-        cx.notify();
+        self.notify_changes(cx);
     }
 
     pub(super) fn toggle_change_sort_name(&mut self, cx: &mut Context<Self>) {
@@ -1369,6 +1461,7 @@ impl AppView {
                 self.clear_shared_preview_buffers(window, cx);
                 self.push_nav_entry(self.current_nav_entry());
                 cx.notify();
+                self.notify_git_work(cx);
             }
             AppPage::PullRequests | AppPage::Actions | AppPage::Settings => {}
         }
@@ -1453,7 +1546,7 @@ impl AppView {
         self.group_by_status = enabled;
         self.rebuild_changes_sections();
         self.persist_prefs(cx);
-        cx.notify();
+        self.notify_changes(cx);
     }
 
     pub(super) fn set_show_remote_branches(&mut self, enabled: bool, cx: &mut Context<Self>) {
@@ -1520,6 +1613,7 @@ impl AppView {
         self.locale = locale;
         self.apply_locale_placeholders(window, cx);
         self.persist_prefs(cx);
+        self.commit_composer.update(cx, |_, cx| cx.notify());
         cx.notify();
     }
 
@@ -1739,6 +1833,15 @@ impl AppView {
                 }
             },
         ));
+        let focus = input.read(cx).focus_handle(cx);
+        self._commit_focus_subs.clear();
+        self._commit_focus_subs.push(cx.on_focus_in(&focus, window, |this, _, _| {
+            this.commit_input_focused = true;
+        }));
+        self._commit_focus_subs
+            .push(cx.on_focus_out(&focus, window, |this, _, _, _| {
+                this.commit_input_focused = false;
+            }));
     }
 
     fn wire_window_bounds(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -1775,7 +1878,7 @@ impl AppView {
             if line_changed || scroll_changed {
                 this.blame_cursor_line = Some(line);
                 this.blame_scroll_y = Some(scroll_y);
-                cx.notify();
+                this.schedule_blame_notify(cx);
             }
         }));
         let diff = self.history_diff.clone();
@@ -1786,7 +1889,23 @@ impl AppView {
             if this.preview_diff_layout() != Some(HistoryDiffLayout::Unified) {
                 return;
             }
-            cx.notify();
+            this.schedule_blame_notify(cx);
+        }));
+    }
+
+    /// Throttle AppView redraws for the inline blame overlay (~20 Hz).
+    fn schedule_blame_notify(&mut self, cx: &mut Context<Self>) {
+        if self.blame_notify_task.is_some() {
+            return;
+        }
+        self.blame_notify_task = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(Duration::from_millis(50))
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                this.blame_notify_task = None;
+                cx.notify();
+            });
         }));
     }
 
@@ -1850,6 +1969,34 @@ impl AppView {
     ) {
         self.show_diff_line_background = enabled;
         self.refresh_preview_diff_gutter(cx);
+        self.persist_prefs(cx);
+        cx.notify();
+    }
+
+    pub(super) fn set_history_column_description(
+        &mut self,
+        enabled: bool,
+        cx: &mut Context<Self>,
+    ) {
+        self.history_columns.description = enabled;
+        self.persist_prefs(cx);
+        cx.notify();
+    }
+
+    pub(super) fn set_history_column_date(&mut self, enabled: bool, cx: &mut Context<Self>) {
+        self.history_columns.date = enabled;
+        self.persist_prefs(cx);
+        cx.notify();
+    }
+
+    pub(super) fn set_history_column_author(&mut self, enabled: bool, cx: &mut Context<Self>) {
+        self.history_columns.author = enabled;
+        self.persist_prefs(cx);
+        cx.notify();
+    }
+
+    pub(super) fn set_history_column_commit(&mut self, enabled: bool, cx: &mut Context<Self>) {
+        self.history_columns.commit = enabled;
         self.persist_prefs(cx);
         cx.notify();
     }
@@ -2090,68 +2237,80 @@ impl AppView {
 
         let root = self.repo_root();
         let text = self.preview_input.read(cx).value().to_string();
-        let changes = match list_file_line_changes(&root, &path) {
-            Ok(c) => c,
-            Err(_) => {
-                self.clear_preview_diff_gutter(cx);
-                return;
-            }
-        };
-
         let added = self.effective_status_color("added", cx);
         let modified = self.effective_status_color("modified", cx);
         let deleted = self.effective_status_color("deleted", cx);
         let line_bg = self.show_diff_line_background;
-        // Soft tint over the full line (gutter bar keeps full-strength color).
-        const LINE_BG_OPACITY: f32 = 0.18;
+        self.gutter_load_gen = self.gutter_load_gen.wrapping_add(1);
+        let gen = self.gutter_load_gen;
 
-        let mut gutter = Vec::with_capacity(changes.len());
-        let mut ruler = Vec::with_capacity(changes.len());
-        let mut fills = Vec::new();
-        for change in changes {
-            match change {
-                LineChange::Lines { kind, start, end } if end > start => {
-                    let range = lines_byte_range(&text, start, end);
-                    if range.start >= range.end && !text.is_empty() {
-                        continue;
-                    }
-                    let color = match kind {
-                        LineChangeKind::Added => added,
-                        LineChangeKind::Modified => modified,
-                        LineChangeKind::Deleted => deleted,
-                    };
-                    gutter.push(GutterDecoration::new(range.clone()).with_color(color));
-                    ruler.push(
-                        OverviewRulerDecoration::new(range.clone())
-                            .with_lane(OverviewRulerLane::Left)
-                            .with_color(color.opacity(0.7)),
-                    );
-                    if line_bg && matches!(kind, LineChangeKind::Added | LineChangeKind::Modified)
-                    {
-                        fills.push(
-                            RangeDecoration::new(range)
-                                .with_style(RangeDecorationStyle::Fill)
-                                .with_color(color.opacity(LINE_BG_OPACITY)),
-                        );
+        cx.spawn(async move |this, cx| {
+            let changes = cx
+                .background_spawn(async move {
+                    list_file_line_changes(&root, &path).unwrap_or_default()
+                })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                if this.gutter_load_gen != gen {
+                    return;
+                }
+                // Soft tint over the full line (gutter bar keeps full-strength color).
+                const LINE_BG_OPACITY: f32 = 0.18;
+
+                let mut gutter = Vec::with_capacity(changes.len());
+                let mut ruler = Vec::with_capacity(changes.len());
+                let mut fills = Vec::new();
+                for change in changes {
+                    match change {
+                        LineChange::Lines { kind, start, end } if end > start => {
+                            let range = lines_byte_range(&text, start, end);
+                            if range.start >= range.end && !text.is_empty() {
+                                continue;
+                            }
+                            let color = match kind {
+                                LineChangeKind::Added => added,
+                                LineChangeKind::Modified => modified,
+                                LineChangeKind::Deleted => deleted,
+                            };
+                            gutter.push(GutterDecoration::new(range.clone()).with_color(color));
+                            ruler.push(
+                                OverviewRulerDecoration::new(range.clone())
+                                    .with_lane(OverviewRulerLane::Left)
+                                    .with_color(color.opacity(0.7)),
+                            );
+                            if line_bg
+                                && matches!(
+                                    kind,
+                                    LineChangeKind::Added | LineChangeKind::Modified
+                                )
+                            {
+                                fills.push(
+                                    RangeDecoration::new(range)
+                                        .with_style(RangeDecorationStyle::Fill)
+                                        .with_color(color.opacity(LINE_BG_OPACITY)),
+                                );
+                            }
+                        }
+                        LineChange::DeletedBefore { before } => {
+                            let offset = line_start_offset(&text, before);
+                            let range = offset..offset;
+                            gutter.push(GutterDecoration::new(range.clone()).with_color(deleted));
+                            ruler.push(
+                                OverviewRulerDecoration::new(range)
+                                    .with_lane(OverviewRulerLane::Left)
+                                    .with_color(deleted.opacity(0.7)),
+                            );
+                        }
+                        LineChange::Lines { .. } => {}
                     }
                 }
-                LineChange::DeletedBefore { before } => {
-                    let offset = line_start_offset(&text, before);
-                    let range = offset..offset;
-                    gutter.push(GutterDecoration::new(range.clone()).with_color(deleted));
-                    ruler.push(
-                        OverviewRulerDecoration::new(range)
-                            .with_lane(OverviewRulerLane::Left)
-                            .with_color(deleted.opacity(0.7)),
-                    );
-                }
-                LineChange::Lines { .. } => {}
-            }
-        }
 
-        self.preview_diff_gutter.set(gutter, cx);
-        self.preview_diff_ruler.set(ruler, cx);
-        self.preview_diff_line_bg.set(fills, cx);
+                this.preview_diff_gutter.set(gutter, cx);
+                this.preview_diff_ruler.set(ruler, cx);
+                this.preview_diff_line_bg.set(fills, cx);
+            });
+        })
+        .detach();
     }
 
     /// Gutter + fills for Split Diff (aligned dual editors: History or Changes).
@@ -2162,75 +2321,96 @@ impl AppView {
         };
 
         let root = self.repo_root();
-        let patch = sgg_core::diff_file_at_commit(&root, &oid, &path).unwrap_or_default();
-        let Some(aligned) = sgg_core::align_split_from_unified(&patch) else {
-            self.clear_preview_diff_gutter(cx);
-            return;
-        };
-
         let old_text = self.preview_input_old.read(cx).value().to_string();
         let new_text = self.preview_input.read(cx).value().to_string();
         let added = self.effective_status_color("added", cx);
         let modified = self.effective_status_color("modified", cx);
         let deleted = self.effective_status_color("deleted", cx);
-        const LINE_BG_OPACITY: f32 = 0.18;
         let line_bg = self.show_diff_line_background;
+        // Prefer in-memory aligned split when we already built it for the editors.
+        let cached = self.history_aligned_split.clone();
+        self.gutter_load_gen = self.gutter_load_gen.wrapping_add(1);
+        let gen = self.gutter_load_gen;
 
-        let mut gutter_old = Vec::new();
-        let mut fills_old = Vec::new();
-        for (kind, start, end) in aligned.old_marks() {
-            if end <= start {
-                continue;
-            }
-            let range = lines_byte_range(&old_text, start, end);
-            let color = match kind {
-                LineChangeKind::Deleted => deleted,
-                LineChangeKind::Modified => modified,
-                LineChangeKind::Added => added,
+        cx.spawn(async move |this, cx| {
+            let aligned = if let Some(aligned) = cached {
+                Some(aligned)
+            } else {
+                cx.background_spawn(async move {
+                    let patch =
+                        sgg_core::diff_file_at_commit(&root, &oid, &path).unwrap_or_default();
+                    sgg_core::align_split_from_unified(&patch)
+                })
+                .await
             };
-            gutter_old.push(GutterDecoration::new(range.clone()).with_color(color));
-            if line_bg {
-                fills_old.push(
-                    RangeDecoration::new(range)
-                        .with_style(RangeDecorationStyle::Fill)
-                        .with_color(color.opacity(LINE_BG_OPACITY)),
-                );
-            }
-        }
+            let _ = this.update(cx, |this, cx| {
+                if this.gutter_load_gen != gen {
+                    return;
+                }
+                let Some(aligned) = aligned else {
+                    this.clear_preview_diff_gutter(cx);
+                    return;
+                };
+                const LINE_BG_OPACITY: f32 = 0.18;
 
-        let mut gutter_new = Vec::new();
-        let mut fills_new = Vec::new();
-        let mut ruler = Vec::new();
-        for (kind, start, end) in aligned.new_marks() {
-            if end <= start {
-                continue;
-            }
-            let range = lines_byte_range(&new_text, start, end);
-            let color = match kind {
-                LineChangeKind::Added => added,
-                LineChangeKind::Modified => modified,
-                LineChangeKind::Deleted => deleted,
-            };
-            gutter_new.push(GutterDecoration::new(range.clone()).with_color(color));
-            ruler.push(
-                OverviewRulerDecoration::new(range.clone())
-                    .with_lane(OverviewRulerLane::Left)
-                    .with_color(color.opacity(0.7)),
-            );
-            if line_bg {
-                fills_new.push(
-                    RangeDecoration::new(range)
-                        .with_style(RangeDecorationStyle::Fill)
-                        .with_color(color.opacity(LINE_BG_OPACITY)),
-                );
-            }
-        }
+                let mut gutter_old = Vec::new();
+                let mut fills_old = Vec::new();
+                for (kind, start, end) in aligned.old_marks() {
+                    if end <= start {
+                        continue;
+                    }
+                    let range = lines_byte_range(&old_text, start, end);
+                    let color = match kind {
+                        LineChangeKind::Deleted => deleted,
+                        LineChangeKind::Modified => modified,
+                        LineChangeKind::Added => added,
+                    };
+                    gutter_old.push(GutterDecoration::new(range.clone()).with_color(color));
+                    if line_bg {
+                        fills_old.push(
+                            RangeDecoration::new(range)
+                                .with_style(RangeDecorationStyle::Fill)
+                                .with_color(color.opacity(LINE_BG_OPACITY)),
+                        );
+                    }
+                }
 
-        self.preview_diff_gutter_old.set(gutter_old, cx);
-        self.preview_diff_line_bg_old.set(fills_old, cx);
-        self.preview_diff_gutter.set(gutter_new, cx);
-        self.preview_diff_line_bg.set(fills_new, cx);
-        self.preview_diff_ruler.set(ruler, cx);
+                let mut gutter_new = Vec::new();
+                let mut fills_new = Vec::new();
+                let mut ruler = Vec::new();
+                for (kind, start, end) in aligned.new_marks() {
+                    if end <= start {
+                        continue;
+                    }
+                    let range = lines_byte_range(&new_text, start, end);
+                    let color = match kind {
+                        LineChangeKind::Added => added,
+                        LineChangeKind::Modified => modified,
+                        LineChangeKind::Deleted => deleted,
+                    };
+                    gutter_new.push(GutterDecoration::new(range.clone()).with_color(color));
+                    ruler.push(
+                        OverviewRulerDecoration::new(range.clone())
+                            .with_lane(OverviewRulerLane::Left)
+                            .with_color(color.opacity(0.7)),
+                    );
+                    if line_bg {
+                        fills_new.push(
+                            RangeDecoration::new(range)
+                                .with_style(RangeDecorationStyle::Fill)
+                                .with_color(color.opacity(LINE_BG_OPACITY)),
+                        );
+                    }
+                }
+
+                this.preview_diff_gutter_old.set(gutter_old, cx);
+                this.preview_diff_line_bg_old.set(fills_old, cx);
+                this.preview_diff_gutter.set(gutter_new, cx);
+                this.preview_diff_line_bg.set(fills_new, cx);
+                this.preview_diff_ruler.set(ruler, cx);
+            });
+        })
+        .detach();
     }
 
     pub(super) fn refresh_inline_blame(&mut self, cx: &mut Context<Self>) {
@@ -2300,7 +2480,7 @@ impl AppView {
         if !compact {
             self.branch_search_open = false;
         }
-        cx.notify();
+        self.schedule_sidebar_density_notify(cx);
     }
 
     pub(super) fn toggle_branch_search_open(
@@ -2532,7 +2712,7 @@ impl AppView {
         self.changes_as_tree = enabled;
         self.rebuild_changes_flat_rows();
         self.persist_prefs(cx);
-        cx.notify();
+        self.notify_changes(cx);
     }
 
     pub(super) fn set_history_files_as_tree(&mut self, enabled: bool, cx: &mut Context<Self>) {
@@ -2746,7 +2926,11 @@ impl AppView {
         self.refresh_task = Some(cx.spawn(async move |this, cx| {
             loop {
                 cx.background_executor().timer(interval).await;
-                let should = this.read_with(cx, |this, _| this.busy.is_none());
+                let should = this.read_with(cx, |this, _| {
+                    this.busy.is_none()
+                        && !this.commit_input_focused
+                        && this.generate_commit_task.is_none()
+                });
                 match should {
                     Ok(true) => {}
                     Ok(false) => continue,
@@ -3716,7 +3900,8 @@ impl AppView {
         self.generate_commit_abort = Some(abort.clone());
         // Progress only — leave `busy` free for Stage / Unstage / Commit.
         self.begin_progress(BusyKind::GenerateCommitMessage);
-        cx.notify();
+        self.commit_composer.update(cx, |_, cx| cx.notify());
+        self.notify_sidebar(cx);
 
         enum GenEvent {
             Partial(String),
@@ -3743,6 +3928,8 @@ impl AppView {
             loop {
                 match rx.try_recv() {
                     Ok(GenEvent::Partial(text)) => {
+                        // Update the textarea entity only — do not notify AppView
+                        // (full Git-page rebuild) on every streamed chunk.
                         let _ = cx.update(|window, cx| {
                             this.update(cx, |this, cx| {
                                 if this.generate_commit_abort.as_ref().is_some_and(|a| {
@@ -3753,7 +3940,6 @@ impl AppView {
                                 this.commit_input.update(cx, |input, cx| {
                                     input.set_value(&text, window, cx);
                                 });
-                                cx.notify();
                             })
                         });
                     }
@@ -3788,6 +3974,8 @@ impl AppView {
                                     let done = this.status_line.clone();
                                     this.finish_progress(this.error.is_none(), done);
                                 }
+                                this.commit_composer.update(cx, |_, cx| cx.notify());
+                                this.notify_sidebar(cx);
                                 cx.notify();
                             })
                         });
@@ -3850,6 +4038,7 @@ impl AppView {
             },
             show_inline_blame: self.show_inline_blame,
             show_diff_line_background: self.show_diff_line_background,
+            history_columns: self.history_columns.clone(),
             ui_font_family: self.ui_font_family.clone(),
             commit_ai: self.commit_ai.clone(),
             stash_include_untracked: self.stash_include_untracked,
@@ -3947,7 +4136,7 @@ impl AppView {
             changed = true;
         }
         if changed {
-            cx.notify();
+            self.schedule_density_notify(cx);
         }
     }
 
@@ -3967,13 +4156,13 @@ impl AppView {
         }
         self.changes_section_hide_labels
             .insert(title.to_string(), hide);
-        cx.notify();
+        self.schedule_density_notify(cx);
     }
 
     pub(super) fn set_remote_actions_compact(&mut self, compact: bool, cx: &mut Context<Self>) {
         if self.remote_actions_compact != compact {
             self.remote_actions_compact = compact;
-            cx.notify();
+            self.schedule_sidebar_density_notify(cx);
         }
     }
 
@@ -4027,14 +4216,14 @@ impl AppView {
             self.collapsed_change_dirs.insert(key);
         }
         self.rebuild_changes_flat_rows();
-        cx.notify();
+        self.notify_changes(cx);
     }
 
     pub(super) fn toggle_change_section(&mut self, title: String, cx: &mut Context<Self>) {
         if !self.collapsed_change_sections.remove(&title) {
             self.collapsed_change_sections.insert(title);
         }
-        cx.notify();
+        self.notify_changes(cx);
     }
 
     pub(super) fn set_ok_status(&mut self, message: impl Into<SharedString>) {

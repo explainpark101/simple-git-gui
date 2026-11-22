@@ -1,12 +1,12 @@
 mod actions;
-mod changes;
+pub(super) mod changes;
 mod files_page;
 mod git_graph;
 mod history;
-mod preview_pane;
+pub(super) mod preview_pane;
 mod prs;
 mod settings;
-mod sidebar;
+pub(super) mod sidebar;
 pub(super) mod status_style;
 mod toolbar;
 
@@ -28,23 +28,8 @@ use crate::app::widgets::{action_btn, display_btn, icon_btn, list_row_btn, with_
 use crate::app::{
     ClosePreview, HistoryBack, HistoryForward, NewTerminalTab, SavePreview, ToggleTerminal,
 };
-use sgg_core::{BranchInfo, RemoteInfo};
-
 impl Render for AppView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // Borrow snapshot slices — avoid cloning large vecs every frame.
-        let empty_branches: &[BranchInfo] = &[];
-        let empty_remotes: &[RemoteInfo] = &[];
-        let branches = self
-            .snapshot
-            .as_ref()
-            .map(|s| s.branches.as_slice())
-            .unwrap_or(empty_branches);
-        let remotes = self
-            .snapshot
-            .as_ref()
-            .map(|s| s.remotes.as_slice())
-            .unwrap_or(empty_remotes);
         let focus = self.focus_handle(cx);
         let preview_open = self.git_preview_path.is_some();
         let sidebar_collapsed = self.sidebar_collapsed;
@@ -140,19 +125,14 @@ impl Render for AppView {
                                         resizable_panel()
                                             .size(px(360.))
                                             .size_range(px(340.)..px(560.))
-                                            .child(
-                                                changes::render(self, cx).into_any_element(),
-                                            ),
+                                            .child(self.changes_pane.clone()),
                                     )
                                     .child(
-                                        resizable_panel().child(
-                                            preview_pane::render(self, true, false, cx)
-                                                .into_any_element(),
-                                        ),
+                                        resizable_panel().child(self.git_preview_pane.clone()),
                                     )
                                     .into_any_element()
                             } else {
-                                changes::render(self, cx).into_any_element()
+                                self.changes_pane.clone().into_any_element()
                             };
 
                             h_resizable("git-panes")
@@ -168,9 +148,7 @@ impl Render for AppView {
                                         } else {
                                             px(280.)..px(480.)
                                         })
-                                        .child(
-                                            sidebar::render(self, branches, remotes, cx),
-                                        ),
+                                        .child(self.git_sidebar.clone()),
                                 )
                                 .child(resizable_panel().child(work))
                                 .into_any_element()
