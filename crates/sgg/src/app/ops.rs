@@ -1238,7 +1238,32 @@ impl AppView {
                 self.set_ok_status(format!("Preview {rel_path}"));
                 return;
             }
-            // Load from disk into a new tab (off the UI thread).
+            // Open the tab immediately (like Git's optimistic preview_path) so the
+            // Files preview pane mounts before the disk read finishes.
+            self.preview_tabs.push(PreviewTab {
+                path: rel_path.clone(),
+                content: String::new(),
+            });
+            let idx = self.preview_tabs.len() - 1;
+            self.preview_tab_index = idx;
+            self.preview_path = Some(rel_path.clone());
+            self.error = None;
+            self.clear_blame_state();
+            self.history_aligned_split = None;
+            self.preview_input.update(cx, |input, cx| {
+                input.set_line_number(true, window, cx);
+                input.set_value("", window, cx);
+            });
+            self.preview_input_old.update(cx, |input, cx| {
+                input.set_line_number(true, window, cx);
+                input.set_value("", window, cx);
+            });
+            self.history_diff.update(cx, |state, cx| {
+                state.set_files([], cx);
+            });
+            self.push_nav_entry(self.current_nav_entry());
+            self.set_ok_status(format!("Preview {rel_path}"));
+
             self.preview_load_gen = self.preview_load_gen.wrapping_add(1);
             let gen = self.preview_load_gen;
             let path = rel_path.clone();
@@ -1250,28 +1275,47 @@ impl AppView {
                     .await;
                 let _ = cx.update(|window, cx| {
                     this.update(cx, |this, cx| {
-                        this.preview_load_task = None;
-                        if this.preview_load_gen != gen {
+                        if this.preview_load_gen == gen {
+                            this.preview_load_task = None;
+                        }
+                        // Tab may outlive a superseded load; still fill/close it.
+                        if !this.preview_tabs.iter().any(|t| t.path == path) {
                             return;
                         }
                         match result {
                             Ok(content) => {
-                                this.preview_tabs.push(PreviewTab {
-                                    path: path.clone(),
-                                    content: content.clone(),
-                                });
-                                let idx = this.preview_tabs.len() - 1;
-                                this.preview_tab_index = idx;
-                                this.preview_input.update(cx, |input, cx| {
-                                    input.set_value(&content, window, cx);
-                                });
-                                this.preview_path = Some(path.clone());
-                                this.error = None;
-                                this.push_nav_entry(this.current_nav_entry());
-                                this.set_ok_status(format!("Preview {path}"));
+                                if let Some(tab) =
+                                    this.preview_tabs.iter_mut().find(|t| t.path == path)
+                                {
+                                    tab.content = content.clone();
+                                }
+                                // Active editor only if this path is still showing.
+                                if this.page == AppPage::Files
+                                    && this.preview_path.as_deref() == Some(path.as_str())
+                                {
+                                    this.preview_input.update(cx, |input, cx| {
+                                        input.set_line_number(true, window, cx);
+                                        input.set_value(&content, window, cx);
+                                    });
+                                    this.refresh_inline_blame(cx);
+                                    this.refresh_preview_diff_gutter(cx);
+                                    this.notify_preview(cx);
+                                    this.error = None;
+                                }
                                 cx.notify();
                             }
-                            Err(err) => this.set_error(err.into(), cx),
+                            Err(err) => {
+                                // Only the latest load owns error UI / tab teardown.
+                                if this.preview_load_gen != gen {
+                                    return;
+                                }
+                                if let Some(i) =
+                                    this.preview_tabs.iter().position(|t| t.path == path)
+                                {
+                                    this.close_preview_tab(i, window, cx);
+                                }
+                                this.set_error(err.into(), cx);
+                            }
                         }
                     })
                 });

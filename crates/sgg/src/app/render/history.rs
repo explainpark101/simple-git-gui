@@ -124,8 +124,8 @@ pub fn render(view: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
                                 .gap_1()
                                 .child(
                                     icon_btn("history-graph-branches", AssetIcon::Settings)
-                                        .accessibility_label(t.tip_history_graph_branches)
-                                        .tooltip(t.tip_history_graph_branches)
+                                        .accessibility_label(t.tip_history_settings)
+                                        .tooltip(t.tip_history_settings)
                                         .selected(view.history_branch_filter_open)
                                         .on_click(cx.listener(|this, _, window, cx| {
                                             this.toggle_history_branch_filter(window, cx);
@@ -540,12 +540,13 @@ fn history_table_row(
         )
 }
 
-/// Searchable checkbox list of branches included in the History graph.
+/// Cog panel: History column toggles + searchable branch filter for the graph.
 fn history_branch_filter_panel(
     view: &AppView,
     t: UiText,
     cx: &mut Context<AppView>,
 ) -> impl IntoElement {
+    let cols = &view.history_columns;
     let query = view
         .history_branch_filter_input
         .read(cx)
@@ -567,7 +568,7 @@ fn history_branch_filter_panel(
     div()
         .flex()
         .flex_col()
-        .gap_2()
+        .gap_3()
         .px_3()
         .py_2()
         .border_b_1()
@@ -575,54 +576,128 @@ fn history_branch_filter_panel(
         .bg(cx.theme().secondary)
         .child(
             div()
-                .text_xs()
-                .text_color(cx.theme().muted_foreground)
-                .child(t.tip_history_graph_branches),
+                .flex()
+                .flex_col()
+                .gap_2()
+                .child(
+                    div()
+                        .text_xs()
+                        .font_semibold()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(t.history_columns),
+                )
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(t.history_columns_help),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap_1()
+                        .child(
+                            Checkbox::new("hist-col-description")
+                                .small()
+                                .label(t.history_col_description)
+                                .checked(cols.description)
+                                .on_click(cx.listener(|this, checked, _, cx| {
+                                    this.set_history_column_description(*checked, cx);
+                                })),
+                        )
+                        .child(
+                            Checkbox::new("hist-col-date")
+                                .small()
+                                .label(t.history_col_date)
+                                .checked(cols.date)
+                                .on_click(cx.listener(|this, checked, _, cx| {
+                                    this.set_history_column_date(*checked, cx);
+                                })),
+                        )
+                        .child(
+                            Checkbox::new("hist-col-author")
+                                .small()
+                                .label(t.history_col_author)
+                                .checked(cols.author)
+                                .on_click(cx.listener(|this, checked, _, cx| {
+                                    this.set_history_column_author(*checked, cx);
+                                })),
+                        )
+                        .child(
+                            Checkbox::new("hist-col-commit")
+                                .small()
+                                .label(t.history_col_commit)
+                                .checked(cols.commit)
+                                .on_click(cx.listener(|this, checked, _, cx| {
+                                    this.set_history_column_commit(*checked, cx);
+                                })),
+                        ),
+                ),
         )
         .child(
-            Input::new(&view.history_branch_filter_input)
-                .cleanable(true)
-                .prefix(Icon::new(AssetIcon::Search).small()),
+            div()
+                .w_full()
+                .h(px(1.))
+                .bg(cx.theme().border),
         )
         .child(
             div()
                 .flex()
                 .flex_col()
-                .gap_1()
-                .max_h(px(220.))
-                .overflow_y_scrollbar()
-                .children(branches.into_iter().map(|(name, visible)| {
-                    let branch = name.clone();
-                    Checkbox::new(SharedString::from(format!("hist-branch-filter:{name}")))
-                        .small()
-                        .label(name)
-                        .checked(visible)
-                        .on_click(cx.listener(move |this, checked, window, cx| {
-                            this.set_history_graph_branch_visible(
-                                branch.clone(),
-                                *checked,
-                                window,
-                                cx,
-                            );
-                        }))
-                })),
+                .gap_2()
+                .child(
+                    div()
+                        .text_xs()
+                        .font_semibold()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(t.tip_history_graph_branches),
+                )
+                .child(
+                    Input::new(&view.history_branch_filter_input)
+                        .cleanable(true)
+                        .prefix(Icon::new(AssetIcon::Search).small()),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap_1()
+                        .max_h(px(220.))
+                        .overflow_y_scrollbar()
+                        .children(branches.into_iter().map(|(name, visible)| {
+                            let branch = name.clone();
+                            Checkbox::new(SharedString::from(format!("hist-branch-filter:{name}")))
+                                .small()
+                                .label(name)
+                                .checked(visible)
+                                .on_click(cx.listener(move |this, checked, window, cx| {
+                                    this.set_history_graph_branch_visible(
+                                        branch.clone(),
+                                        *checked,
+                                        window,
+                                        cx,
+                                    );
+                                }))
+                        })),
+                ),
         )
 }
 
 /// Minimum History list width so the tab title stays on one row.
 ///
-/// Header chrome: `px_3` × 2 + `gap_2` + small refresh control + title advance.
+/// Header chrome: `px_3` × 2 + `gap_2` + settings + refresh + title advance.
 /// Also at least the git-graph gutter so lane strokes are not clipped.
 fn history_list_min_width(title: &str, graph_w: Pixels, cols: &HistoryColumnsPrefs) -> Pixels {
     const HEADER_PAD_X: f32 = 24.; // px_3 left + right
-    const HEADER_GAP: f32 = 8.; // gap_2 between title and refresh
-    const REFRESH_BTN: f32 = 32.; // small icon button
+    const HEADER_GAP: f32 = 8.; // gap_2 between title and actions
+    const ACTION_BTNS: f32 = 32. + 4. + 32.; // settings + gap_1 + refresh
     // Approximate default UI font advances (semibold body size).
     let title_w: f32 = title
         .chars()
         .map(|c| if c.is_ascii() { 8.5 } else { 14. })
         .sum();
-    let header_min = px(HEADER_PAD_X + HEADER_GAP + REFRESH_BTN + title_w);
+    let header_min = px(HEADER_PAD_X + HEADER_GAP + ACTION_BTNS + title_w);
     let table_min = graph_w + px(cols.fixed_width_px()) + px(cols.description_min_px());
     header_min.max(table_min)
 }
