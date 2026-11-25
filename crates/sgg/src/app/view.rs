@@ -1165,6 +1165,12 @@ impl AppView {
         self.git_preview_pane.update(cx, |_, cx| cx.notify());
     }
 
+    /// AppView layout change + preview host refresh (History / Files / Git).
+    pub(super) fn notify_preview_layout(&self, cx: &mut Context<Self>) {
+        self.notify_preview(cx);
+        cx.notify();
+    }
+
     pub(super) fn notify_git_work(&self, cx: &mut Context<Self>) {
         self.notify_changes(cx);
         self.notify_sidebar(cx);
@@ -1347,9 +1353,26 @@ impl AppView {
             // viewport sits past real content (blank below UI font). Start at top.
             self.settings_scroll.set_offset(point(px(0.), px(0.)));
         }
+        self.configure_preview_host(cx);
         self.restore_page_preview(window, cx);
         self.push_nav_entry(self.current_nav_entry());
         cx.notify();
+    }
+
+    /// Keep the shared preview host flags in sync with the active page.
+    /// History / Files / Git all mount `git_preview_pane` so Editor/Diff are
+    /// never rendered from AppView's own `render` (that re-reads AppView and panics).
+    pub(super) fn configure_preview_host(&mut self, cx: &mut Context<Self>) {
+        let (show_close, show_tabs) = match self.page {
+            AppPage::Files => (true, true),
+            AppPage::Git | AppPage::History => (true, false),
+            _ => (true, false),
+        };
+        self.git_preview_pane.update(cx, |host, cx| {
+            host.show_close = show_close;
+            host.show_tabs = show_tabs;
+            cx.notify();
+        });
     }
 
     /// Open Settings and scroll to the Commit AI card.
@@ -1501,7 +1524,7 @@ impl AppView {
         self.refresh_inline_blame(cx);
         self.refresh_preview_diff_gutter(cx);
         self.push_nav_entry(self.current_nav_entry());
-        cx.notify();
+        self.notify_preview_layout(cx);
     }
 
     pub(super) fn close_preview_tab(
@@ -1524,7 +1547,7 @@ impl AppView {
                 input.set_value("", window, cx);
             });
             self.push_nav_entry(self.current_nav_entry());
-            cx.notify();
+            self.notify_preview_layout(cx);
             return;
         }
         let next = index.min(self.preview_tabs.len() - 1);
@@ -1539,7 +1562,7 @@ impl AppView {
         self.refresh_inline_blame(cx);
         self.refresh_preview_diff_gutter(cx);
         self.push_nav_entry(self.current_nav_entry());
-        cx.notify();
+        self.notify_preview_layout(cx);
     }
 
     pub(super) fn set_group_by_status(&mut self, enabled: bool, cx: &mut Context<Self>) {

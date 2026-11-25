@@ -7,7 +7,6 @@ use gpui_kit::component::{ActiveTheme as _, Sizable as _, h_resizable, resizable
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{InteractiveElement as _, Styled as _, *};
 
-use super::preview_pane;
 use crate::app::busy::BusyKind;
 use crate::app::view::{AppView, FileOpForm};
 use crate::app::widgets::{
@@ -155,11 +154,13 @@ pub fn render(view: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
         )
         .child(
             // Keep a second panel (and drag handle) even with no open file.
+            // Host entity — never call preview_pane::render from AppView's
+            // render (re-entrant AppView::read panics).
             resizable_panel().child(
                 if view.preview_tabs.is_empty() {
                     pane_body(cx).flex_1().min_w_0().into_any_element()
                 } else {
-                    preview_pane::render(cx.entity(), true, true, cx).into_any_element()
+                    view.git_preview_pane.clone().into_any_element()
                 },
             ),
         )

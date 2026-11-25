@@ -1027,6 +1027,7 @@ impl AppView {
                 if self.preview_tabs.is_empty() {
                     self.preview_path = None;
                     self.clear_shared_preview_buffers(window, cx);
+                    self.notify_preview(cx);
                     return;
                 }
                 let idx = self
@@ -1055,6 +1056,7 @@ impl AppView {
             }
             AppPage::PullRequests | AppPage::Actions | AppPage::Settings => {}
         }
+        self.notify_preview(cx);
     }
 
     pub(super) fn open_folder(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -1263,6 +1265,8 @@ impl AppView {
             });
             self.push_nav_entry(self.current_nav_entry());
             self.set_ok_status(format!("Preview {rel_path}"));
+            self.configure_preview_host(cx);
+            self.notify_preview_layout(cx);
 
             self.preview_load_gen = self.preview_load_gen.wrapping_add(1);
             let gen = self.preview_load_gen;
@@ -1320,7 +1324,6 @@ impl AppView {
                     })
                 });
             }));
-            cx.notify();
             return;
         }
 
@@ -2188,9 +2191,24 @@ impl AppView {
         });
         // Display path only — do not touch git_preview_path / Files tabs.
         self.preview_path = Some(path);
+        self.configure_preview_host(cx);
+        // Keep DiffState mode aligned with the layout before the host paints.
+        let diff_mode = match (mode, diff_layout) {
+            (super::view::HistoryFileViewMode::Diff, super::view::HistoryDiffLayout::Split) => {
+                DiffMode::Split
+            }
+            (super::view::HistoryFileViewMode::Diff, super::view::HistoryDiffLayout::Unified) => {
+                DiffMode::Unified
+            }
+            _ => DiffMode::Unified,
+        };
+        self.history_diff.update(cx, |state, cx| {
+            state.set_mode(diff_mode, cx);
+        });
         self.clear_preview_diff_gutter(cx);
         self.load_history_file_into_preview(window, cx);
         self.refresh_inline_blame(cx);
+        self.notify_preview_layout(cx);
     }
 
     pub(super) fn set_history_file_view_mode(
@@ -2206,8 +2224,19 @@ impl AppView {
             return;
         }
         preview.mode = mode;
+        let diff_layout = preview.diff_layout;
+        let diff_mode = match (mode, diff_layout) {
+            (super::view::HistoryFileViewMode::Diff, super::view::HistoryDiffLayout::Split) => {
+                DiffMode::Split
+            }
+            _ => DiffMode::Unified,
+        };
+        self.history_diff.update(cx, |state, cx| {
+            state.set_mode(diff_mode, cx);
+        });
         self.load_history_file_into_preview(window, cx);
         self.refresh_inline_blame(cx);
+        self.notify_preview(cx);
     }
 
     pub(super) fn set_history_diff_layout(
@@ -2226,9 +2255,17 @@ impl AppView {
             return;
         }
         preview.diff_layout = layout;
+        let diff_mode = match layout {
+            super::view::HistoryDiffLayout::Split => DiffMode::Split,
+            super::view::HistoryDiffLayout::Unified => DiffMode::Unified,
+        };
+        self.history_diff.update(cx, |state, cx| {
+            state.set_mode(diff_mode, cx);
+        });
         // Unified uses Diff; Split uses dual Editors — reload content for the layout.
         self.load_history_file_into_preview(window, cx);
         self.refresh_inline_blame(cx);
+        self.notify_preview(cx);
     }
 
     pub(super) fn close_history_file_preview(
@@ -2245,7 +2282,7 @@ impl AppView {
             self.preview_path = None;
             self.clear_shared_preview_buffers(window, cx);
         }
-        cx.notify();
+        self.notify_preview_layout(cx);
     }
 
     fn load_history_file_into_preview(
@@ -2380,6 +2417,7 @@ impl AppView {
                             this.clear_preview_diff_gutter(cx);
                             this.error = None;
                             this.refresh_inline_blame(cx);
+                            this.notify_preview(cx);
                             cx.notify();
                         }
                         Ok(HistLoaded::Unified { files }) => {
@@ -2400,6 +2438,7 @@ impl AppView {
                             this.clear_preview_diff_gutter(cx);
                             this.error = None;
                             this.refresh_inline_blame(cx);
+                            this.notify_preview(cx);
                             cx.notify();
                         }
                         Ok(HistLoaded::Split {
@@ -2430,6 +2469,7 @@ impl AppView {
                             this.error = None;
                             this.refresh_inline_blame(cx);
                             this.refresh_history_diff_decorations(cx);
+                            this.notify_preview(cx);
                             cx.notify();
                         }
                         Err(err) => this.set_error(err.into(), cx),

@@ -20,7 +20,6 @@ use crate::app::busy::BusyKind;
 use crate::app::i18n::UiText;
 use crate::app::prefs::HistoryColumnsPrefs;
 use crate::app::render::git_graph;
-use crate::app::render::preview_pane;
 use crate::app::render::status_style::history_name_status_key;
 use crate::app::view::{AppView, HistoryFileViewMode};
 use crate::app::widgets::{action_btn, display_btn, icon_btn, menu_item_with_icon, with_busy};
@@ -74,6 +73,7 @@ pub fn render(view: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
         .child(
             div()
                 .id("history-list")
+                .relative()
                 .size_full()
                 .min_h_0()
                 .min_w_0()
@@ -146,9 +146,6 @@ pub fn render(view: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
                                 ),
                         ),
                 )
-                .when(view.history_branch_filter_open, |this| {
-                    this.child(history_branch_filter_panel(view, t, cx))
-                })
                 // Column headers (Zed Git Graph).
                 .child(history_table_header(t, graph_w, &cols, cx))
                 // Search under the header.
@@ -259,7 +256,11 @@ pub fn render(view: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
                             )
                             .into_any_element()
                         })),
-                ),
+                )
+                // Floating settings dropdown — must not push the commit list.
+                .when(view.history_branch_filter_open, |this| {
+                    this.child(history_settings_overlay(view, t, cx))
+                }),
         );
 
     let detail = detail_pane(view, cx);
@@ -280,9 +281,9 @@ pub fn render(view: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
                             resizable_panel()
                                 .size(px(420.))
                                 .size_range(px(280.)..Pixels::MAX)
-                                .child(
-                                    preview_pane::render(cx.entity(), true, false, cx).into_any_element(),
-                                ),
+                                // Host entity — never call preview_pane::render from
+                                // AppView's render (re-entrant AppView::read panics).
+                                .child(view.git_preview_pane.clone()),
                         ),
                 ),
             )
@@ -540,7 +541,33 @@ fn history_table_row(
         )
 }
 
-/// Cog panel: History column toggles + searchable branch filter for the graph.
+/// Floating dropdown under the History settings cog (does not reflow the list).
+fn history_settings_overlay(
+    view: &AppView,
+    t: UiText,
+    cx: &mut Context<AppView>,
+) -> impl IntoElement {
+    div()
+        .id("history-settings-overlay")
+        .absolute()
+        .top(px(44.))
+        .right(px(8.))
+        .w(px(300.))
+        .max_h(px(420.))
+        .child(
+            div()
+                .rounded(cx.theme().radius)
+                .border_1()
+                .border_color(cx.theme().border)
+                .bg(cx.theme().popover)
+                .shadow_md()
+                .occlude()
+                .overflow_hidden()
+                .child(history_branch_filter_panel(view, t, cx)),
+        )
+}
+
+/// Cog panel body: History column toggles + searchable branch filter for the graph.
 fn history_branch_filter_panel(
     view: &AppView,
     t: UiText,
@@ -571,9 +598,6 @@ fn history_branch_filter_panel(
         .gap_3()
         .px_3()
         .py_2()
-        .border_b_1()
-        .border_color(cx.theme().border)
-        .bg(cx.theme().secondary)
         .child(
             div()
                 .flex()

@@ -377,6 +377,8 @@ pub fn render(
                             Diff::new(&view.history_diff)
                                 .header_visible(false)
                                 .soft_wrap(false)
+                                // No tree-sitter/syntect in this crate — skip highlight work.
+                                .syntax_highlight(false)
                                 .h(relative(1.))
                                 .flex_1()
                                 .min_h_0(),
