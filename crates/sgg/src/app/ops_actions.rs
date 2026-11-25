@@ -41,27 +41,37 @@ impl AppView {
             let result = cx
                 .background_spawn(async move {
                     let workflows = github_actions::list_workflows(&root)?;
-                    let filter = selected_workflow.and_then(|id| {
-                        workflows
-                            .iter()
-                            .find(|w| w.id == id)
-                            .map(|w| w.id.to_string())
-                    });
-                    let runs = github_actions::list_runs(&root, filter.as_deref(), 30)?;
-                    Ok::<_, GhError>((workflows, runs))
+                    // Cross-workflow recent runs → in-progress dots on the workflow list.
+                    let activity = github_actions::list_runs(&root, None, 50)?;
+                    let filter = selected_workflow
+                        .or_else(|| workflows.first().map(|w| w.id))
+                        .and_then(|id| {
+                            workflows
+                                .iter()
+                                .find(|w| w.id == id)
+                                .map(|w| w.id.to_string())
+                        });
+                    let runs = if let Some(ref f) = filter {
+                        github_actions::list_runs(&root, Some(f.as_str()), 30)?
+                    } else {
+                        activity.clone()
+                    };
+                    Ok::<_, GhError>((workflows, activity, runs, selected_workflow))
                 })
                 .await;
             let _ = this.update(cx, |this, cx| {
                 this.network_task = None;
                 this.busy = None;
                 match result {
-                    Ok((workflows, runs)) => {
+                    Ok((workflows, activity, runs, selected_hint)) => {
                         let keep_wf = this
                             .selected_workflow
+                            .or(selected_hint)
                             .filter(|id| workflows.iter().any(|w| w.id == *id));
                         this.workflows = workflows;
                         this.selected_workflow =
                             keep_wf.or_else(|| this.workflows.first().map(|w| w.id));
+                        this.set_workflows_in_progress_from_runs(&activity);
                         let keep_run = this
                             .selected_run
                             .filter(|id| runs.iter().any(|r| r.database_id == *id));
@@ -80,6 +90,7 @@ impl AppView {
                     Err(err) => {
                         this.workflows.clear();
                         this.workflow_runs.clear();
+                        this.workflows_in_progress.clear();
                         this.selected_workflow = None;
                         this.selected_run = None;
                         this.pr_gh_missing = err.is_not_found();
@@ -100,6 +111,38 @@ impl AppView {
         }));
     }
 
+    fn run_workflow_label(run: &super::github_actions::WorkflowRunInfo) -> String {
+        if run.workflow_name.is_empty() {
+            run.name.clone()
+        } else {
+            run.workflow_name.clone()
+        }
+    }
+
+    fn set_workflows_in_progress_from_runs(
+        &mut self,
+        runs: &[super::github_actions::WorkflowRunInfo],
+    ) {
+        self.workflows_in_progress = runs
+            .iter()
+            .filter(|r| r.is_in_progress())
+            .map(Self::run_workflow_label)
+            .filter(|n| !n.is_empty())
+            .collect();
+    }
+
+    /// Update the in-progress flag for one workflow from its own run list.
+    fn sync_workflow_in_progress_flag(&mut self, workflow_name: &str, runs: &[super::github_actions::WorkflowRunInfo]) {
+        if workflow_name.is_empty() {
+            return;
+        }
+        if runs.iter().any(|r| r.is_in_progress()) {
+            self.workflows_in_progress.insert(workflow_name.to_string());
+        } else {
+            self.workflows_in_progress.remove(workflow_name);
+        }
+    }
+
     pub(super) fn refresh_workflow_runs(&mut self, cx: &mut Context<Self>) {
         if self.busy.is_some() || self.network_task.is_some() {
             return;
@@ -109,6 +152,11 @@ impl AppView {
             return;
         }
         let filter = self.selected_workflow.map(|id| id.to_string());
+        let workflow_name = self
+            .selected_workflow
+            .and_then(|id| self.workflows.iter().find(|w| w.id == id))
+            .map(|w| w.name.clone())
+            .unwrap_or_default();
         self.busy = Some(BusyKind::ActionsList);
         self.begin_progress(BusyKind::ActionsList);
         cx.notify();
@@ -123,6 +171,7 @@ impl AppView {
                 this.busy = None;
                 match result {
                     Ok(runs) => {
+                        this.sync_workflow_in_progress_flag(&workflow_name, &runs);
                         let keep = this
                             .selected_run
                             .filter(|id| runs.iter().any(|r| r.database_id == *id));

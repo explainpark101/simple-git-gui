@@ -16,6 +16,7 @@ mod line_diff;
 mod merge;
 mod rebase;
 mod remote;
+mod revert;
 mod shell;
 mod stash;
 mod state;
@@ -31,9 +32,9 @@ pub use graph::{
     GraphCommitInput, HistoryGraph, GRAPH_ACCENT_COUNT, UNCOMMITTED_OID,
 };
 pub use history::{
-    blame_file, blame_file_at, diff_file_at_commit, list_history, reset_to, rev_parse, show_commit,
-    show_file_at_revision, show_uncommitted, split_file_at_commit, BlameEntry, HistoryCommit,
-    HistoryDetail, HistoryFileChange, HistoryRevSpec, ResetMode,
+    blame_file, blame_file_at, diff_file_at_commit, drop_commit, list_history, reset_to, rev_parse,
+    show_commit, show_file_at_revision, show_uncommitted, split_file_at_commit, BlameEntry,
+    HistoryCommit, HistoryDetail, HistoryFileChange, HistoryRevSpec, ResetMode,
 };
 pub use line_diff::{
     align_split_from_unified, line_start_offset, lines_byte_range, list_file_line_changes,

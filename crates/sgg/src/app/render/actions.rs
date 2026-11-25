@@ -157,6 +157,8 @@ pub fn render(view: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
                     let state = wf.state.clone();
                     let active = wf.is_active();
                     let is_selected = selected_wf == Some(id);
+                    let running = view.workflows_in_progress.contains(&wf.name);
+                    let running_color = cx.theme().warning;
                     display_btn(SharedString::from(format!("actions-wf:{id}")))
                         .ghost()
                         .selected(is_selected)
@@ -169,8 +171,7 @@ pub fn render(view: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
                         .child(
                             div()
                                 .flex()
-                                .flex_col()
-                                .justify_center()
+                                .items_center()
                                 .gap_2()
                                 .w_full()
                                 .h_full()
@@ -178,34 +179,46 @@ pub fn render(view: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
                                 .overflow_hidden()
                                 .py_1()
                                 .text_left()
+                                .when(running, |this| this.child(status_dot(running_color)))
                                 .child(
                                     div()
-                                        .text_sm()
-                                        .line_height(relative(1.35))
+                                        .flex()
+                                        .flex_col()
+                                        .justify_center()
+                                        .gap_2()
+                                        .flex_1()
+                                        .min_w_0()
                                         .overflow_hidden()
-                                        .text_ellipsis()
-                                        .whitespace_nowrap()
                                         .text_left()
-                                        .child(name),
-                                )
-                                .child(
-                                    div()
-                                        .text_xs()
-                                        .line_height(relative(1.35))
-                                        .text_color(cx.theme().muted_foreground)
-                                        .overflow_hidden()
-                                        .text_ellipsis()
-                                        .whitespace_nowrap()
-                                        .text_left()
-                                        .child(format!(
-                                            "{} · {}",
-                                            path,
-                                            if active {
-                                                t.actions_state_active
-                                            } else {
-                                                state.as_str()
-                                            }
-                                        )),
+                                        .child(
+                                            div()
+                                                .text_sm()
+                                                .line_height(relative(1.35))
+                                                .overflow_hidden()
+                                                .text_ellipsis()
+                                                .whitespace_nowrap()
+                                                .text_left()
+                                                .child(name),
+                                        )
+                                        .child(
+                                            div()
+                                                .text_xs()
+                                                .line_height(relative(1.35))
+                                                .text_color(cx.theme().muted_foreground)
+                                                .overflow_hidden()
+                                                .text_ellipsis()
+                                                .whitespace_nowrap()
+                                                .text_left()
+                                                .child(format!(
+                                                    "{} · {}",
+                                                    path,
+                                                    if active {
+                                                        t.actions_state_active
+                                                    } else {
+                                                        state.as_str()
+                                                    }
+                                                )),
+                                        ),
                                 ),
                         )
                         .into_any_element()
@@ -619,13 +632,14 @@ fn run_status_color(run: &crate::app::github_actions::WorkflowRunInfo, cx: &App)
         return match conclusion.as_str() {
             "success" => cx.theme().success,
             "failure" | "timed_out" | "startup_failure" => cx.theme().danger,
-            "cancelled" => cx.theme().warning,
+            "cancelled" => cx.theme().muted_foreground,
             "skipped" | "neutral" => cx.theme().muted_foreground,
             _ => cx.theme().muted_foreground,
         };
     }
     match run.status.to_ascii_lowercase().as_str() {
-        "queued" | "in_progress" | "requested" | "waiting" | "pending" => cx.theme().accent,
+        // Amber / orange for live work so it stands out from success/failure.
+        "in_progress" | "queued" | "requested" | "waiting" | "pending" => cx.theme().warning,
         "completed" => cx.theme().muted_foreground,
         _ => cx.theme().muted_foreground,
     }

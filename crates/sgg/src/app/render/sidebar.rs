@@ -499,7 +499,10 @@ fn operation_actions(
     let entity = app;
     let show_sequencer = matches!(
         operation,
-        RepoOperation::Merge | RepoOperation::Rebase | RepoOperation::CherryPick
+        RepoOperation::Merge
+            | RepoOperation::Rebase
+            | RepoOperation::CherryPick
+            | RepoOperation::Revert
     );
     let show_skip = operation == RepoOperation::Rebase;
     div()
@@ -522,6 +525,7 @@ fn operation_actions(
                 match operation {
                     RepoOperation::Rebase => BusyKind::RebaseContinue,
                     RepoOperation::Merge => BusyKind::MergeContinue,
+                    RepoOperation::Revert => BusyKind::RevertContinue,
                     _ => BusyKind::CherryPickContinue,
                 },
             ))
@@ -538,6 +542,7 @@ fn operation_actions(
                 match operation {
                     RepoOperation::Rebase => BusyKind::RebaseAbort,
                     RepoOperation::Merge => BusyKind::MergeAbort,
+                    RepoOperation::Revert => BusyKind::RevertAbort,
                     _ => BusyKind::CherryPickAbort,
                 },
             ))

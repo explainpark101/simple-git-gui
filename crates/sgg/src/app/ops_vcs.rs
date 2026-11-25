@@ -291,6 +291,204 @@ impl AppView {
         }
     }
 
+    // ── Revert commit ───────────────────────────────────────────────────
+
+    pub(super) fn confirm_revert_commit(
+        &mut self,
+        oid: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if sgg_core::is_uncommitted_oid(&oid) {
+            return;
+        }
+        let short = oid.chars().take(7).collect::<String>();
+        let t = self.t();
+        let view = cx.entity();
+        open_confirm(
+            window,
+            cx,
+            t.confirm_revert_commit,
+            t.desc_revert_commit.replace("{oid}", &short),
+            t.revert_commit,
+            t.branch_cancel,
+            false,
+            move |_, window, cx| {
+                let oid = oid.clone();
+                view.update(cx, |this, cx| {
+                    this.run_busy(BusyKind::RevertCommit, window, cx, move |this, window, cx| {
+                        this.revert_commit_now(oid, window, cx);
+                    });
+                });
+                true
+            },
+        );
+    }
+
+    pub(super) fn revert_commit_now(
+        &mut self,
+        oid: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match self.with_repo(|repo| repo.revert_commit(&oid)) {
+            Ok(out) => {
+                self.set_ok_status(if out.is_empty() {
+                    format!("Reverted {oid}")
+                } else {
+                    out
+                });
+                self.reload(cx);
+                self.reload_history(window, cx);
+            }
+            Err(err) => {
+                self.set_error(err, cx);
+                self.reload(cx);
+            }
+        }
+    }
+
+    pub(super) fn confirm_revert_continue(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.run_busy(BusyKind::RevertContinue, window, cx, |this, window, cx| {
+            this.revert_continue_now(window, cx);
+        });
+    }
+
+    pub(super) fn revert_continue_now(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match self.with_repo(|repo| repo.revert_continue()) {
+            Ok(out) => {
+                self.set_ok_status(if out.is_empty() {
+                    "Revert continued".into()
+                } else {
+                    out
+                });
+                self.reload(cx);
+                self.reload_history(window, cx);
+            }
+            Err(err) => {
+                self.set_error(err, cx);
+                self.reload(cx);
+            }
+        }
+    }
+
+    pub(super) fn confirm_revert_abort(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let t = self.t();
+        let view = cx.entity();
+        open_confirm(
+            window,
+            cx,
+            t.confirm_revert_abort,
+            t.desc_revert_abort,
+            t.revert_abort,
+            t.branch_cancel,
+            true,
+            move |_, window, cx| {
+                view.update(cx, |this, cx| {
+                    this.run_busy(BusyKind::RevertAbort, window, cx, |this, window, cx| {
+                        this.revert_abort_now(window, cx);
+                    });
+                });
+                true
+            },
+        );
+    }
+
+    pub(super) fn revert_abort_now(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match self.with_repo(|repo| repo.revert_abort()) {
+            Ok(out) => {
+                self.set_ok_status(if out.is_empty() {
+                    "Revert aborted".into()
+                } else {
+                    out
+                });
+                self.reload(cx);
+                self.reload_history(window, cx);
+            }
+            Err(err) => self.set_error(err, cx),
+        }
+    }
+
+    // ── Drop commit ─────────────────────────────────────────────────────
+
+    pub(super) fn confirm_drop_commit(
+        &mut self,
+        oid: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if sgg_core::is_uncommitted_oid(&oid) {
+            return;
+        }
+        if self.repo_operation() != RepoOperation::Clean {
+            self.set_error(self.t().desc_op_in_progress.into(), cx);
+            return;
+        }
+        let short = oid.chars().take(7).collect::<String>();
+        let t = self.t();
+        let view = cx.entity();
+        open_confirm(
+            window,
+            cx,
+            t.confirm_drop_commit,
+            t.desc_drop_commit.replace("{oid}", &short),
+            t.drop_commit,
+            t.branch_cancel,
+            true,
+            move |_, window, cx| {
+                let oid = oid.clone();
+                view.update(cx, |this, cx| {
+                    this.run_busy(BusyKind::DropCommit, window, cx, move |this, window, cx| {
+                        this.drop_commit_now(oid, window, cx);
+                    });
+                });
+                true
+            },
+        );
+    }
+
+    pub(super) fn drop_commit_now(
+        &mut self,
+        oid: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let root = self.repo_root();
+        match sgg_core::drop_commit(&root, &oid) {
+            Ok(out) => {
+                self.error = None;
+                let short: String = oid.chars().take(7).collect();
+                self.set_ok_status(if out.is_empty() {
+                    format!("Dropped {short}")
+                } else {
+                    out
+                });
+                self.reload(cx);
+                self.reload_history(window, cx);
+            }
+            Err(err) => {
+                self.set_error(err.to_string().into(), cx);
+                self.reload(cx);
+            }
+        }
+    }
+
     // ── Cherry-pick ─────────────────────────────────────────────────────
 
     pub(super) fn confirm_cherry_pick(
@@ -845,6 +1043,7 @@ impl AppView {
             RepoOperation::Rebase => self.confirm_rebase_continue(window, cx),
             RepoOperation::Merge => self.confirm_merge_continue(window, cx),
             RepoOperation::CherryPick => self.confirm_cherry_pick_continue(window, cx),
+            RepoOperation::Revert => self.confirm_revert_continue(window, cx),
             _ => {}
         }
     }
@@ -858,6 +1057,7 @@ impl AppView {
             RepoOperation::Rebase => self.confirm_rebase_abort(window, cx),
             RepoOperation::Merge => self.confirm_merge_abort(window, cx),
             RepoOperation::CherryPick => self.confirm_cherry_pick_abort(window, cx),
+            RepoOperation::Revert => self.confirm_revert_abort(window, cx),
             _ => {}
         }
     }

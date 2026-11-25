@@ -287,6 +287,21 @@ pub fn reset_to(repo: &Path, oid: &str, mode: ResetMode) -> Result<String, GitCl
     run_git(repo, &["reset", mode.as_git_arg(), oid])
 }
 
+/// Remove `oid` from the current branch by rebasing its descendants onto the parent
+/// (`git rebase --onto <oid>^ <oid>`). Rewrites history; fails if `oid` is not an
+/// ancestor of HEAD or is a root commit without a usable parent.
+pub fn drop_commit(repo: &Path, oid: &str) -> Result<String, GitCliError> {
+    let oid = oid.trim();
+    if oid.is_empty() {
+        return Err(GitCliError::Failed {
+            status: -1,
+            stderr: "drop commit is empty".into(),
+        });
+    }
+    let parent = format!("{oid}^");
+    run_git(repo, &["rebase", "--onto", &parent, oid])
+}
+
 /// File contents at `revision` (`git show rev:path`).
 ///
 /// For the synthetic uncommitted oid, reads the working-tree file.

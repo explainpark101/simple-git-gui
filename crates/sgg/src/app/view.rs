@@ -394,6 +394,8 @@ pub struct AppView {
     pub(super) pr_merge_method: super::github_pr::PrMergeMethod,
     pub(super) workflows: Vec<super::github_actions::WorkflowInfo>,
     pub(super) workflow_runs: Vec<super::github_actions::WorkflowRunInfo>,
+    /// Workflow names that currently have an in-progress / queued run (for list dots).
+    pub(super) workflows_in_progress: HashSet<String>,
     pub(super) selected_workflow: Option<u64>,
     pub(super) selected_run: Option<u64>,
     pub(super) actions_list_error: Option<String>,
@@ -764,6 +766,7 @@ impl AppView {
             pr_merge_method: super::github_pr::PrMergeMethod::Merge,
             workflows: Vec::new(),
             workflow_runs: Vec::new(),
+            workflows_in_progress: HashSet::new(),
             selected_workflow: None,
             selected_run: None,
             actions_list_error: None,
@@ -1017,6 +1020,7 @@ impl AppView {
             self.pr_gh_missing = false;
             self.workflows.clear();
             self.workflow_runs.clear();
+            self.workflows_in_progress.clear();
             self.selected_workflow = None;
             self.selected_run = None;
             self.actions_list_error = None;
@@ -1121,6 +1125,7 @@ impl AppView {
                 self.pr_gh_missing = false;
                 self.workflows.clear();
                 self.workflow_runs.clear();
+                self.workflows_in_progress.clear();
                 self.selected_workflow = None;
                 self.selected_run = None;
                 self.actions_list_error = None;
@@ -1140,6 +1145,7 @@ impl AppView {
                 self.pr_gh_missing = false;
                 self.workflows.clear();
                 self.workflow_runs.clear();
+                self.workflows_in_progress.clear();
                 self.selected_workflow = None;
                 self.selected_run = None;
                 self.actions_list_error = None;

@@ -199,6 +199,8 @@ pub fn render(view: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
                                 "WIP".into(),
                                 t.tip_history_uncommitted.to_string(),
                                 cols.clone(),
+                                None,
+                                t,
                                 cx.listener(|this, _, window, cx| {
                                     this.select_history_commit(
                                         UNCOMMITTED_OID.to_string(),
@@ -211,6 +213,7 @@ pub fn render(view: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
                         })
                         .children(commits.into_iter().map(|(orig_i, c)| {
                             let oid = c.full_oid.clone();
+                            let menu_oid = c.full_oid.clone();
                             let selected = selected.as_deref() == Some(oid.as_str());
                             let row_graph = graph.clone();
                             let row_colors = color_branches.clone();
@@ -249,6 +252,8 @@ pub fn render(view: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
                                 c.short_oid.clone(),
                                 tip,
                                 row_cols,
+                                Some(menu_oid),
+                                t,
                                 cx.listener(move |this, _, window, cx| {
                                     this.select_history_commit(oid.clone(), window, cx);
                                 }),
@@ -375,6 +380,7 @@ fn history_table_header(
 
 fn history_branch_badge(label: String, is_head: bool, cx: &Context<AppView>) -> impl IntoElement {
     let accent = cx.theme().accent;
+    // Head badge needs a solid enough fill to read on dark themes (0.18 was too faint).
     div()
         .flex()
         .items_center()
@@ -383,12 +389,16 @@ fn history_branch_badge(label: String, is_head: bool, cx: &Context<AppView>) -> 
         .py_0()
         .rounded(px(4.))
         .bg(if is_head {
-            hsla(accent.h, accent.s, accent.l, 0.18)
+            accent.opacity(0.40)
         } else {
             cx.theme().secondary
         })
         .border_1()
-        .border_color(cx.theme().border)
+        .border_color(if is_head {
+            accent.opacity(0.70)
+        } else {
+            cx.theme().border
+        })
         .child(
             div()
                 .text_xs()
@@ -440,11 +450,14 @@ fn history_table_row(
     short_oid: String,
     tip: String,
     cols: HistoryColumnsPrefs,
+    menu_oid: Option<String>,
+    t: UiText,
     on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
     cx: &mut Context<AppView>,
-) -> impl IntoElement {
+) -> AnyElement {
     let tip_subject = tip.clone();
-    display_btn(id)
+    let entity = cx.entity();
+    let btn = display_btn(id)
         .ghost()
         .selected(selected)
         .w_full()
@@ -538,7 +551,16 @@ fn history_table_row(
                             .child(short_oid),
                     )
                 }),
-        )
+        );
+
+    match menu_oid {
+        Some(oid) => btn
+            .context_menu(move |menu, _, _| {
+                commit_context_menu(menu, &entity, oid.clone(), t)
+            })
+            .into_any_element(),
+        None => btn.into_any_element(),
+    }
 }
 
 /// Floating dropdown under the History settings cog (does not reflow the list).
@@ -672,10 +694,51 @@ fn history_branch_filter_panel(
                 .gap_2()
                 .child(
                     div()
-                        .text_xs()
-                        .font_semibold()
-                        .text_color(cx.theme().muted_foreground)
-                        .child(t.tip_history_graph_branches),
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .gap_2()
+                        .child(
+                            div()
+                                .text_xs()
+                                .font_semibold()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(t.tip_history_graph_branches),
+                        )
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap_1()
+                                .child(
+                                    display_btn("hist-branch-select-all")
+                                        .outline()
+                                        .small()
+                                        .compact()
+                                        .icon(AssetIcon::ListPlus)
+                                        .accessibility_label(t.select_all_history_branches)
+                                        .tooltip(t.tip_select_all_history_branches)
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            this.set_all_history_graph_branches_visible(
+                                                true, window, cx,
+                                            );
+                                        })),
+                                )
+                                .child(
+                                    display_btn("hist-branch-deselect-all")
+                                        .outline()
+                                        .small()
+                                        .compact()
+                                        .icon(AssetIcon::ListMinus)
+                                        .accessibility_label(t.deselect_all_history_branches)
+                                        .tooltip(t.tip_deselect_all_history_branches)
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            this.set_all_history_graph_branches_visible(
+                                                false, window, cx,
+                                            );
+                                        })),
+                                ),
+                        ),
                 )
                 .child(
                     Input::new(&view.history_branch_filter_input)
@@ -724,6 +787,94 @@ fn history_list_min_width(title: &str, graph_w: Pixels, cols: &HistoryColumnsPre
     let header_min = px(HEADER_PAD_X + HEADER_GAP + ACTION_BTNS + title_w);
     let table_min = graph_w + px(cols.fixed_width_px()) + px(cols.description_min_px());
     header_min.max(table_min)
+}
+
+fn commit_context_menu(
+    menu: gpui_kit::component::menu::PopupMenu,
+    entity: &Entity<AppView>,
+    oid: String,
+    t: UiText,
+) -> gpui_kit::component::menu::PopupMenu {
+    let oid_soft = oid.clone();
+    let oid_mixed = oid.clone();
+    let oid_hard = oid.clone();
+    let oid_revert = oid.clone();
+    let oid_drop = oid.clone();
+    let oid_cherry = oid.clone();
+    let oid_copy = oid;
+    let entity_soft = entity.clone();
+    let entity_mixed = entity.clone();
+    let entity_hard = entity.clone();
+    let entity_revert = entity.clone();
+    let entity_drop = entity.clone();
+    let entity_cherry = entity.clone();
+    let entity_copy = entity.clone();
+
+    menu.item(menu_item_with_icon(
+        t.reset_soft,
+        AssetIcon::Undo2,
+        move |_, window, cx| {
+            entity_soft.update(cx, |this, cx| {
+                this.confirm_reset(oid_soft.clone(), ResetMode::Soft, window, cx);
+            });
+        },
+    ))
+    .item(menu_item_with_icon(
+        t.reset_mixed,
+        AssetIcon::Redo2,
+        move |_, window, cx| {
+            entity_mixed.update(cx, |this, cx| {
+                this.confirm_reset(oid_mixed.clone(), ResetMode::Mixed, window, cx);
+            });
+        },
+    ))
+    .item(menu_item_with_icon(
+        t.reset_hard,
+        AssetIcon::Trash,
+        move |_, window, cx| {
+            entity_hard.update(cx, |this, cx| {
+                this.confirm_reset(oid_hard.clone(), ResetMode::Hard, window, cx);
+            });
+        },
+    ))
+    .separator()
+    .item(menu_item_with_icon(
+        t.revert_commit,
+        AssetIcon::Undo2,
+        move |_, window, cx| {
+            entity_revert.update(cx, |this, cx| {
+                this.confirm_revert_commit(oid_revert.clone(), window, cx);
+            });
+        },
+    ))
+    .item(menu_item_with_icon(
+        t.drop_commit,
+        AssetIcon::Trash,
+        move |_, window, cx| {
+            entity_drop.update(cx, |this, cx| {
+                this.confirm_drop_commit(oid_drop.clone(), window, cx);
+            });
+        },
+    ))
+    .item(menu_item_with_icon(
+        t.cherry_pick,
+        AssetIcon::GitPullRequestCreateArrow,
+        move |_, window, cx| {
+            entity_cherry.update(cx, |this, cx| {
+                this.confirm_cherry_pick(oid_cherry.clone(), window, cx);
+            });
+        },
+    ))
+    .separator()
+    .item(menu_item_with_icon(
+        t.copy_commit_hash,
+        AssetIcon::Copy,
+        move |_, _, cx| {
+            entity_copy.update(cx, |this, cx| {
+                this.copy_commit_hash(oid_copy.clone(), cx);
+            });
+        },
+    ))
 }
 
 fn detail_pane(view: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {

@@ -2032,6 +2032,37 @@ impl AppView {
         self.reload_history(window, cx);
     }
 
+    /// Show or hide every local/remote branch tip in the History graph.
+    pub(super) fn set_all_history_graph_branches_visible(
+        &mut self,
+        visible: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.history_rev = None;
+        if visible {
+            self.history_graph_excluded.clear();
+        } else if let Some(snapshot) = self.snapshot.as_ref() {
+            self.history_graph_excluded = snapshot
+                .branches
+                .iter()
+                .map(|b| b.name.clone())
+                .collect();
+        } else {
+            self.history_graph_excluded.clear();
+        }
+        self.reload_history(window, cx);
+    }
+
+    pub(super) fn copy_commit_hash(&mut self, oid: String, cx: &mut Context<Self>) {
+        if sgg_core::is_uncommitted_oid(&oid) {
+            return;
+        }
+        cx.write_to_clipboard(ClipboardItem::new_string(oid));
+        self.set_ok_status(self.t().copy_commit_hash_done);
+        cx.notify();
+    }
+
     pub(super) fn select_history_commit(
         &mut self,
         oid: String,
