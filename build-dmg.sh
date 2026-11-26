@@ -47,6 +47,8 @@ if [[ ! -f "${INSTALL_CMD_SRC}" ]]; then
   exit 1
 fi
 
+assert_no_homebrew_openssl "${APP_PATH}/Contents/MacOS/sgg"
+
 echo "==> rebuild DMG from signed .app → ${DMG_PATH}"
 STAGE="$(mktemp -d "${TMPDIR:-/tmp}/sgg-dmg.XXXXXX")"
 cleanup_stage() {

@@ -95,3 +95,25 @@ run_packager() {
   # Config lives in crates/sgg/Cargo.toml [package.metadata.packager]
   cargo packager --release --formats "$format" --packages sgg
 }
+
+# Fail if the macOS binary still loads Homebrew OpenSSL (absolute Cellar/opt
+# paths). Those break on machines without the same brew formula (libssl.4 etc.).
+assert_no_homebrew_openssl() {
+  local bin="$1"
+  if [[ ! -f "$bin" ]]; then
+    echo "error: assert_no_homebrew_openssl: missing binary: $bin" >&2
+    exit 1
+  fi
+  if ! command -v otool >/dev/null 2>&1; then
+    echo "warn: otool not found — skip Homebrew OpenSSL dylib check" >&2
+    return 0
+  fi
+  local deps
+  deps="$(otool -L "$bin" 2>/dev/null || true)"
+  if printf '%s\n' "$deps" | grep -E '/opt/homebrew/.*/lib(ssl|crypto)\.|/usr/local/opt/openssl' >/dev/null; then
+    echo "error: $bin links Homebrew OpenSSL — enable git2 vendored-openssl" >&2
+    printf '%s\n' "$deps" | grep -E 'lib(ssl|crypto)\.' >&2 || true
+    exit 1
+  fi
+  echo "==> OK: no Homebrew OpenSSL load commands in $(basename "$bin")"
+}

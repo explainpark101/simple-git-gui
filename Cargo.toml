@@ -4,7 +4,7 @@ members = ["crates/sgg-core", "crates/sgg"]
 default-members = ["crates/sgg"]
 
 [workspace.package]
-version = "1.7.0"
+version = "1.7.1"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/explainpark101/simple-git-gui"
@@ -12,7 +12,9 @@ repository = "https://github.com/explainpark101/simple-git-gui"
 [workspace.dependencies]
 anyhow = "1"
 dirs = "6"
-git2 = "0.20"
+# Vendored OpenSSL: macOS Homebrew paths (e.g. openssl@4/libssl.4.dylib) must
+# not appear in the shipped .app — dyld aborts at launch when missing.
+git2 = { version = "0.20", features = ["vendored-openssl"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
